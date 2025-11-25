@@ -243,14 +243,12 @@ def save_setting(conn, key, value):
 @st.cache_data(ttl=300, show_spinner=False)
 def get_all_settings(_conn):
     ws = get_worksheet(_conn, "settings")
-    # AQUÍ ESTABA TU ERROR ORIGINAL (AttributeError)
     if ws is None: return {} 
     
     try: return {r['key']: r['value'] for r in ws.get_all_records()}
     except: return {}
 
 def ensure_reset_table(conn): 
-    # Implementación opcional si la necesitas, protegida
     if conn is None: return
     pass
 
@@ -301,3 +299,4 @@ def perform_granular_delete(conn, option):
             msg.append("Distribución eliminada")
         
     return ", ".join(msg) + "."
+
