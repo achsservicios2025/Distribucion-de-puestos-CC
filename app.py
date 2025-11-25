@@ -13,11 +13,12 @@ from PIL import Image as PILImage
 from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
-import base64
+# REMOVIDO: import base64
 
 # ---------------------------------------------------------
-# 1. PARCHE PARA STREAMLIT >= 1.39 (FIX st_canvas)
+# 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
 # ---------------------------------------------------------
+# NOTA: ESTE PARCHE ES EL QUE PERMITE QUE PIL IMAGE FUNCIONE EN EL CANVAS
 import streamlit.elements.lib.image_utils
 
 if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
@@ -938,16 +939,16 @@ elif menu == "Administrador":
         
         # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO (SIN ESPACIO EN RUTA) ---
         
-        # 1. Búsqueda de Archivo (Sin Espacio, asumiendo piso1.png, piso2.png en GitHub)
+        # 1. Búsqueda de Archivo (Sin Espacio)
         file_base = f"piso{p_num}" # Genera 'piso2'
         
+        # Búsqueda rigurosa de las tres opciones de capitalización/extensión
         pim = PLANOS_DIR / f"{file_base}.png"
         if not pim.exists(): 
             pim = PLANOS_DIR / f"{file_base}.jpg"
         if not pim.exists(): # Fallback a P mayúscula
             pim = PLANOS_DIR / f"Piso{p_num}.png"
             
-        print(f"DEBUG PATH FINAL: Buscando {pim}. Existe: {pim.exists()}") # Línea de debug (debe ser eliminada después)
         
         if pim.exists():
             # Limpiamos la indentación y usamos la conversión Base64
