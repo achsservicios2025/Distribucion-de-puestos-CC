@@ -72,23 +72,6 @@ try:
     if "-----BEGIN PRIVATE KEY-----" not in pk:
         st.error("🚨 ERROR EN PRIVATE KEY: No parece una llave válida. Revisa que incluya -----BEGIN PRIVATE KEY-----")
         st.stop()
-        
-    # Prueba de conexión directa
-    from google.oauth2.service_account import Credentials
-    import gspread
-    
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    
-    # Prueba de abrir la hoja
-    sheet_name = st.secrets["sheets"]["sheet_name"]
-    sh = client.open(sheet_name)
-    st.success(f"✅ CONEXIÓN EXITOSA con la hoja: {sheet_name}")
-
-except Exception as e:
-    st.error(f"🔥 LA CONEXIÓN FALLÓ AQUÍ: {str(e)}")
-    st.stop()
 
 # ----------------------------------------------------------------
 ORDER_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
@@ -1041,3 +1024,4 @@ elif menu == "Administrador":
     with t6:
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
