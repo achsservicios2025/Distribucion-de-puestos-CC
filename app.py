@@ -13,12 +13,10 @@ from PIL import Image as PILImage
 from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
-from PIL import Image
-from io import BytesIO
 import base64
 
 # ---------------------------------------------------------
-# 1. PARCHE PARA STREAMLIT >= 1.39
+# 1. PARCHE PARA STREAMLIT >= 1.39 (FIX st_canvas)
 # ---------------------------------------------------------
 import streamlit.elements.lib.image_utils
 
@@ -518,7 +516,7 @@ if menu == "Vista pública":
                 if fpdf.exists(): opts.append("Documento (PDF)")
                 
                 if opts:
-                    if fpng.exists(): st.image(str(fpng), caption=f"{p_sel} - {ds}", width=550)
+                    if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
                     sf = st.selectbox("Formato:", opts, key="dl_pub")
                     tf = fpng if "PNG" in sf else fpdf
                     mim = "image/png" if "PNG" in sf else "application/pdf"
@@ -694,11 +692,13 @@ elif menu == "Reservas":
         # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
         with st.expander("Ver Listado General de Reservas", expanded=True):
             
+            # TÍTULO CORREGIDO 1
             st.subheader("Reserva de puestos") 
             st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
 
             st.markdown("<br>", unsafe_allow_html=True) 
 
+            # TÍTULO CORREGIDO 2
             st.subheader("Reserva de salas") 
             st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
 
@@ -935,28 +935,38 @@ elif menu == "Administrador":
         
         p_sel = c1.selectbox("Piso", pisos_list); d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
         p_num = p_sel.replace("Piso ", "").strip()
-        pim = PLANOS_DIR / f"piso {p_num}.png"
-        if not pim.exists(): pim = PLANOS_DIR / f"piso {p_num}.jpg"
+        
+        # --- CÓDIGO CORREGIDO PARA ELIMINAR ESPACIO Y BASE64 ---
+        
+        # 1. Búsqueda de Archivo (Sin Espacio, asumiendo piso1.png, piso2.png en GitHub)
+        file_base = f"piso{p_num}"
+        pim = PLANOS_DIR / f"{file_base}.png"
+        if not pim.exists(): 
+            pim = PLANOS_DIR / f"{file_base}.jpg"
+        if not pim.exists(): # Fallback para mayúsculas
+            pim = PLANOS_DIR / f"Piso{p_num}.png"
+            
+        print(f"DEBUG PATH FINAL: Buscando {pim}. Existe: {pim.exists()}")
         
         if pim.exists():
-            img = PILImage.open(pim)
+            # Limpiamos la indentación y usamos la conversión Base64
+            img = PILImage.open(pim)
 
-            # 1. Conversión
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            img_url = f"data:image/png;base64,{img_str}" # La URL que el navegador sí entiende
+            # 1. Conversión
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            img_url = f"data:image/png;base64,{img_str}" # La URL que el navegador sí entiende
 
-            # 2. Cálculo de dimensiones
-            cw = 800; w, h = img.size
-            ch = int(h * (cw/w)) if w>cw else h
-            cw = w if w<=cw else cw
+            # 2. Cálculo de dimensiones
+            cw = 800; w, h = img.size
+            ch = int(h * (cw/w)) if w>cw else h
+            cw = w if w<=cw else cw
 
-            # 3. Llamada al Canvas con la URL
-            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
-            # --- FIN DEL CÓDIGO DE CONVERSIÓN ---
-            
-            current_seats_dict = {}
+            # 3. Llamada al Canvas con la URL
+            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
+            # --- FIN DEL CÓDIGO DE CONVERSIÓN ---
+        
             current_seats_dict = {}
             eqs = [""]
             if not df_d.empty:
@@ -1065,7 +1075,7 @@ elif menu == "Administrador":
             tf = fpng if "PNG" in fmt_sel else fpdf
             mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
             if tf.exists():
-                with open(tf,"rb") as f: st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True)
+                with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mm, use_container_width=True)
 
     with t3:
         st.subheader("Generar Reportes de Distribución")
