@@ -83,7 +83,7 @@ try:
     # Prueba de abrir la hoja
     sheet_name = st.secrets["sheets"]["sheet_name"]
     sh = client.open(sheet_name)
-    # MENSAJE DE ÉXITO ELIMINADO AQUÍ PARA QUE NO SALGA EN PANTALLA
+    # st.success(f"✅ CONEXIÓN EXITOSA con la hoja: {sheet_name}") # COMENTADO PARA NO MOSTRAR MENSAJE
 
 except Exception as e:
     st.error(f"🔥 LA CONEXIÓN FALLÓ AQUÍ: {str(e)}")
@@ -523,96 +523,181 @@ if menu == "Vista pública":
                 else: st.warning("No generado.")
 
 # ==========================================
-# B. RESERVAS (UNIFICADO Y REORDENADO)
+# B. RESERVAS (UNIFICADO CON DROPDOWN Y TÍTULOS CORREGIDOS)
 # ==========================================
 elif menu == "Reservas":
     
-    st.header("Gestión de Puestos y Salas")
+    st.header("Gestión de Reservas")
     
-    tab1, tab2, tab3 = st.tabs(["🪑 Reservar Puesto", "🏢 Reservar Sala", "📋 Gestionar Reserva"])
+    # --- MENÚ DESPLEGABLE UNIFICADO ---
+    opcion_reserva = st.selectbox(
+        "¿Qué deseas gestionar hoy?",
+        ["🪑 Reservar Puesto Flex", "🏢 Reservar Sala de Reuniones", "📋 Mis Reservas y Listados"],
+        index=0
+    )
+    st.markdown("---")
 
-    with tab1:
-        st.subheader("Realizar Reserva de Puesto")
-        st.info("Reserva de 'Cupos libres' (Máx 2 mensuales).")
+    # ---------------------------------------------------------
+    # OPCIÓN 1: RESERVAR PUESTO (Con lógica de disponibilidad real)
+    # ---------------------------------------------------------
+    if opcion_reserva == "🪑 Reservar Puesto Flex":
+        st.subheader("Disponibilidad de Puestos")
+        st.info("Reserva de 'Cupos libres' (Máximo 2 días por mes).")
+        
         df = read_distribution_df(conn)
-        if df.empty: st.warning("Sin datos.")
+        
+        if df.empty:
+            st.warning("⚠️ No hay configuración de distribución cargada en el sistema.")
         else:
             c1, c2 = st.columns(2)
-            fe = c1.date_input("Fecha", min_value=datetime.date.today(), key="fp")
-            pi = c2.selectbox("Piso", sort_floors(df["piso"].unique()), key="pp")
-            dn = ORDER_DIAS[fe.weekday()] if fe.weekday()<5 else "FinDeSemana"
+            fe = c1.date_input("Selecciona Fecha", min_value=datetime.date.today(), key="fp")
+            pisos_disp = sort_floors(df["piso"].unique())
+            pi = c2.selectbox("Selecciona Piso", pisos_disp, key="pp")
             
-            if dn=="FinDeSemana": st.error("Es fin de semana. No se pueden realizar reservas.")
+            dn = ORDER_DIAS[fe.weekday()] if fe.weekday() < 5 else "FinDeSemana"
+            
+            if dn == "FinDeSemana":
+                st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
             else:
-                rg = df[(df["piso"]==pi)&(df["dia"]==dn)]
-                if not rg.empty:
-                    sh = rg.drop(columns=[c for c in rg.columns if c.lower() in ['id','created_at']], errors='ignore')
-                    st.dataframe(sh, hide_index=True)
-                c3, c4 = st.columns(2)
-                nm = c3.text_input("Nombre", key="np"); em = c4.text_input("Correo", key="ep")
-                if st.button("Confirmar Puesto", type="primary"):
-                    if not nm or not em: st.error("Datos obligatorios.")
-                    elif "Cupos libres" not in rg["equipo"].values: st.error("No hay cupos.")
-                    elif user_has_reservation(conn, em, str(fe)): st.error("Ya tienes reserva.")
-                    elif count_monthly_free_spots(conn, em, fe)>=2: st.error("Límite mensual.")
-                    else: 
-                        add_reservation(conn, nm, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
-                        msg = f"✅ Reserva Confirmada:\n\n- Usuario: {nm}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
-                        st.success(msg)
-                        send_reservation_email(em, "Confirmación Puesto", msg.replace("\n","<br>"))
-
-    with tab2:
-        st.subheader("Realizar Reserva de Sala")
-        st.info("Reserva de Salas.")
-        sl = st.selectbox("Sala", ["Sala 1 (Piso 1)", "Sala 2 (Piso 2)", "Sala 3 (Piso 3)"])
-        pi_s = "Piso "+sl.split("Piso ")[1].replace(")","")
-        fe_s = st.date_input("Fecha", min_value=datetime.date.today(), key="fs")
-        tm = generate_time_slots("08:00","20:00",15)
-        c1,c2 = st.columns(2)
-        i = c1.selectbox("Inicio", tm); f = c2.selectbox("Fin", tm, index=4)
-        n_s = st.text_input("Nombre", key="ns"); e_s = st.text_input("Correo", key="es")
-        
-        if st.button("Confirmar Sala", type="primary"):
-            if not n_s: st.error("Falta nombre.")
-            elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, i, f): st.error("Ocupada.")
-            else: 
-                add_room_reservation(conn, n_s, e_s, pi_s, sl, str(fe_s), i, f, datetime.datetime.now(datetime.timezone.utc).isoformat())
-                msg = f"✅ Sala Confirmada:\n\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {i} - {f}"
-                st.success(msg)
-                if e_s: send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
-
-    with tab3:
-        st.subheader("Anular o Revisar Reservas")
-        t_anular, t_ver = st.tabs(["Anular", "Ver Todo"])
-        with t_anular:
-            q = st.text_input("Tu Correo/Nombre")
-            if q:
-                # Puestos
-                dp = list_reservations_df(conn)
-                mp = dp[(dp['user_name'].str.lower()==q.lower())|(dp['user_email'].str.lower()==q.lower())]
-                # Salas
-                ds = get_room_reservations_df(conn)
-                ms = ds[(ds['user_name'].str.lower()==q.lower())|(ds['user_email'].str.lower()==q.lower())]
+                rg = df[(df["piso"] == pi) & (df["dia"] == dn) & (df["equipo"] == "Cupos libres")]
                 
-                if mp.empty and ms.empty: st.warning("No se encontraron reservas.")
+                hay_config = False
+                total_cupos = 0
+                disponibles = 0
+                
+                if not rg.empty:
+                    hay_config = True
+                    total_cupos = int(rg.iloc[0]["cupos"])
+                    
+                    all_res = list_reservations_df(conn)
+                    ocupados = 0
+                    if not all_res.empty:
+                        mask = (all_res["reservation_date"].astype(str) == str(fe)) & \
+                               (all_res["piso"] == pi) & \
+                               (all_res["team_area"] == "Cupos libres")
+                        ocupados = len(all_res[mask])
+                    
+                    disponibles = total_cupos - ocupados
+                
+                if not hay_config:
+                    st.warning(f"⚠️ El {pi} no tiene habilitados 'Cupos libres' para los días {dn}.")
                 else:
-                    if not mp.empty:
-                        st.markdown("##### Puestos Reservados")
-                        for i, r in mp.iterrows():
-                            c1, c2 = st.columns([4,1])
-                            c1.write(f"🪑 {r['reservation_date']} | {r['piso']}")
-                            if c2.button("🗑", key=f"dp_{i}"): confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
-                    if not ms.empty:
-                        st.markdown("##### Salas Reservadas")
-                        for i, r in ms.iterrows():
-                            c1, c2 = st.columns([4,1])
-                            c1.write(f"🏢 {r['reservation_date']} | {r['room_name']} ({r['start_time']})")
-                            if c2.button("🗑", key=f"ds_{i}"): confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
-        with t_ver:
-            st.subheader("Detalle Completo de Puestos")
-            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True)
-            st.subheader("Detalle Completo de Salas")
-            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True)
+                    if disponibles > 0:
+                        st.success(f"✅ **HAY CUPO: Quedan {disponibles} puestos disponibles** (Total: {total_cupos}).")
+                    else:
+                        st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
+                    
+                    st.markdown("### Datos del Solicitante")
+                    
+                    with st.form("form_puesto"):
+                        cf1, cf2 = st.columns(2)
+                        nm = cf1.text_input("Nombre Completo")
+                        em = cf2.text_input("Correo Electrónico")
+                        
+                        submitted = st.form_submit_button("Confirmar Reserva", type="primary", disabled=(disponibles <= 0))
+                        
+                        if submitted:
+                            if not nm or not em:
+                                st.error("Por favor completa nombre y correo.")
+                            elif user_has_reservation(conn, em, str(fe)):
+                                st.error("Ya tienes una reserva registrada para esta fecha.")
+                            elif count_monthly_free_spots(conn, em, fe) >= 2:
+                                st.error("Has alcanzado tu límite de 2 reservas mensuales.")
+                            elif disponibles <= 0:
+                                st.error("Lo sentimos, el cupo se acaba de agotar.")
+                            else:
+                                add_reservation(conn, nm, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
+                                msg = f"✅ Reserva Confirmada:\n\n- Usuario: {nm}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
+                                st.success(msg)
+                                send_reservation_email(em, "Confirmación Puesto", msg.replace("\n","<br>"))
+                                st.rerun()
+
+    # ---------------------------------------------------------
+    # OPCIÓN 2: RESERVAR SALA
+    # ---------------------------------------------------------
+    elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
+        st.subheader("Agendar Sala")
+        
+        c_sala, c_fecha = st.columns(2)
+        sl = c_sala.selectbox("Selecciona Sala", ["Sala 1 (Piso 1)", "Sala 2 (Piso 2)", "Sala 3 (Piso 3)"])
+        pi_s = "Piso " + sl.split("Piso ")[1].replace(")", "")
+        fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs")
+        
+        tm = generate_time_slots("08:00", "20:00", 15)
+        
+        st.write("Horario:")
+        ch1, ch2 = st.columns(2)
+        i = ch1.selectbox("Inicio", tm)
+        f = ch2.selectbox("Fin", tm, index=min(4, len(tm)-1))
+        
+        st.markdown("### Datos del Responsable")
+        with st.form("form_sala"):
+            cf1, cf2 = st.columns(2)
+            n_s = cf1.text_input("Nombre Solicitante")
+            e_s = cf2.text_input("Correo Solicitante")
+            
+            sub_sala = st.form_submit_button("Confirmar Sala", type="primary")
+            
+            if sub_sala:
+                if not n_s:
+                    st.error("Falta el nombre.")
+                elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, i, f):
+                    st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
+                else:
+                    add_room_reservation(conn, n_s, e_s, pi_s, sl, str(fe_s), i, f, datetime.datetime.now(datetime.timezone.utc).isoformat())
+                    msg = f"✅ Sala Confirmada:\n\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {i} - {f}"
+                    st.success(msg)
+                    if e_s: send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
+
+    # ---------------------------------------------------------
+    # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
+    # ---------------------------------------------------------
+    elif opcion_reserva == "📋 Mis Reservas y Listados":
+        
+        # --- SECCION 1: BUSCADOR PARA ANULAR ---
+        st.subheader("Buscar y Cancelar mis reservas")
+        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
+        
+        if q:
+            dp = list_reservations_df(conn)
+            mp = dp[(dp['user_name'].str.lower().str.contains(q.lower())) | (dp['user_email'].str.lower().str.contains(q.lower()))]
+            
+            ds = get_room_reservations_df(conn)
+            ms = ds[(ds['user_name'].str.lower().str.contains(q.lower())) | (ds['user_email'].str.lower().str.contains(q.lower()))]
+            
+            if mp.empty and ms.empty:
+                st.warning("No encontré reservas con esos datos.")
+            else:
+                if not mp.empty:
+                    st.markdown("#### 🪑 Tus Puestos")
+                    for idx, r in mp.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
+                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                                confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+
+                if not ms.empty:
+                    st.markdown("#### 🏢 Tus Salas")
+                    for idx, r in ms.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
+                            if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                                confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+
+        st.markdown("---")
+        
+        # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
+        with st.expander("Ver Listado General de Reservas", expanded=True):
+            
+            st.subheader("Reserva de puestos") 
+            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
+
+            st.markdown("<br>", unsafe_allow_html=True) 
+
+            st.subheader("Reserva de salas") 
+            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
 
 # ==========================================
 # E. ADMINISTRADOR
