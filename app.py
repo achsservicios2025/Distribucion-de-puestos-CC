@@ -56,7 +56,7 @@ from streamlit_drawable_canvas import st_canvas
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------
-st.set_page_config(page_title="Distribución de Puestos — ACHS Servicios", layout="wide")
+st.set_page_config(page_title="Distribución de Puestos", layout="wide")
 
 # 1. Verificar si existen los secretos
 if "gcp_service_account" not in st.secrets:
@@ -1118,3 +1118,4 @@ elif menu == "Administrador":
     with t6:
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
