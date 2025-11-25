@@ -936,8 +936,9 @@ elif menu == "Administrador":
         p_sel = c1.selectbox("Piso", pisos_list); d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
         p_num = p_sel.replace("Piso ", "").strip()
         
-        # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO ---
-        # 1. Búsqueda de Archivo (Sin Espacio)
+        # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO (SIN ESPACIO EN RUTA) ---
+        
+        # 1. Búsqueda de Archivo (Sin Espacio, asumiendo piso1.png, piso2.png en GitHub)
         file_base = f"piso{p_num}" # Genera 'piso2'
         
         pim = PLANOS_DIR / f"{file_base}.png"
@@ -946,8 +947,7 @@ elif menu == "Administrador":
         if not pim.exists(): # Fallback a P mayúscula
             pim = PLANOS_DIR / f"Piso{p_num}.png"
             
-        print(f"DEBUG PATH FINAL: Buscando {pim}. Existe: {pim.exists()}")
-        # --- FIN DE BÚSQUEDA ---
+        print(f"DEBUG PATH FINAL: Buscando {pim}. Existe: {pim.exists()}") # Línea de debug (debe ser eliminada después)
         
         if pim.exists():
             # Limpiamos la indentación y usamos la conversión Base64
