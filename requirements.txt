@@ -1,0 +1,10 @@
+streamlit
+pandas
+openpyxl
+matplotlib
+Pillow
+fpdf
+streamlit-drawable-canvas
+xlsxwriter
+gspread
+google-auth
