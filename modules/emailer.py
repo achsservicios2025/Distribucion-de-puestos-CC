@@ -6,28 +6,35 @@ import os
 
 def send_reservation_email(to_email, subject, body_html, logo_path="static/logo.png"):
     """
-    Envía un correo HTML con el logo incrustado (si es posible mediante URL pública o CID).
-    Para simplificar en local, usaremos un diseño HTML limpio.
+    Envía un correo HTML con el logo incrustado (si es posible).
+    Asegura que el remitente sea el usuario de autenticación SMTP para cumplir con Brevo.
     """
     # Intentar obtener credenciales de secrets
     try:
         smtp_server = st.secrets["smtp"]["server"]
         smtp_port = st.secrets["smtp"]["port"]
-        smtp_user = st.secrets["smtp"]["user"]
+        smtp_user = st.secrets["smtp"]["user"] # Usuario Brevo (e.g., 9bdaad001@smtp-brevo.com)
         smtp_password = st.secrets["smtp"]["password"]
-    except:
-        print("No se encontraron credenciales SMTP en .streamlit/secrets.toml")
+    except KeyError:
+        print("ERROR SMTP: No se encontraron todas las credenciales SMTP en secrets.toml")
+        return False
+    except Exception as e:
+        print(f"Error al cargar secretos SMTP: {e}")
         return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = smtp_user
+    
+    # ----------------------------------------------------
+    # CORRECCIÓN CLAVE: Asignamos un nombre visible al remitente
+    # Esto usa el email de autenticación (smtp_user) para garantizar el envío
+    display_name = "ACHS Servicios - Gestión"
+    msg["From"] = f"{display_name} <{smtp_user}>"
+    # ----------------------------------------------------
+    
     msg["To"] = to_email
 
     # Diseño HTML Profesional
-    # Nota: Las imágenes locales no se ven en correos a menos que se adjunten como CID o estén en un servidor público.
-    # Aquí usamos un marcador de posición para el título si no hay imagen pública.
-    
     html_content = f"""
     <html>
     <head>
@@ -67,8 +74,9 @@ def send_reservation_email(to_email, subject, body_html, logo_path="static/logo.
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls()
             server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, to_email, msg.as_string())
+            # Aseguramos que el envío use el usuario autenticado como remitente
+            server.sendmail(smtp_user, to_email, msg.as_string()) 
         return True
     except Exception as e:
-        print(f"Error enviando email: {e}")
+        print(f"Error enviando email: Falló la conexión SMTP o la autenticación. Detalle: {e}")
         return False
