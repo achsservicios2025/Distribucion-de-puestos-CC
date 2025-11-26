@@ -988,7 +988,8 @@ elif menu == "Administrador":
             
             if c3.button("Guardar", key="sz"):
                 if tn and canvas.json_data["objects"]:
-                    o = canvas.json_data["objects"][-1] zonas.setdefault(p_sel, []).append({ "team": tn, "x": int(o.get("left", 0)), "y": int(o.get("top", 0)), "w": int(o.get("width", 0) * o.get("scaleX", 1)), "h": int(o.get("height", 0) * o.get("scaleY", 1)), "color": tc }) save_zones(zonas) st.success("OK")
+                    o = canvas.json_data["objects"][-1]
+                    zonas.setdefault(p_sel, []).append({ "team": tn, "x": int(o.get("left", 0)), "y": int(o.get("top", 0)), "w": int(o.get("width", 0) * o.get("scaleX", 1)), "h": int(o.get("height", 0) * o.get("scaleY", 1)), "color": tc }) save_zones(zonas) st.success("OK")
                     save_zones(zonas); st.success("OK")
             
             st.divider()
