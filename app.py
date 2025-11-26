@@ -17,11 +17,10 @@ import base64 # Necesario para la solución estable de st_canvas
 
 # ---------------------------------------------------------
 # 1. PARCHE DE COMPATIBILIDAD ELIMINADO
-#    Se elimina la sección de parche para evitar conflictos de módulos.
 # ---------------------------------------------------------
 
 # ---------------------------------------------------------
-# 2. IMPORTACIONES DE MÓDULOS (Consolidadas)
+# 2. IMPORTACIONES DE MÓDULOS (Consolidadas y Resilientes)
 # ---------------------------------------------------------
 from modules.database import (
     get_conn, init_db, insert_distribution, clear_distribution,
@@ -39,7 +38,12 @@ from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones, create_header_image 
 from modules.pdfgen import create_merged_pdf, generate_full_pdf, sort_floors, apply_sorting_to_df, clean_pdf_text
-from streamlit_drawable_canvas_fix import st_canvas # IMPORTACIÓN CORREGIDA A LA VERSIÓN ESTABLE
+
+# BLOQUE DE IMPORTACIÓN RESILIENTE PARA st_canvas
+try:
+    from streamlit_drawable_canvas_fix import st_canvas # Intentar importar el fix
+except ImportError:
+    from streamlit_drawable_canvas import st_canvas # Fallback a la versión original
 
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
@@ -683,8 +687,9 @@ elif menu == "Administrador":
             else:
                 cw, ch = w, h
 
-            # 3. Llamada al Canvas: Usamos el objeto PIL. Como el objeto PIL tiene .width y .height,
-            # la función interna _resize_img (línea 50) debería funcionar ahora.
+            # 3. Llamada al Canvas: Usamos el objeto PIL. 
+            # La librería "fix" (que asumimos está instalada) o la original 
+            # debería poder manejar el objeto PIL con las dimensiones explícitas.
             canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
         
             current_seats_dict = {}
