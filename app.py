@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import datetime
@@ -412,7 +411,7 @@ def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
     c1, c2 = st.columns(2)
     if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_s"):
         if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
+    if c2.button("Cancelar", width="stretch", key="no_p"): st.rerun()
 
 # --- UTILS TOKENS ---
 def generate_token(): return uuid.uuid4().hex[:8].upper()
@@ -422,7 +421,7 @@ def generate_token(): return uuid.uuid4().hex[:8].upper()
 # ---------------------------------------------------------
 conn = get_conn()
 
-# MODIFICADO: Protección para no inicializar DB mil veces
+# MODIFICADO: Protección para no inicializar DB mil veces (Error 429)
 if "db_initialized" not in st.session_state:
     with st.spinner('Conectando a Google Sheets...'):
         init_db(conn)
@@ -437,7 +436,7 @@ if "app_settings" not in st.session_state:
 settings = st.session_state["app_settings"]
 
 # Definir variables
-site_title = settings.get("site_title", "Gestor de Puestos y Salas")
+site_title = settings.get("site_title", "Gestor de Puestos y Salas — ACHS Servicios")
 global_logo_path = settings.get("logo_path", "static/logo.png")
 
 if os.path.exists(global_logo_path):
@@ -662,6 +661,7 @@ elif menu == "Reservas":
         
         if q:
             dp = list_reservations_df(conn)
+            # ERROR EN ESTA LÍNEA -> DP NO TIENE COLUMNA 'user_name'
             mp = dp[(dp['user_name'].str.lower().str.contains(q.lower())) | (dp['user_email'].str.lower().str.contains(q.lower()))]
             
             ds = get_room_reservations_df(conn)
@@ -843,7 +843,7 @@ elif menu == "Administrador":
             c_actions = st.columns([1, 1, 1])
             
             # Botón 1: Regenerar simple
-            if c_actions[0].button("🔄 Regenerar"):
+            if c_actions[0].button("🔄 Probar otra suerte"):
                 with st.spinner("Generando nueva variación..."):
                     rows, deficit = get_distribution_proposal(
                         st.session_state['excel_equipos'], 
@@ -929,32 +929,32 @@ elif menu == "Administrador":
         st.info("Editor de Zonas")
         zonas = load_zones()
         c1, c2 = st.columns(2)
-    
+        
         # MODIFICADO: Leer con funcion importada
         df_d = read_distribution_df(conn)
         pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
-    
+        
         p_sel = c1.selectbox("Piso", pisos_list); d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
-    
-        # 1. Obtenemos el número del piso (ej: '2')
-        p_num = p_sel.replace("Piso ", "").strip() 
-    
-        # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO (SIN ESPACIO) ---
-    
+        p_num = p_sel.replace("Piso ", "").strip()
+        
+        # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO (SIN ESPACIO EN RUTA) ---
+        
+        # 1. Búsqueda de Archivo (Sin Espacio)
         file_base = f"piso{p_num}" # Genera 'piso2'
-    
+        
         # Búsqueda rigurosa de las opciones de capitalización/extensión
         pim = PLANOS_DIR / f"{file_base}.png"
         if not pim.exists(): 
             pim = PLANOS_DIR / f"{file_base}.jpg"
-        if not pim.exists(): # Fallback a P mayúscula (Piso2.png)
+        if not pim.exists(): # Fallback a P mayúscula
             pim = PLANOS_DIR / f"Piso{p_num}.png"
-    
+            
+        
         if pim.exists():
             # Limpiamos la indentación y usamos la conversión Base64
             img = PILImage.open(pim)
 
-        # 1. Conversión
+            # 1. Conversión
             buffered = BytesIO()
             img.save(buffered, format="PNG")
             img_str = base64.b64encode(buffered.getvalue()).decode()
@@ -967,14 +967,14 @@ elif menu == "Administrador":
 
             # 3. Llamada al Canvas con la URL
             canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
-    
+        
             current_seats_dict = {}
             eqs = [""]
             if not df_d.empty:
                 subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
                 current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
                 eqs += sorted(subset['equipo'].unique().tolist())
-        
+            
             salas_piso = []
             if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
             elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
@@ -984,13 +984,13 @@ elif menu == "Administrador":
             c1, c2, c3 = st.columns([2,1,1])
             tn = c1.selectbox("Equipo / Sala", eqs); tc = c2.color_picker("Color", "#00A04A")
             if tn and tn in current_seats_dict: st.info(f"Cupos: {current_seats_dict[tn]}")
-        
+            
             if c3.button("Guardar", key="sz"):
                 if tn and canvas.json_data["objects"]:
                     o = canvas.json_data["objects"][-1]
                     zonas.setdefault(p_sel, []).append({"team": tn, "x": int(o["left"]), "y": int(o["top"]), "w": int(o["width"]*o.get("scaleX",1)), "h": int(o["height"]*o.get("scaleY",1)), "color": tc})
                     save_zones(zonas); st.success("OK")
-        
+            
             st.divider()
             if p_sel in zonas:
                 for i, z in enumerate(zonas[p_sel]):
@@ -1003,7 +1003,7 @@ elif menu == "Administrador":
             with st.expander("🎨 Editar Estilos", expanded=True):
                 tm = st.text_input("Título Principal", f"Distribución {p_sel}")
                 ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}")
-            
+                
                 align_options = ["Izquierda", "Centro", "Derecha"]
 
                 st.markdown("##### Estilos del Título Principal")
@@ -1025,21 +1025,21 @@ elif menu == "Administrador":
                 ff_l = cl1.selectbox("Tipografía (Leyenda)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_l", index=0)
                 fs_l = cl2.selectbox("Tamaño Letra (Leyenda)", [8, 10, 12, 14, 16, 18, 20, 24, 28, 32], index=3, key="size_l")
                 align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0)
-            
+                
                 st.markdown("---")
                 cg1, cg2, cg3, cg4 = st.columns(4) 
                 lg = cg1.checkbox("Logo", True, key="chk_logo"); 
                 ln = cg2.checkbox("Mostrar Leyenda", True, key="chk_legend");
                 align_logo = cg3.selectbox("Alineación Logo", align_options, index=0)
                 lw = cg4.slider("Ancho Logo", 50, 300, 150)
-            
+                
                 cc1, cc2 = st.columns(2)
                 bg = cc1.color_picker("Fondo Header", "#FFFFFF"); tx = cc2.color_picker("Color Texto", "#000000")
 
             fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"])
             f_code = "PNG" if "PNG" in fmt_sel else "PDF"
-        
-            if st.button("Actualizar Vista Previa"):
+            
+            if st.button("🎨 Actualizar Vista Previa"):
                 conf = {
                     "title_text": tm,
                     "subtitle_text": ts,
@@ -1062,17 +1062,17 @@ elif menu == "Administrador":
                 }
                 # CAMBIO: Guardar config en session_state para usarla en dossier PDF
                 st.session_state['last_style_config'] = conf
-            
+                
                 out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
                 if out: st.success("Generado.")
-        
+            
             ds = d_sel.lower().replace("é","e").replace("á","a")
             fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
             fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
-        
+            
             if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
             elif fpdf.exists(): st.info("PDF generado (sin vista previa)")
-        
+            
             tf = fpng if "PNG" in fmt_sel else fpdf
             mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
             if tf.exists():
@@ -1122,7 +1122,7 @@ elif menu == "Administrador":
             if 'dos' in st.session_state: st.download_button("Descargar Dossier", st.session_state['dos'], "S.pdf", "application/pdf")
         else:
             ds = di.lower().replace("é","e").replace("á","a")
-            fp = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
+            fpng = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
             fd = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.pdf"
             ops = []
             if fp.exists(): ops.append("Imagen (PNG)")
@@ -1144,5 +1144,3 @@ elif menu == "Administrador":
     with t6:
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
-
-
