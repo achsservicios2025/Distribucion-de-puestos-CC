@@ -986,29 +986,48 @@ elif menu == "Administrador":
             tn = c1.selectbox("Equipo / Sala", eqs); tc = c2.color_picker("Color", "#00A04A")
             if tn and tn in current_seats_dict: st.info(f"Cupos: {current_seats_dict[tn]}")
             
-            if c3.button("Guardar", key="sz"):
-                if tn and canvas.json_data["objects"]:
-                    o = canvas.json_data["objects"][-1]
-                    o = canvas.json_data["objects"][-1]
-zonas.setdefault(p_sel, []).append({
-    "team": tn,
-    "x": int(o.get("left", 0)),
-    "y": int(o.get("top", 0)),
-    "w": int(o.get("width", 0) * o.get("scaleX", 1)),
-    "h": int(o.get("height", 0) * o.get("scaleY", 1)),
-    "color": tc
-})
+# Selección e info
+c1, c2, c3 = st.columns([2, 1, 1])
+tn = c1.selectbox("Equipo / Sala", eqs)
+tc = c2.color_picker("Color", "#00A04A")
 
-save_zones(zonas)
-st.success("OK")
+if tn and tn in current_seats_dict:
+    st.info(f"Cupos: {current_seats_dict[tn]}")
 
-            
-            st.divider()
-            if p_sel in zonas:
-                for i, z in enumerate(zonas[p_sel]):
-                    c1, c2 = st.columns([4,1])
-                    c1.markdown(f"<span style='color:{z['color']}'>■</span> {z['team']}</span>", unsafe_allow_html=True)
-                    if c2.button("X", key=f"d{i}"): zonas[p_sel].pop(i); save_zones(zonas); st.rerun()
+# Guardar última figura dibujada en el canvas
+if c3.button("Guardar", key="sz"):
+    # Verifica que haya algún objeto dibujado
+    if tn and canvas.json_data and canvas.json_data.get("objects"):
+        o = canvas.json_data["objects"][-1]  # último rectángulo dibujado
+
+        zonas.setdefault(p_sel, []).append({
+            "team": tn,
+            "x": int(o.get("left", 0)),
+            "y": int(o.get("top", 0)),
+            "w": int(o.get("width", 0) * o.get("scaleX", 1)),
+            "h": int(o.get("height", 0) * o.get("scaleY", 1)),
+            "color": tc
+        })
+
+        save_zones(zonas)
+        st.success("OK")
+    else:
+        st.warning("No hay figura dibujada o no seleccionaste equipo/sala.")
+
+st.divider()
+
+# Listado y eliminación de zonas guardadas
+if p_sel in zonas:
+    for i, z in enumerate(zonas[p_sel]):
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(
+            f"<span style='color:{z['color']}'>■</span> {z['team']}",
+            unsafe_allow_html=True
+        )
+        if c2.button("X", key=f"d{i}"):
+            zonas[p_sel].pop(i)
+            save_zones(zonas)
+            st.rerun()
 
             st.divider()
             st.subheader("Personalización Título y Leyenda")
