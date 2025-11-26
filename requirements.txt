@@ -1,4 +1,4 @@
-# requirements.txt - Lista optimizada y congelada
+# requirements.txt - LISTA FINAL Y ESTABLE
 # ------------------------------------------------
 # Frameworks (Fijamos las versiones encontradas)
 dash==3.3.0
@@ -16,8 +16,8 @@ gspread==6.2.1
 google-auth==2.41.1
 
 # Extensiones de Interfaz
-streamlit-drawable-canvas==0.9.3
-streamlit-drawable-canvas-fix==0.9.7
+streamlit-drawable-canvas-fix==0.9.7  # <--- USAR EL FIX
+# streamlit-drawable-canvas==0.9.3    # <--- ELIMINAR O COMENTAR ESTA LÍNEA
 
 # Utilidades
 matplotlib==3.10.7
