@@ -18,7 +18,6 @@ import base64 # Requerido para la solución robusta del st_canvas
 # ---------------------------------------------------------
 # 1. PARCHE (ELIMINADO Y REEMPLAZADO POR SOLUCIÓN DIRECTA)
 # ---------------------------------------------------------
-# Se elimina el parche complejo que falla por una solución directa de Base64 en la línea 702.
 # ---------------------------------------------------------
 
 # ---------------------------------------------------------
@@ -689,9 +688,9 @@ elif menu == "Administrador":
             img_str = base64.b64encode(buffered.getvalue()).decode()
             background_image_url = f"data:image/png;base64,{img_str}"
             
-            # 4. Llamada al Canvas usando SOLO la URL de datos y las dimensiones calculadas.
-            # Esta línea (702 original) ha sido modificada para no pasar el objeto img.
-            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=background_image_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
+            # 4. Llamada al Canvas usando SOLO la URL de datos. 
+            # ¡Se eliminan los parámetros width=cw, height=ch para que la librería no intente redimensionar!
+            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=background_image_url, update_streamlit=True, drawing_mode="rect", key=f"cv_{p_sel}")
         
             current_seats_dict = {}
             eqs = [""]
@@ -713,6 +712,7 @@ elif menu == "Administrador":
             if c3.button("Guardar", key="sz"):
                 if tn and canvas.json_data and canvas.json_data["objects"]: # Check robusto
                     o = canvas.json_data["objects"][-1]
+                    # Nota: Las coordenadas del canvas estarán en el tamaño final (cw, ch)
                     zonas.setdefault(p_sel, []).append({"team": tn, "x": int(o["left"]), "y": int(o["top"]), "w": int(o["width"]*o.get("scaleX",1)), "h": int(o["height"]*o.get("scaleY",1)), "color": tc})
                     save_zones(zonas); st.success("OK")
                 elif not canvas.json_data or not canvas.json_data.get("objects"):
