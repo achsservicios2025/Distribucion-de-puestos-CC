@@ -13,35 +13,13 @@ from PIL import Image as PILImage
 from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
-import base64
+import base64 # Requerido para la solución robusta del st_canvas
 
 # ---------------------------------------------------------
-# 1. PARCHE CRÍTICO PARA STREAMLIT >= 1.39 (FIX st_canvas)
+# 1. PARCHE (ELIMINADO Y REEMPLAZADO POR SOLUCIÓN DIRECTA)
 # ---------------------------------------------------------
-# Este parche es CRÍTICO para resolver el error: st_image.image_to_url
-try:
-    import streamlit.elements.lib.image_utils
-    
-    if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
-        # Guardamos la función original de la ruta correcta
-        _orig_image_to_url = streamlit.elements.lib.image_utils.image_to_url
-
-        @dataclass
-        class WidthConfig:
-            width: int
-
-        def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-            if isinstance(width, int):
-                width = WidthConfig(width=width)
-            # Llamamos a la función original con los argumentos ajustados
-            return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
-
-        # Reemplazamos el método roto en el módulo Streamlit
-        streamlit.elements.lib.image_utils.image_to_url = _patched_image_to_url
-except Exception as e:
-    # Si el parche falla (e.g., ruta de Streamlit cambió), ignoramos para no detener la carga
-    pass
-
+# Se elimina el parche complejo que falla por una solución directa de Base64 en la línea 702.
+# ---------------------------------------------------------
 
 # ---------------------------------------------------------
 # 2. IMPORTACIONES DE MÓDULOS (Consolidadas)
@@ -691,15 +669,22 @@ elif menu == "Administrador":
             
         
         if pim.exists():
-            # Optimización: Carga de imagen para st_canvas sin Base64
+            # 1. Carga de imagen
             img = PILImage.open(pim)
             
             cw = 800; w, h = img.size
             ch = int(h * (cw/w)) if w>cw else h
             cw = w if w<=cw else cw
 
-            # Se usa la imagen PIL (el parche se encarga de la compatibilidad)
-            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
+            # 2. SOLUCIÓN ROBUSTA: Codificación a URL Base64 para eludir la función rota
+            # Esto es necesario porque el parche falló.
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            background_image_url = f"data:image/png;base64,{img_str}"
+            
+            # 3. Llamada al Canvas usando la URL de datos
+            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=background_image_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
         
             current_seats_dict = {}
             eqs = [""]
