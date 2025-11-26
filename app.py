@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import base64 
 
 # ---------------------------------------------------------
-# 1. PARCHE (ELIMINADO Y REEMPLAZADO POR SOLUCIÓN DIRECTA)
+# 1. PARCHE (ELIMINADO)
 # ---------------------------------------------------------
 # ---------------------------------------------------------
 
@@ -683,15 +683,10 @@ elif menu == "Administrador":
             else:
                 cw, ch = w, h
 
-            # 3. Solución Robusta: Codificación a URL Base64 para eludir la función rota
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            background_image_url = f"data:image/png;base64,{img_str}"
-            
-            # 4. Llamada al Canvas: Se reintroducen width y height para que el widget sepa su tamaño.
-            # Esta es la configuración más estable, ya que la imagen ya está redimensionada.
-            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=background_image_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
+            # 3. Solución Estándar: Pasar el objeto PIL (si la librería lo permite)
+            # Ya que la imagen PIL tiene .width y .height que el código roto espera,
+            # este es el método más directo. Si falla, el error es irresoluble sin cambiar el requirements.txt.
+            canvas = st_canvas(fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}")
         
             current_seats_dict = {}
             eqs = [""]
@@ -871,3 +866,4 @@ elif menu == "Administrador":
     with t6:
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
