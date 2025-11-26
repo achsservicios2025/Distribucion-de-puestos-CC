@@ -1,3 +1,4 @@
+# modules/pdfgen.py (Código completo y limpio)
 import pandas as pd
 import tempfile
 import os
@@ -13,11 +14,10 @@ from PIL import Image
 from modules.zones import load_zones, generate_colored_plan, COLORED_DIR, PLANOS_DIR 
 
 # --- CONFIGURACIÓN DE RUTAS ---
-# Se asume que STATIC_DIR, PLANOS_DIR, COLORED_DIR ya existen en el entorno
 PLANOS_DIR = Path("planos")
 COLORED_DIR = Path("planos_coloreados")
 
-# --- FUNCIONES HELPER GLOBALES ---
+# --- FUNCIONES HELPER GLOBALES (clean_pdf_text, sort_floors, apply_sorting_to_df) ---
 
 def clean_pdf_text(text: str) -> str:
     """Limpia caracteres especiales para compatibilidad con FPDF."""
@@ -82,7 +82,7 @@ def create_merged_pdf(piso_sel, order_dias, conn, read_distribution_df_func, glo
         if not day_config.get("subtitle_text") or "Día:" not in str(day_config.get("subtitle_text","")):
             day_config["subtitle_text"] = f"Día: {dia}"
 
-        # 1. Generar la imagen PNG del plano para este día (se fuerza PNG para FPDF)
+        # Se llama a generate_colored_plan (que genera PNG)
         img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
         
         if img_path and Path(img_path).exists():
@@ -92,13 +92,13 @@ def create_merged_pdf(piso_sel, order_dias, conn, read_distribution_df_func, glo
             except: pass
             
     if not found_any: return None
-    # Devolver el binario del PDF
     try: return pdf.output(dest='S').encode('latin-1')
     except: return None
 
 def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None):
     """
     Genera el reporte PDF de distribución con tablas diaria, semanal y déficit.
+    (Lógica detallada de generación de tablas, resúmenes, y déficit. Se mantiene la lógica robusta.)
     """
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
@@ -189,7 +189,6 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
         pdf.set_text_color(0, 0, 0)
         pdf.ln(5)
         
-        # Lógica de tabla de déficit (la misma robusta implementada anteriormente)
         pdf.set_font("Arial", 'B', 8)  
         dw = [15, 45, 20, 15, 15, 15, 65]
         dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
@@ -198,10 +197,6 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
         pdf.set_font("Arial", '', 8)
 
         for d in deficit_data:
-            # Se omite el código repetitivo de dibujo de filas del déficit por brevedad, 
-            # pero se mantiene en la versión final del archivo que usarás.
-
-            # ... (Lógica completa de dibujo de filas con multi_cell y manejo de altura)
             piso = clean_pdf_text(d.get('piso',''))
             equipo = clean_pdf_text(d.get('equipo',''))
             dia = clean_pdf_text(d.get('dia',''))
@@ -212,8 +207,6 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
 
             line_height = 5
             
-            # Cálculo de la altura máxima requerida para la fila
-            # Se usa FPDF.multi_cell con split_only para simular la división de texto sin dibujar
             current_x = pdf.get_x()
             current_y = pdf.get_y()
 
@@ -223,7 +216,6 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
             max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
             row_height = max_lines * line_height
             
-            # Lógica para añadir página si no cabe
             if pdf.get_y() + row_height > 270:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 8)
@@ -236,35 +228,32 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
 
             x_start = pdf.get_x()
 
-            # DIBUJO DE CELDAS ESTÁTICAS
             pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
             
-            # DIBUJO DE MULTI_CELL EQUIPO
             pdf.set_xy(x_start + dw[0], y_start)
             pdf.multi_cell(dw[1], line_height, equipo, 1, 'L', fill=False)
             
-            # RESTAURAR POSICIÓN Y DIBUJAR CELDAS ESTÁTICAS RESTANTES
             pdf.set_xy(x_start + dw[0] + dw[1], y_start)
 
             pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
             pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
             pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
 
-            # CELDA DE DÉFICIT EN ROJO
             pdf.set_font("Arial", 'B', 8)
             pdf.set_text_color(180, 0, 0)
             pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
             pdf.set_text_color(0, 0, 0)
             pdf.set_font("Arial", '', 8)
 
-            # DIBUJO DE MULTI_CELL CAUSA
             pdf.set_xy(x_start + dw[0] + dw[1] + dw[2] + dw[3] + dw[4] + dw[5], y_start)
             pdf.multi_cell(dw[6], line_height, causa, 1, 'L', fill=False)
             
-            # RESTAURAR POSICIÓN DE INICIO DE FILA PARA LA SIGUIENTE
             pdf.set_xy(x_start, y_start + row_height)
 
+    try: return pdf.output(dest='S').encode('latin-1')
+    except: return None
 
     # Devolver el binario del PDF
     try: return pdf.output(dest='S').encode('latin-1')
     except: return None
+
