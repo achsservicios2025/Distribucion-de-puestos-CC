@@ -252,8 +252,3 @@ def generate_full_pdf(distrib_df, logo_path, deficit_data=None, order_dias=None)
 
     try: return pdf.output(dest='S').encode('latin-1')
     except: return None
-
-    # Devolver el binario del PDF
-    try: return pdf.output(dest='S').encode('latin-1')
-    except: return None
-
