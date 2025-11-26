@@ -926,75 +926,105 @@ elif menu == "Administrador":
                     st.error(f"Error al guardar: {e}")
 
     with t2:
-        st.info("Editor de Zonas")
-        zonas = load_zones()
-        c1, c2 = st.columns(2)
+    st.info("Editor de Zonas")
+    zonas = load_zones()
+    c1, c2 = st.columns(2)
+    
+    # Leer distribución
+    df_d = read_distribution_df(conn)
+    pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+    
+    p_sel = c1.selectbox("Piso", pisos_list)
+    d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
+    p_num = p_sel.replace("Piso ", "").strip()
+    
+    # --- Carga del plano ---
+    file_base = f"piso{p_num}"
+    pim = PLANOS_DIR / f"{file_base}.png"
+    if not pim.exists():
+        pim = PLANOS_DIR / f"{file_base}.jpg"
+    if not pim.exists():
+        pim = PLANOS_DIR / f"Piso{p_num}.png"
         
-        # MODIFICADO: Leer con funcion importada
-        df_d = read_distribution_df(conn)
-        pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+    if pim.exists():
+        img = PILImage.open(pim)
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        img_url = f"data:image/png;base64,{img_str}"
         
-        p_sel = c1.selectbox("Piso", pisos_list); d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
-        p_num = p_sel.replace("Piso ", "").strip()
+        cw = 800
+        w, h = img.size
+        ch = int(h * (cw / w)) if w > cw else h
+        cw = w if w <= cw else cw
         
-        # --- CÓDIGO CORREGIDO PARA LA CARGA DEL PLANO ---
+        canvas = st_canvas(
+            fill_color="rgba(0, 160, 74, 0.3)",
+            stroke_width=2,
+            stroke_color="#00A04A",
+            background_image=img_url,
+            update_streamlit=True,
+            width=cw,
+            height=ch,
+            drawing_mode="rect",
+            key=f"cv_{p_sel}"
+        )
         
-        # 1. Búsqueda de Archivo (Sin Espacio)
-        file_base = f"piso{p_num}" # Genera 'piso2'
+        current_seats_dict = {}
+        eqs = [""]
+        if not df_d.empty:
+            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+            eqs += sorted(subset['equipo'].unique().tolist())
         
-        # Búsqueda rigurosa de las tres opciones de capitalización/extensión
-        pim = PLANOS_DIR / f"{file_base}.png"
-        if not pim.exists(): 
-            pim = PLANOS_DIR / f"{file_base}.jpg"
-        if not pim.exists(): # Fallback a P mayúscula
-            pim = PLANOS_DIR / f"Piso{p_num}.png"
-            
+        salas_piso = []
+        if "1" in p_sel:
+            salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
+        elif "2" in p_sel:
+            salas_piso = ["Sala Reuniones - Piso 2"]
+        elif "3" in p_sel:
+            salas_piso = ["Sala Reuniones - Piso 3"]
+        eqs = eqs + salas_piso
         
-        if pim.exists():
-            # Limpiamos la indentación y usamos la conversión Base64
-            img = PILImage.open(pim)
+        c1, c2, c3 = st.columns([2, 1, 1])
+        tn = c1.selectbox("Equipo / Sala", eqs)
+        tc = c2.color_picker("Color", "#00A04A")
+        
+        if tn and tn in current_seats_dict:
+            st.info(f"Cupos: {current_seats_dict[tn]}")
+        
+        # Guardar última figura dibujada
+        if c3.button("Guardar", key="sz"):
+            if tn and canvas.json_data and canvas.json_data.get("objects"):
+                o = canvas.json_data["objects"][-1]
+                zonas.setdefault(p_sel, []).append({
+                    "team": tn,
+                    "x": int(o.get("left", 0)),
+                    "y": int(o.get("top", 0)),
+                    "w": int(o.get("width", 0) * o.get("scaleX", 1)),
+                    "h": int(o.get("height", 0) * o.get("scaleY", 1)),
+                    "color": tc
+                })
+                save_zones(zonas)
+                st.success("OK")
+            else:
+                st.warning("No hay figura dibujada o no seleccionaste equipo/sala.")
+        
+        st.divider()
+        
+        # Listado y eliminación de zonas guardadas
+        if p_sel in zonas:
+            for i, z in enumerate(zonas[p_sel]):
+                c1, c2 = st.columns([4, 1])
+                c1.markdown(
+                    f"<span style='color:{z['color']}'>■</span> {z['team']}",
+                    unsafe_allow_html=True
+                )
+                if c2.button("X", key=f"d{i}"):
+                    zonas[p_sel].pop(i)
+                    save_zones(zonas)
+                    st.rerun()
 
-            # 1. Conversión
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            img_url = f"data:image/png;base64,{img_str}" # La URL que el navegador sí entiende
-
-            # 2. Cálculo de dimensiones
-            cw = 800; w, h = img.size
-            ch = int(h * (cw/w)) if w>cw else h
-            cw = w if w<=cw else cw
-
-            # 3. Llamada al Canvas con la URL
-            canvas = st_canvas( fill_color="rgba(0, 160, 74, 0.3)", stroke_width=2, stroke_color="#00A04A", background_image=img_url, update_streamlit=True, width=cw, height=ch, drawing_mode="rect", key=f"cv_{p_sel}" )
-            # --- FIN DEL CÓDIGO DE CONVERSIÓN ---
-        
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones - Piso 3"]
-            eqs = eqs + salas_piso
-
-            c1, c2, c3 = st.columns([2,1,1])
-            tn = c1.selectbox("Equipo / Sala", eqs); tc = c2.color_picker("Color", "#00A04A")
-            if tn and tn in current_seats_dict: st.info(f"Cupos: {current_seats_dict[tn]}")
-            
-# Selección e info
-c1, c2, c3 = st.columns([2, 1, 1])
-tn = c1.selectbox("Equipo / Sala", eqs)
-tc = c2.color_picker("Color", "#00A04A")
-
-if tn and tn in current_seats_dict:
-    st.info(f"Cupos: {current_seats_dict[tn]}")
-
-# Guardar última figura dibujada en el canvas
 if c3.button("Guardar", key="sz"):
     # Verifica que haya algún objeto dibujado
     if tn and canvas.json_data and canvas.json_data.get("objects"):
@@ -1178,3 +1208,4 @@ if p_sel in zonas:
 
 
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
