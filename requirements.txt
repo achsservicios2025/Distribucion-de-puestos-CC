@@ -1,29 +1,13 @@
-# requirements.txt - Lista optimizada y congelada
-# ------------------------------------------------
-# Frameworks (Fijamos las versiones encontradas)
-dash==3.3.0
-dash-core-components==2.0.0
-dash-html-components==2.0.0
-dash-table==5.0.0
-streamlit==1.50.0
-
-# Librerías de I/O y Datos
-pandas==2.3.3
-openpyxl==3.1.5
-xlsxwriter
-numpy==1.26.4
-gspread==6.2.1
-google-auth==2.41.1
-
-# Extensiones de Interfaz
+# requirements.txt - VERSIÓN COMPATIBLE CON PYTHON 3.13
+streamlit==1.32.0
 streamlit-drawable-canvas==0.9.3
-streamlit-drawable-canvas-fix==0.9.7
-
-# Utilidades
-matplotlib==3.10.7
-Pillow==10.2.0
+pandas==2.2.1
+numpy==1.26.4
+Pillow==11.0.0
+gspread==6.0.0
+google-auth==2.27.0
 fpdf==1.7.2
-gunicorn==23.0.0
+openpyxl
+xlsxwriter
+matplotlib
 requests
- 
-
