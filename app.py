@@ -10,58 +10,16 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from fpdf import FPDF
 from PIL import Image as PILImage
-from PIL import Image
+from PIL import Image, ImageDraw
 from io import BytesIO
 from dataclasses import dataclass
 import base64
 import numpy as np
 
 # ---------------------------------------------------------
-# 1. PARCHE COMPATIBLE CON STREAMLIT >= 1.51.0
+# 1. CONFIGURACIÓN SIMPLIFICADA - ELIMINAMOS EL PARCHE COMPLEJO
 # ---------------------------------------------------------
-import streamlit as st
-import streamlit.elements.image as st_image
-import streamlit.runtime.media_file_storage as media_file_storage
-
-# Parche para compatibilidad con versiones recientes de Streamlit
-try:
-    # Intentar encontrar la función image_to_url en las nuevas ubicaciones
-    if hasattr(st_image, 'image_to_url'):
-        # Streamlit < 1.39
-        _orig_image_to_url = st_image.image_to_url
-    elif hasattr(media_file_storage, 'MediaFileStorage') and hasattr(media_file_storage.MediaFileStorage, 'image_to_url'):
-        # Streamlit >= 1.39
-        _orig_image_to_url = media_file_storage.MediaFileStorage.image_to_url
-    else:
-        # Último recurso: buscar en elementos lib
-        import streamlit.elements.lib as elements_lib
-        if hasattr(elements_lib, 'image_utils'):
-            _orig_image_to_url = elements_lib.image_utils.image_to_url
-        else:
-            _orig_image_to_url = None
-    
-    if _orig_image_to_url:
-        from dataclasses import dataclass
-        
-        @dataclass
-        class WidthConfig:
-            width: int
-
-        def _patched_image_to_url(image, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-            if isinstance(width, int):
-                width = WidthConfig(width=width)
-            return _orig_image_to_url(image, width, clamp, channels, output_format, image_id)
-        
-        # Aplicar el parche según la ubicación encontrada
-        if hasattr(st_image, 'image_to_url'):
-            st_image.image_to_url = _patched_image_to_url
-        elif hasattr(media_file_storage.MediaFileStorage, 'image_to_url'):
-            media_file_storage.MediaFileStorage.image_to_url = _patched_image_to_url
-        else:
-            elements_lib.image_utils.image_to_url = _patched_image_to_url
-            
-except Exception as e:
-    st.warning(f"El parche de compatibilidad no pudo aplicarse: {e}")
+# Eliminamos el parche problemático y usamos una solución más simple
 
 # ---------------------------------------------------------
 # 2. IMPORTACIONES DE MÓDULOS
@@ -81,7 +39,6 @@ from modules.seats import compute_distribution_from_excel
 from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
-from streamlit_drawable_canvas import st_canvas
 
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
@@ -705,6 +662,137 @@ def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
 
 def generate_token(): return uuid.uuid4().hex[:8].upper()
 
+# NUEVA FUNCIÓN: Editor de zonas simplificado
+def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
+    """Editor de zonas simplificado sin canvas problemático"""
+    st.info("📐 Editor de Zonas - Modo Simplificado")
+    
+    p_num = p_sel.replace("Piso ", "").strip()
+    file_base = f"piso{p_num}"
+    pim = PLANOS_DIR / f"{file_base}.png"
+    if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
+    if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
+
+    if pim.exists():
+        # Mostrar imagen del plano
+        img = PILImage.open(pim)
+        st.image(img, caption=f"Plano del {p_sel}", use_column_width=True)
+        
+        # Obtener dimensiones de la imagen para referencia
+        img_width, img_height = img.size
+        st.caption(f"Dimensiones de referencia: {img_width} x {img_height} píxeles")
+    
+    # Formulario para agregar zonas
+    st.subheader("➕ Agregar Nueva Zona")
+    
+    with st.form("zona_form"):
+        # Selección de equipo/sala
+        current_seats_dict = {}
+        eqs = [""]
+        if not df_d.empty:
+            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+            eqs += sorted(subset['equipo'].unique().tolist())
+        
+        salas_piso = []
+        if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
+        elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
+        elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
+        eqs = eqs + salas_piso
+        
+        col1, col2 = st.columns(2)
+        tn = col1.selectbox("Equipo / Sala", eqs, key="team_select")
+        tc = col2.color_picker("Color", "#00A04A", key="color_picker")
+        
+        if tn and tn in current_seats_dict: 
+            st.info(f"Cupos: {current_seats_dict[tn]}")
+        
+        # Coordenadas y dimensiones
+        st.subheader("📐 Coordenadas y Dimensiones")
+        col3, col4, col5, col6 = st.columns(4)
+        x = col3.number_input("Posición X", min_value=0, max_value=2000, value=100, step=10, key="x_pos")
+        y = col4.number_input("Posición Y", min_value=0, max_value=2000, value=100, step=10, key="y_pos")
+        w = col5.number_input("Ancho", min_value=10, max_value=500, value=100, step=10, key="width")
+        h = col6.number_input("Alto", min_value=10, max_value=500, value=80, step=10, key="height")
+        
+        submitted = st.form_submit_button("💾 Guardar Zona", use_container_width=True)
+        
+        if submitted:
+            if tn:
+                # Guardar la zona
+                zonas.setdefault(p_sel, []).append({
+                    "team": tn, 
+                    "x": x, 
+                    "y": y,
+                    "w": w,
+                    "h": h, 
+                    "color": tc
+                })
+                save_zones(zonas)
+                st.success("✅ Zona guardada exitosamente!")
+                st.rerun()
+            else:
+                st.warning("⚠️ Por favor selecciona un equipo o sala")
+    
+    # Mostrar y gestionar zonas existentes
+    st.subheader("📋 Zonas Existentes")
+    if p_sel in zonas and zonas[p_sel]:
+        for i, z in enumerate(zonas[p_sel]):
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                col1.markdown(f"**{z['team']}**")
+                col1.markdown(f"📍 Posición: ({z['x']}, {z['y']}) | 📏 Tamaño: {z['w']}x{z['h']}")
+                col1.markdown(f"🎨 Color: <span style='color:{z['color']}'>■</span>", unsafe_allow_html=True)
+                
+                if col2.button("✏️ Editar", key=f"edit_{i}"):
+                    # Pre-llenar el formulario con los valores existentes
+                    st.session_state.team_select = z['team']
+                    st.session_state.color_picker = z['color']
+                    st.session_state.x_pos = z['x']
+                    st.session_state.y_pos = z['y']
+                    st.session_state.width = z['w']
+                    st.session_state.height = z['h']
+                
+                if col3.button("🗑️ Eliminar", key=f"del_{i}"):
+                    zonas[p_sel].pop(i)
+                    save_zones(zonas)
+                    st.rerun()
+    else:
+        st.info("No hay zonas definidas para este piso")
+    
+    # Vista previa con estilos
+    st.subheader("🎨 Vista Previa")
+    with st.expander("Configurar Estilos", expanded=True):
+        col7, col8 = st.columns(2)
+        tm = col7.text_input("Título", f"Distribución {p_sel}")
+        ts = col8.text_input("Subtítulo", f"Día: {d_sel}")
+        
+        col9, col10 = st.columns(2)
+        bg = col9.color_picker("Color de Fondo", "#FFFFFF")
+        tx = col10.color_picker("Color de Texto", "#000000")
+        
+        lg = st.checkbox("Incluir Logo", True)
+    
+    if st.button("🔄 Generar Vista Previa", use_container_width=True):
+        conf = {"title_text": tm, "subtitle_text": ts, "bg_color": bg, "title_color": tx, "use_logo": lg}
+        st.session_state['last_style_config'] = conf
+        
+        # Generar vista previa
+        current_seats_dict = {}
+        if not df_d.empty:
+            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+        
+        out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
+        if out: 
+            st.success("✅ Vista previa generada!")
+    
+    # Mostrar vista previa si existe
+    ds = d_sel.lower().replace("é", "e").replace("á", "a")
+    fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
+    if fpng.exists(): 
+        st.image(str(fpng), caption="Vista Previa Generada", use_column_width=True)
+
 # ---------------------------------------------------------
 # INICIO APP
 # ---------------------------------------------------------
@@ -1194,112 +1282,16 @@ elif menu == "Administrador":
                 st.success("Guardado."); st.balloons(); st.rerun()
 
     with t2:
-        st.info("Editor de Zonas")
+        # REEMPLAZADO: Usamos el editor simplificado en lugar del canvas problemático
         zonas = load_zones()
         c1, c2 = st.columns(2)
         df_d = read_distribution_df(conn)
         pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
         p_sel = c1.selectbox("Piso", pisos_list)
         d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
-        p_num = p_sel.replace("Piso ", "").strip()
         
-        file_base = f"piso{p_num}"
-        pim = PLANOS_DIR / f"{file_base}.png"
-        if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
-        if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
-
-# ... (dentro de t2: Editor Visual) ...
-
-        if pim.exists():
-            # Abrimos la imagen con PIL
-            img = PILImage.open(pim)
-            
-            # Lógica de redimensionamiento (MANTENER ESTO, es útil para que no se salga de pantalla)
-            cw = 800  # Ancho canvas deseado
-            w, h = img.size
-            
-            if w > cw:
-                ch = int(h * (cw / w))
-                # Redimensionamos el objeto PIL aquí mismo
-                img_resized = img.resize((cw, ch), PILImage.Resampling.LANCZOS)
-            else:
-                cw = w
-                ch = h
-                img_resized = img
-
-            # --- CORRECCIÓN CLAVE ---
-            # 1. No convertimos a Base64.
-            # 2. Pasamos el OBJETO PIL directamente a background_image.
-            # 3. Pasamos width y height explícitos para asegurar que el canvas coincida.
-            
-            canvas = st_canvas(
-                fill_color="rgba(0, 160, 74, 0.3)",
-                stroke_width=2,
-                stroke_color="#00A04A",
-                background_image=img_resized, # <--- AQUÍ PASAMOS EL OBJETO, NO EL STRING
-                update_streamlit=True,
-                width=cw,     # Ancho calculado
-                height=ch,    # Alto calculado
-                drawing_mode="rect",
-                key=f"cv_{p_sel}"
-            )
-
-# ... (resto del código igual) ...            
-            # El resto del código permanece igual...
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
-            eqs = eqs + salas_piso
-            
-            c1, c2, c3 = st.columns([2, 1, 1])
-            tn = c1.selectbox("Equipo / Sala", eqs)
-            tc = c2.color_picker("Color", "#00A04A")
-            if tn and tn in current_seats_dict: st.info(f"Cupos: {current_seats_dict[tn]}")
-            
-            if c3.button("Guardar", key="sz"):
-                if tn and canvas.json_data and canvas.json_data.get("objects"):
-                    o = canvas.json_data["objects"][-1]
-                    zonas.setdefault(p_sel, []).append({
-                        "team": tn, "x": int(o.get("left", 0)), "y": int(o.get("top", 0)),
-                        "w": int(o.get("width", 0) * o.get("scaleX", 1)),
-                        "h": int(o.get("height", 0) * o.get("scaleY", 1)), "color": tc
-                    })
-                    save_zones(zonas); st.success("OK")
-                else: st.warning("Dibuja algo primero.")
-            
-            st.divider()
-            if p_sel in zonas:
-                for i, z in enumerate(zonas[p_sel]):
-                    c1, c2 = st.columns([4, 1])
-                    c1.markdown(f"<span style='color:{z['color']}'>■</span> {z['team']}", unsafe_allow_html=True)
-                    if c2.button("X", key=f"d{i}"):
-                        zonas[p_sel].pop(i); save_zones(zonas); st.rerun()
-
-            st.divider()
-            with st.expander("🎨 Editar Estilos", expanded=True):
-                tm = st.text_input("Título", f"Distribución {p_sel}")
-                ts = st.text_input("Subtítulo", f"Día: {d_sel}")
-                bg = st.color_picker("Fondo", "#FFFFFF")
-                tx = st.color_picker("Texto", "#000000")
-                lg = st.checkbox("Logo", True)
-
-            if st.button("🎨 Actualizar Vista"):
-                conf = {"title_text": tm, "subtitle_text": ts, "bg_color": bg, "title_color": tx, "use_logo": lg}
-                st.session_state['last_style_config'] = conf
-                out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
-                if out: st.success("Generado.")
-            
-            ds = d_sel.lower().replace("é", "e").replace("á", "a")
-            fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
-            if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
+        # Llamar al editor simplificado
+        simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path)
 
     with t3:
         st.subheader("Generar Reportes")
@@ -1357,4 +1349,3 @@ elif menu == "Administrador":
                 st.dataframe(weekly_summary, hide_index=True, use_container_width=True)
             else:
                 st.info("No hay datos suficientes para el resumen semanal")
-
