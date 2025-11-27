@@ -6,9 +6,10 @@ fpdf
 matplotlib
 gspread
 google-auth
-xlsxwriter
-openpyxl>=3.1.0
 requests
-plotly
+# --- LIBRERÍAS EXCEL (Vitales para que no falle la carga/descarga) ---
+openpyxl>=3.1.0
+xlsxwriter
+# --- LIBRERÍAS VISUALES ---
 streamlit-drawable-canvas>=0.9.3
 streamlit-image-annotation==0.7.2
