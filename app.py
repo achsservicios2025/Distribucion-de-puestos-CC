@@ -23,11 +23,14 @@ import streamlit.elements.image as st_image
 
 # Intentamos "secuestrar" la función image_to_url de donde vive ahora
 try:
+    # Intento 1: Ubicación moderna (Streamlit 1.39 - 1.51+)
     from streamlit.elements.lib.image_utils import image_to_url as _internal_image_to_url
 except ImportError:
     try:
+        # Intento 2: Ubicación intermedia
         from streamlit.runtime.media_file_storage import image_to_url as _internal_image_to_url
     except ImportError:
+        # Fallback: Definir función vacía si todo falla
         def _internal_image_to_url(image, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
             return ""
 
@@ -35,7 +38,7 @@ except ImportError:
 if not hasattr(st_image, 'image_to_url'):
     st_image.image_to_url = _internal_image_to_url
 
-# Parche adicional para el objeto WidthConfig
+# Parche adicional para el objeto WidthConfig que también suele faltar
 if not hasattr(st_image, 'WidthConfig'):
     @dataclass
     class WidthConfig:
@@ -45,13 +48,18 @@ if not hasattr(st_image, 'WidthConfig'):
 # ---------------------------------------------------------
 # 2. IMPORTACIÓN SEGURA DE HERRAMIENTAS VISUALES
 # ---------------------------------------------------------
+HAS_CANVAS = False
+HAS_IMAGE_ANNOTATION = False
+
 try:
     from streamlit_drawable_canvas import st_canvas
+    HAS_CANVAS = True
 except ImportError:
     st_canvas = None
 
 try:
     from streamlit_image_annotation import image_annotation
+    HAS_IMAGE_ANNOTATION = True
 except ImportError:
     image_annotation = None
 
@@ -116,7 +124,7 @@ PLANOS_DIR.mkdir(exist_ok=True)
 COLORED_DIR.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------
-# 4. FUNCIONES HELPER & LÓGICA
+# 5. FUNCIONES HELPER & LÓGICA
 # ---------------------------------------------------------
 def clean_pdf_text(text: str) -> str:
     if not isinstance(text, str): return str(text)
@@ -173,7 +181,6 @@ def get_distribution_proposal(df_equipos, df_parametros, strategy="random"):
     rows, deficit_report = compute_distribution_from_excel(eq_proc, pa_proc, 2)
     return rows, deficit_report
 
-# NUEVA FUNCIÓN: Editor de zonas con dibujo elegante
 def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
     """Editor de zonas con interfaz moderna y capacidad de dibujo"""
     
@@ -193,126 +200,124 @@ def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
     img = PILImage.open(pim)
     img_width, img_height = img.size
     
-    # Convertir imagen a base64 para mostrar
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode()
-    
     st.subheader("🖼️ Plano de Referencia")
-    # Ajuste de tamaño de imagen visualizada
-    st.image(img, caption=f"Plano del {p_sel} ({img_width}×{img_height} px)", width=700)
+    st.image(img, caption=f"Plano del {p_sel} ({img_width}×{img_height} px)", use_container_width=True)
     
-    # Intentar usar streamlit-image-annotation si está disponible
-    try:
-        from streamlit_image_annotation import image_annotation
-        
-        st.subheader("✏️ Herramienta de Dibujo")
-        st.info("💡 **Instrucciones:** Dibuja rectángulos sobre las áreas de cada equipo/sala")
-        
-        # Configuración de la herramienta de anotación
-        label_list = ["Zona"]
-        initial_labels = []
-        
-        # Convertir zonas existentes al formato de anotaciones
-        if p_sel in zonas:
-            for i, zona in enumerate(zonas[p_sel]):
-                initial_labels.append({
-                    "id": i,
-                    "label": "Zona",
-                    "is_selected": False,
-                    "x": zona["x"],
-                    "y": zona["y"], 
-                    "width": zona["w"],
-                    "height": zona["h"]
-                })
-        
-        # Mostrar la herramienta de anotación
-        result = image_annotation(
-            img_base64,
-            initial_labels=initial_labels,
-            labels=label_list,
-            key=f"annot_{p_sel}"
-        )
-        
-        # Procesar el resultado
-        if result and "annotations" in result:
-            # Limpiar zonas existentes para este piso
+    # Verificar si image_annotation está disponible
+    if HAS_IMAGE_ANNOTATION and image_annotation is not None:
+        try:
+            st.subheader("✏️ Herramienta de Dibujo")
+            st.info("💡 **Instrucciones:** Dibuja rectángulos sobre las áreas de cada equipo/sala")
+            
+            # Convertir imagen a base64 para image_annotation
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            # Configuración de la herramienta de anotación
+            label_list = ["Zona"]
+            initial_labels = []
+            
+            # Convertir zonas existentes al formato de anotaciones
             if p_sel in zonas:
-                zonas[p_sel] = []
-            
-            # Selección de equipo/sala
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
-            eqs = eqs + salas_piso
-            
-            # Asignar equipos a las zonas dibujadas
-            st.subheader("🏷️ Asignar Equipos a las Zonas")
-            
-            for i, annotation in enumerate(result["annotations"]):
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
-                with col1:
-                    equipo = st.selectbox(
-                        f"Zona {i+1} - Equipo/Sala:",
-                        eqs,
-                        key=f"team_{p_sel}_{i}"
-                    )
-                    color = st.color_picker(
-                        f"Color Zona {i+1}:",
-                        "#00A04A",
-                        key=f"color_{p_sel}_{i}"
-                    )
-                
-                with col2:
-                    st.metric("Posición", f"({annotation['x']}, {annotation['y']})")
-                
-                with col3:
-                    st.metric("Tamaño", f"{annotation['width']}×{annotation['height']}")
-                
-                # Guardar la zona
-                if equipo:
-                    zonas.setdefault(p_sel, []).append({
-                        "team": equipo,
-                        "x": annotation['x'],
-                        "y": annotation['y'], 
-                        "w": annotation['width'],
-                        "height": annotation['height'],
-                        "color": color
+                for i, zona in enumerate(zonas[p_sel]):
+                    initial_labels.append({
+                        "id": i,
+                        "label": "Zona",
+                        "is_selected": False,
+                        "x": zona["x"],
+                        "y": zona["y"], 
+                        "width": zona["w"],
+                        "height": zona["h"]
                     })
             
-            if st.button("💾 Guardar Todas las Zonas", type="primary", use_container_width=True):
-                save_zones(zonas)
-                st.success("✅ Todas las zonas guardadas exitosamente!")
-                st.rerun()
+            # Mostrar la herramienta de anotación
+            result = image_annotation(
+                img_base64,
+                initial_labels=initial_labels,
+                labels=label_list,
+                key=f"annot_{p_sel}_{d_sel}"
+            )
+            
+            # Procesar el resultado
+            if result and "annotations" in result:
+                # Limpiar zonas existentes para este piso
+                if p_sel in zonas:
+                    zonas[p_sel] = []
                 
-    except ImportError:
+                # Selección de equipo/sala
+                current_seats_dict = {}
+                eqs = [""]
+                if not df_d.empty:
+                    subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+                    current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+                    eqs += sorted(subset['equipo'].unique().tolist())
+                
+                salas_piso = []
+                if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
+                elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
+                elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
+                eqs = eqs + salas_piso
+                
+                # Asignar equipos a las zonas dibujadas
+                st.subheader("🏷️ Asignar Equipos a las Zonas")
+                
+                for i, annotation in enumerate(result["annotations"]):
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        equipo = st.selectbox(
+                            f"Zona {i+1} - Equipo/Sala:",
+                            eqs,
+                            key=f"team_{p_sel}_{d_sel}_{i}"
+                        )
+                        color = st.color_picker(
+                            f"Color Zona {i+1}:",
+                            "#00A04A",
+                            key=f"color_{p_sel}_{d_sel}_{i}"
+                        )
+                    
+                    with col2:
+                        st.metric("Posición", f"({annotation['x']}, {annotation['y']})")
+                    
+                    with col3:
+                        st.metric("Tamaño", f"{annotation['width']}×{annotation['height']}")
+                    
+                    # Guardar la zona
+                    if equipo:
+                        zonas.setdefault(p_sel, []).append({
+                            "team": equipo,
+                            "x": annotation['x'],
+                            "y": annotation['y'], 
+                            "w": annotation['width'],
+                            "h": annotation['height'],
+                            "color": color
+                        })
+                
+                if st.button("💾 Guardar Todas las Zonas", type="primary", use_container_width=True, key=f"save_all_{p_sel}_{d_sel}"):
+                    save_zones(zonas)
+                    st.success("✅ Todas las zonas guardadas exitosamente!")
+                    st.rerun()
+                    
+        except Exception as e:
+            st.warning(f"⚠️ La herramienta de dibujo avanzada falló: {e}. Usando modo manual mejorado.")
+            fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height)
+    else:
         st.warning("⚠️ La herramienta de dibujo avanzada no está disponible. Usando modo manual mejorado.")
         fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height)
 
-# Función de respaldo elegante (CORREGIDA Y DEFINITIVA)
 def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height):
-    """Editor manual mejorado con vista previa interactiva y KEYS únicos"""
+    """Editor manual mejorado con vista previa interactiva y keys únicas"""
     
-    # 1. Definir p_num al inicio para evitar NameError
     p_num = p_sel.replace("Piso ", "").strip()
-
+    
     st.subheader("🎯 Modo de Dibujo Manual")
     
-    # Mostrar la imagen con una cuadrícula de referencia (Tamaño ajustado)
-    fig, ax = plt.subplots(figsize=(10, 6)) # Reducido de 12,8
+    # Mostrar la imagen con una cuadrícula de referencia
+    fig, ax = plt.subplots(figsize=(12, 8))
     ax.imshow(img)
-    # Quitar ejes para limpieza visual
-    ax.axis('off')
-    ax.set_title(f"Plano del {p_sel} (Referencia)", fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"Plano del {p_sel} - Cuadrícula de Referencia")
     
     # Dibujar zonas existentes
     if p_sel in zonas:
@@ -323,17 +328,23 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
                 label=zona['team']
             )
             ax.add_patch(rect)
-            # Etiqueta simple
-            ax.text(zona['x'], zona['y'], zona['team'], fontsize=8, color='white', 
-                    bbox=dict(facecolor='black', alpha=0.5))
+            ax.annotate(
+                f"{zona['team']}\n({zona['x']},{zona['y']})",
+                (zona['x'] + zona['w']/2, zona['y'] + zona['h']/2),
+                ha='center', va='center', fontsize=8, color='white',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=zona['color'], alpha=0.8)
+            )
     
-    st.pyplot(fig, use_container_width=False) # No expandir al 100%
+    plt.tight_layout()
+    st.pyplot(fig)
     
     # Controles de dibujo mejorados
     st.subheader("🖊️ Agregar Nueva Zona")
     
-    # Key única para el formulario
-    with st.form(f"zona_form_advanced_{p_sel}"):
+    # Crear una key única base para este piso y día
+    base_key = f"{p_sel}_{d_sel}"
+    
+    with st.form(f"zona_form_advanced_{base_key}"):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -351,49 +362,64 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
             elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
             eqs = eqs + salas_piso
             
-            # Key única input
-            equipo = st.selectbox("Equipo / Sala", eqs, key=f"team_select_adv_{p_sel}")
-            # Key única input
-            color = st.color_picker("Color de la Zona", "#00A04A", key=f"color_picker_adv_{p_sel}")
+            equipo = st.selectbox("Equipo / Sala", eqs, key=f"team_select_adv_{base_key}")
+            color = st.color_picker("Color de la Zona", "#00A04A", key=f"color_picker_adv_{base_key}")
             
             if equipo and equipo in current_seats_dict:
                 st.info(f"📊 Cupos actuales: {current_seats_dict[equipo]}")
         
         with col2:
-            st.info("📍 **Coordenadas**")
+            st.info("📍 **Coordenadas (píxeles)**")
             col_x, col_y = st.columns(2)
             with col_x:
-                # Key única slider
-                x = st.slider("Posición X", 0, img_width, min(100, img_width-100), 10, key=f"x_adv_{p_sel}")
+                x = st.slider("Posición X", 0, img_width, min(100, img_width-100), 10, 
+                             help="Posición horizontal desde la izquierda", key=f"x_adv_{base_key}")
             with col_y:
-                # Key única slider
-                y = st.slider("Posición Y", 0, img_height, min(100, img_height-100), 10, key=f"y_adv_{p_sel}")
+                y = st.slider("Posición Y", 0, img_height, min(100, img_height-100), 10,
+                             help="Posición vertical desde arriba", key=f"y_adv_{base_key}")
             
             col_w, col_h = st.columns(2)
             with col_w:
-                # Key única slider
-                w = st.slider("Ancho", 10, min(500, img_width-x), 100, 10, key=f"w_adv_{p_sel}")
+                w = st.slider("Ancho", 10, min(500, img_width-x), 100, 10,
+                             help="Ancho de la zona", key=f"w_adv_{base_key}")
             with col_h:
-                # Key única slider
-                h = st.slider("Alto", 10, min(300, img_height-y), 80, 10, key=f"h_adv_{p_sel}")
+                h = st.slider("Alto", 10, min(300, img_height-y), 80, 10,
+                             help="Alto de la zona", key=f"h_adv_{base_key}")
         
         # Vista previa en tiempo real
-        st.caption("Vista Previa de Ubicación")
-        preview_fig, preview_ax = plt.subplots(figsize=(8, 5)) # Más pequeño
+        st.subheader("👁️ Vista Previa en Tiempo Real")
+        preview_fig, preview_ax = plt.subplots(figsize=(10, 6))
         preview_ax.imshow(img)
-        preview_ax.axis('off')
         
+        # Dibujar la nueva zona
         if equipo:
-            rect = plt.Rectangle((x, y), w, h, linewidth=3, edgecolor=color, facecolor=color + '60')
+            rect = plt.Rectangle(
+                (x, y), w, h,
+                linewidth=3, edgecolor=color, facecolor=color + '60',
+                label=equipo
+            )
             preview_ax.add_patch(rect)
+            preview_ax.annotate(
+                f"{equipo}\n({x},{y})",
+                (x + w/2, y + h/2),
+                ha='center', va='center', fontsize=9, color='white', weight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.9)
+            )
         
-        st.pyplot(preview_fig, use_container_width=False)
+        preview_ax.set_title("Vista Previa - Nueva Zona")
+        preview_ax.grid(True, alpha=0.2)
+        st.pyplot(preview_fig)
         
         submitted = st.form_submit_button("💾 Guardar Zona", use_container_width=True)
         
         if submitted and equipo:
             zonas.setdefault(p_sel, []).append({
-                "team": equipo, "x": x, "y": y, "w": w, "h": h, "color": color
+                "team": equipo,
+                "x": x,
+                "y": y,
+                "w": w, 
+                "h": h,
+                "color": color
             })
             save_zones(zonas)
             st.success("✅ Zona guardada exitosamente!")
@@ -405,18 +431,39 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
         for i, zona in enumerate(zonas[p_sel]):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+                
                 with col1:
                     st.markdown(f"**{zona['team']}**")
-                    st.caption(f"Pos: ({zona['x']}, {zona['y']})")
+                    st.markdown(f"📍 `({zona['x']}, {zona['y']})` | 📏 `{zona['w']}×{zona['h']}`")
+                    st.markdown(f"🎨 <span style='color:{zona['color']}'>■ Color</span>", 
+                               unsafe_allow_html=True)
+                
                 with col2:
-                    st.caption(f"Color: {zona['color']}")
+                    # Mini vista previa de la zona
+                    mini_fig, mini_ax = plt.subplots(figsize=(3, 2))
+                    mini_ax.imshow(img)
+                    rect = plt.Rectangle(
+                        (zona['x'], zona['y']), zona['w'], zona['h'],
+                        linewidth=2, edgecolor=zona['color'], facecolor=zona['color'] + '40'
+                    )
+                    mini_ax.add_patch(rect)
+                    mini_ax.set_xlim(0, img_width)
+                    mini_ax.set_ylim(img_height, 0)
+                    mini_ax.axis('off')
+                    st.pyplot(mini_fig, use_container_width=True)
+                
                 with col3:
-                    # Key única botón editar
-                    if st.button("✏️", key=f"edit_{p_sel}_{i}"):
-                        st.toast("Edición rápida no disponible, borra y crea de nuevo.")
+                    if st.button("✏️ Editar", key=f"edit_{base_key}_{i}"):
+                        # Pre-llenar formulario con valores existentes
+                        st.session_state[f"team_select_adv_{base_key}"] = zona['team']
+                        st.session_state[f"color_picker_adv_{base_key}"] = zona['color']
+                        st.session_state[f"x_adv_{base_key}"] = zona['x']
+                        st.session_state[f"y_adv_{base_key}"] = zona['y']
+                        st.session_state[f"w_adv_{base_key}"] = zona['w']
+                        st.session_state[f"h_adv_{base_key}"] = zona['h']
+                
                 with col4:
-                    # Key única botón borrar
-                    if st.button("🗑️", key=f"del_{p_sel}_{i}"):
+                    if st.button("🗑️ Eliminar", key=f"del_{base_key}_{i}"):
                         zonas[p_sel].pop(i)
                         save_zones(zonas)
                         st.rerun()
@@ -424,23 +471,19 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
         st.info("No hay zonas definidas para este piso")
 
     # Generar vista previa final
-    st.divider()
-    st.subheader("🎨 Generar Imagen Final")
-    with st.expander("Configurar Estilos"):
+    st.subheader("🎨 Vista Previa Final")
+    with st.expander("Configurar Estilos de Visualización", expanded=True):
         col_style1, col_style2 = st.columns(2)
         with col_style1:
-            # Keys únicas inputs texto
-            titulo = st.text_input("Título del Plano", f"Distribución {p_sel}", key=f"tit_man_{p_sel}")
-            subtitulo = st.text_input("Subtítulo", f"Día: {d_sel}", key=f"sub_man_{p_sel}")
+            titulo = st.text_input("Título del Plano", f"Distribución {p_sel}", key=f"tit_man_{base_key}")
+            subtitulo = st.text_input("Subtítulo", f"Día: {d_sel}", key=f"sub_man_{base_key}")
         with col_style2:
-            # Keys únicas color pickers
-            bg_color = st.color_picker("Color de Fondo", "#FFFFFF", key=f"bg_man_{p_sel}")
-            text_color = st.color_picker("Color de Texto", "#000000", key=f"txt_man_{p_sel}")
+            bg_color = st.color_picker("Color de Fondo", "#FFFFFF", key=f"bg_man_{base_key}")
+            text_color = st.color_picker("Color de Texto", "#000000", key=f"txt_man_{base_key}")
         
-        incluir_logo = st.checkbox("Incluir Logo", True, key=f"logo_man_{p_sel}")
+        incluir_logo = st.checkbox("Incluir Logo", True, key=f"logo_man_{base_key}")
     
-    # Key única botón generar
-    if st.button("🔄 Generar Vista Previa Completa", use_container_width=True, key=f"btn_gen_{p_sel}"):
+    if st.button("🔄 Generar Vista Previa Completa", use_container_width=True, key=f"btn_gen_{base_key}"):
         conf = {
             "title_text": titulo, 
             "subtitle_text": subtitulo, 
@@ -459,134 +502,279 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
         out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
         if out: 
             st.success("✅ Vista previa generada!")
-            # Mostrar vista previa
-            ds = d_sel.lower().replace("é", "e").replace("á", "a")
-            fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
-            if fpng.exists(): 
-                st.image(str(fpng), caption="Vista Previa Generada", width=700)
+    
+    # Mostrar vista previa si existe
+    ds = d_sel.lower().replace("é", "e").replace("á", "a")
+    fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
+    if fpng.exists(): 
+        st.image(str(fpng), caption="Vista Previa Generada", use_container_width=True)
 
 # NUEVAS FUNCIONES PARA DISTRIBUCIÓN IDEAL
 def get_ideal_distribution_proposal(df_equipos, strategy="perfect_equity", variant=0):
-    """Genera distribuciones ideales sin restricciones de parámetros"""
+    """
+    Genera distribuciones ideales sin restricciones de parámetros
+    """
     df_eq_proc = df_equipos.copy()
+    
+    # Obtener dotación total por equipo
     dotacion_col = None
     for col in df_eq_proc.columns:
         if col.lower() in ['dotacion', 'dotación', 'total', 'empleados']:
             dotacion_col = col
             break
-    if dotacion_col is None:
-        numeric_cols = df_eq_proc.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0: dotacion_col = numeric_cols[0]
-        else: dotacion_col = df_eq_proc.columns[1] if len(df_eq_proc.columns) > 1 else df_eq_proc.columns[0]
     
+    if dotacion_col is None:
+        # Si no encontramos dotación, usar la primera columna numérica
+        numeric_cols = df_eq_proc.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            dotacion_col = numeric_cols[0]
+        else:
+            # Último recurso: usar segunda columna asumiendo estructura estándar
+            dotacion_col = df_eq_proc.columns[1] if len(df_eq_proc.columns) > 1 else df_eq_proc.columns[0]
+    
+    # Obtener nombres de equipos
     equipo_col = None
     for col in df_eq_proc.columns:
         if col.lower() in ['equipo', 'team', 'departamento', 'área']:
             equipo_col = col
             break
-    if equipo_col is None: equipo_col = df_eq_proc.columns[0]
+    if equipo_col is None:
+        equipo_col = df_eq_proc.columns[0]
     
     equipos = df_eq_proc[equipo_col].tolist()
     dotaciones = df_eq_proc[dotacion_col].tolist()
     
-    if strategy == "perfect_equity": return perfect_equity_distribution(equipos, dotaciones, variant)
-    elif strategy == "balanced_flex": return balanced_flex_distribution(equipos, dotaciones, variant)
-    elif strategy == "controlled_random": return controlled_random_distribution(equipos, dotaciones, variant)
-    else: return perfect_equity_distribution(equipos, dotaciones, variant)
+    # Estrategias de distribución
+    if strategy == "perfect_equity":
+        return perfect_equity_distribution(equipos, dotaciones, variant)
+    elif strategy == "balanced_flex":
+        return balanced_flex_distribution(equipos, dotaciones, variant)
+    elif strategy == "controlled_random":
+        return controlled_random_distribution(equipos, dotaciones, variant)
+    else:
+        return perfect_equity_distribution(equipos, dotaciones, variant)
 
 def perfect_equity_distribution(equipos, dotaciones, variant=0):
+    """
+    Distribución perfectamente equitativa entre los 5 días
+    """
     rows = []
     deficit_report = []
+    
+    # Pisos disponibles (asumimos 3 pisos como ejemplo)
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
+    
     for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
+        # Distribuir equitativamente entre los 5 días
         base_cupos = dotacion // 5
         resto = dotacion % 5
+        
         for j, dia in enumerate(ORDER_DIAS):
+            # Asignar piso de manera balanceada
             piso = pisos[i % len(pisos)]
+            
+            # Distribuir el resto equitativamente
             cupos_dia = base_cupos + (1 if j < resto else 0)
-            rows.append({'piso': piso, 'equipo': equipo, 'dia': dia, 'cupos': cupos_dia, 'dotacion_total': dotacion})
+            
+            rows.append({
+                'piso': piso,
+                'equipo': equipo,
+                'dia': dia,
+                'cupos': cupos_dia,
+                'dotacion_total': dotacion
+            })
+    
+    # Agregar cupos libres (10% del total)
     total_cupos = sum(dotaciones)
-    cupos_libres_por_dia = max(1, total_cupos // 50)
+    cupos_libres_por_dia = max(1, total_cupos // 50)  # ~2% por día como flex
+    
     for piso in pisos:
         for dia in ORDER_DIAS:
-            rows.append({'piso': piso, 'equipo': "Cupos libres", 'dia': dia, 'cupos': cupos_libres_por_dia, 'dotacion_total': cupos_libres_por_dia * 5})
+            rows.append({
+                'piso': piso,
+                'equipo': "Cupos libres",
+                'dia': dia,
+                'cupos': cupos_libres_por_dia,
+                'dotacion_total': cupos_libres_por_dia * 5
+            })
+    
     return rows, deficit_report
 
 def balanced_flex_distribution(equipos, dotaciones, variant=0):
+    """
+    Distribución balanceada con énfasis en flexibilidad
+    """
     rows = []
     deficit_report = []
+    
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
+    
     for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
+        # Estrategia: 80% distribuido equitativamente, 20% como flex
         cupos_fijos = int(dotacion * 0.8)
         base_cupos = cupos_fijos // 5
         resto_fijos = cupos_fijos % 5
+        
         for j, dia in enumerate(ORDER_DIAS):
-            piso = pisos[(i + variant) % len(pisos)]
+            piso = pisos[(i + variant) % len(pisos)]  # Variar por opción
+            
             cupos_dia = base_cupos + (1 if j < resto_fijos else 0)
-            rows.append({'piso': piso, 'equipo': equipo, 'dia': dia, 'cupos': cupos_dia, 'dotacion_total': dotacion})
+            
+            rows.append({
+                'piso': piso,
+                'equipo': equipo,
+                'dia': dia,
+                'cupos': cupos_dia,
+                'dotacion_total': dotacion
+            })
+    
+    # Cupos libres más generosos (15% del total)
     total_cupos = sum(dotaciones)
-    cupos_libres_por_dia = max(2, total_cupos // 30)
+    cupos_libres_por_dia = max(2, total_cupos // 30)  # ~3.3% por día
+    
     for piso in pisos:
         for dia in ORDER_DIAS:
-            rows.append({'piso': piso, 'equipo': "Cupos libres", 'dia': dia, 'cupos': cupos_libres_por_dia, 'dotacion_total': cupos_libres_por_dia * 5})
+            rows.append({
+                'piso': piso,
+                'equipo': "Cupos libres",
+                'dia': dia,
+                'cupos': cupos_libres_por_dia,
+                'dotacion_total': cupos_libres_por_dia * 5
+            })
+    
     return rows, deficit_report
 
 def controlled_random_distribution(equipos, dotaciones, variant=0):
+    """
+    Distribución aleatoria pero controlada para evitar déficits
+    """
     rows = []
     deficit_report = []
+    
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
-    np.random.seed(variant * 1000)
+    np.random.seed(variant * 1000)  # Para reproducibilidad por variante
+    
     for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
+        # Distribuir con cierta aleatoriedad controlada
         cupos_restantes = dotacion
         dist_diaria = [0] * 5
+        
+        # Asignación base equitativa
         for j in range(5):
             dist_diaria[j] = dotacion // 5
             cupos_restantes -= dist_diaria[j]
+        
+        # Distribuir el resto aleatoriamente
         for _ in range(cupos_restantes):
             idx = np.random.randint(0, 5)
             dist_diaria[idx] += 1
+        
+        # Aplicar pequeña variación aleatoria (±10%)
         for j in range(5):
             variacion = np.random.randint(-max(1, dist_diaria[j]//10), max(1, dist_diaria[j]//10)+1)
             dist_diaria[j] = max(1, dist_diaria[j] + variacion)
+        
         for j, dia in enumerate(ORDER_DIAS):
             piso = pisos[np.random.randint(0, len(pisos))]
-            rows.append({'piso': piso, 'equipo': equipo, 'dia': dia, 'cupos': dist_diaria[j], 'dotacion_total': dotacion})
+            
+            rows.append({
+                'piso': piso,
+                'equipo': equipo,
+                'dia': dia,
+                'cupos': dist_diaria[j],
+                'dotacion_total': dotacion
+            })
+    
+    # Cupos libres
     total_cupos = sum(dotaciones)
-    cupos_libres_por_dia = max(1, total_cupos // 40)
+    cupos_libres_por_dia = max(1, total_cupos // 40)  # ~2.5% por día
+    
     for piso in pisos:
         for dia in ORDER_DIAS:
-            rows.append({'piso': piso, 'equipo': "Cupos libres", 'dia': dia, 'cupos': cupos_libres_por_dia, 'dotacion_total': cupos_libres_por_dia * 5})
+            rows.append({
+                'piso': piso,
+                'equipo': "Cupos libres",
+                'dia': dia,
+                'cupos': cupos_libres_por_dia,
+                'dotacion_total': cupos_libres_por_dia * 5
+            })
+    
     return rows, deficit_report
 
 def calculate_distribution_stats(rows, df_equipos):
+    """
+    Calcula estadísticas de la distribución para comparar opciones
+    """
     df = pd.DataFrame(rows)
+    
+    # Obtener dotaciones reales
     dotacion_map = {}
-    equipo_col = None; dotacion_col = None
+    equipo_col = None
+    dotacion_col = None
+    
     for col in df_equipos.columns:
-        if col.lower() in ['equipo', 'team', 'departamento']: equipo_col = col
-        elif col.lower() in ['dotacion', 'dotación', 'total']: dotacion_col = col
+        if col.lower() in ['equipo', 'team', 'departamento']:
+            equipo_col = col
+        elif col.lower() in ['dotacion', 'dotación', 'total']:
+            dotacion_col = col
+    
     if equipo_col and dotacion_col:
-        for _, row in df_equipos.iterrows(): dotacion_map[row[equipo_col]] = row[dotacion_col]
-    stats = {'total_cupos_asignados': df['cupos'].sum(), 'cupos_libres': df[df['equipo'] == 'Cupos libres']['cupos'].sum(), 'equipos_con_deficit': 0, 'distribucion_promedio': 0, 'uniformidad': 0}
+        for _, row in df_equipos.iterrows():
+            dotacion_map[row[equipo_col]] = row[dotacion_col]
+    
+    stats = {
+        'total_cupos_asignados': df['cupos'].sum(),
+        'cupos_libres': df[df['equipo'] == 'Cupos libres']['cupos'].sum(),
+        'equipos_con_deficit': 0,
+        'distribucion_promedio': 0,
+        'uniformidad': 0
+    }
+    
+    # Calcular déficits
     for equipo in df['equipo'].unique():
-        if equipo == 'Cupos libres': continue
+        if equipo == 'Cupos libres':
+            continue
+            
         cupos_totales = df[df['equipo'] == equipo]['cupos'].sum()
         dotacion_esperada = dotacion_map.get(equipo, cupos_totales)
-        if cupos_totales < dotacion_esperada: stats['equipos_con_deficit'] += 1
+        
+        if cupos_totales < dotacion_esperada:
+            stats['equipos_con_deficit'] += 1
+    
+    # Calcular uniformidad (desviación estándar de cupos por día)
     cupos_por_dia = df.groupby('dia')['cupos'].sum()
     stats['uniformidad'] = cupos_por_dia.std()
+    
     return stats
 
 def show_distribution_insights(rows, deficit_data):
+    """Muestra insights detallados de la distribución"""
     df = pd.DataFrame(rows)
+    
     st.subheader("📊 Métricas de la Distribución")
+    
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric("Total Cupos Asignados", df['cupos'].sum())
-    with col2: st.metric("Cupos Libres", df[df['equipo'] == 'Cupos libres']['cupos'].sum())
-    with col3: st.metric("Equipos Asignados", df[df['equipo'] != 'Cupos libres']['equipo'].nunique())
-    with col4: st.metric("Uniformidad (σ)", f"{df.groupby('dia')['cupos'].sum().std():.1f}")
+    
+    with col1:
+        total_cupos = df['cupos'].sum()
+        st.metric("Total Cupos Asignados", total_cupos)
+    
+    with col2:
+        cupos_libres = df[df['equipo'] == 'Cupos libres']['cupos'].sum()
+        st.metric("Cupos Libres", cupos_libres)
+    
+    with col3:
+        equipos_unicos = df[df['equipo'] != 'Cupos libres']['equipo'].nunique()
+        st.metric("Equipos Asignados", equipos_unicos)
+    
+    with col4:
+        uniformidad = df.groupby('dia')['cupos'].sum().std()
+        st.metric("Uniformidad (σ)", f"{uniformidad:.1f}")
+    
+    # Gráfico de distribución por día
     st.subheader("📈 Distribución por Día")
     cupos_por_dia = df.groupby('dia')['cupos'].sum().reindex(ORDER_DIAS)
+    
     fig, ax = plt.subplots(figsize=(10, 4))
     cupos_por_dia.plot(kind='bar', ax=ax, color='skyblue')
     ax.set_ylabel('Total Cupos')
@@ -594,34 +782,63 @@ def show_distribution_insights(rows, deficit_data):
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
+# NUEVA FUNCIÓN: Resumen de uso semanal por equipo
 def calculate_weekly_usage_summary(distrib_df):
-    if distrib_df.empty: return pd.DataFrame()
-    equipo_col = None; cupos_col = None; dia_col = None
+    """
+    Calcula el resumen de uso semanal por equipo
+    """
+    if distrib_df.empty:
+        return pd.DataFrame()
+    
+    # Buscar columnas relevantes
+    equipo_col = None
+    cupos_col = None
+    dia_col = None
+    
     for col in distrib_df.columns:
         col_lower = col.lower()
-        if 'equipo' in col_lower: equipo_col = col
-        elif 'cupos' in col_lower: cupos_col = col
-        elif 'dia' in col_lower or 'día' in col_lower: dia_col = col
+        if 'equipo' in col_lower:
+            equipo_col = col
+        elif 'cupos' in col_lower:
+            cupos_col = col
+        elif 'dia' in col_lower or 'día' in col_lower:
+            dia_col = col
+    
     if not all([equipo_col, cupos_col, dia_col]):
-        st.error("No se pudieron encontrar las columnas necesarias")
+        st.error("No se pudieron encontrar las columnas necesarias para el cálculo del resumen semanal")
         return pd.DataFrame()
+    
+    # Filtrar solo equipos (excluir cupos libres)
     equipos_df = distrib_df[distrib_df[equipo_col] != "Cupos libres"]
-    if equipos_df.empty: return pd.DataFrame()
-    weekly_summary = equipos_df.groupby(equipo_col).agg({cupos_col: 'sum', dia_col: 'count'}).reset_index()
+    
+    if equipos_df.empty:
+        return pd.DataFrame()
+    
+    # Calcular total semanal por equipo
+    weekly_summary = equipos_df.groupby(equipo_col).agg({
+        cupos_col: 'sum',
+        dia_col: 'count'
+    }).reset_index()
+    
     weekly_summary.columns = [equipo_col, 'Total Cupos Semanales', 'Días Asignados']
+    
+    # Calcular promedio diario
     weekly_summary['Promedio Diario'] = weekly_summary['Total Cupos Semanales'] / weekly_summary['Días Asignados']
+    
     return weekly_summary
 
 def clean_reservation_df(df, tipo="puesto"):
     if df.empty: return df
     cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at', 'registro', 'id.1']]
     df = df.drop(columns=cols_drop, errors='ignore')
+    
     if tipo == "puesto":
         rename_map = {'user_name': 'Nombre', 'user_email': 'Correo', 'piso': 'Piso', 'reservation_date': 'Fecha Reserva', 'team_area': 'Ubicación'}
         df = df.rename(columns=rename_map)
         desired_cols = ['Fecha Reserva', 'Piso', 'Ubicación', 'Nombre', 'Correo']
         existing_cols = [c for c in desired_cols if c in df.columns]
         return df[existing_cols]
+        
     elif tipo == "sala":
         rename_map = {'user_name': 'Nombre', 'user_email': 'Correo', 'piso': 'Piso', 'room_name': 'Sala', 'reservation_date': 'Fecha', 'start_time': 'Inicio', 'end_time': 'Fin'}
         df = df.rename(columns=rename_map)
@@ -638,153 +855,186 @@ def create_merged_pdf(piso_sel, conn, global_logo_path):
     found_any = False
     df = read_distribution_df(conn)
     base_config = st.session_state.get('last_style_config', {})
+
     for dia in ORDER_DIAS:
         subset = df[(df['piso'] == piso_sel) & (df['dia'] == dia)]
         current_seats = dict(zip(subset['equipo'], subset['cupos']))
         day_config = base_config.copy()
         if not day_config.get("subtitle_text"): day_config["subtitle_text"] = f"Día: {dia}"
+        
         img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
         if img_path and Path(img_path).exists():
             found_any = True
             pdf.add_page()
-            try: pdf.image(str(img_path), x=10, y=10, w=190)
-            except: pass
-    if not found_any: return None
-    return pdf.output(dest='S').encode('latin-1')
+            try: 
+                pdf.image(str(img_path), x=10, y=10, w=190)
+            except Exception as e:
+                st.error(f"Error al agregar imagen al PDF: {e}")
+    if not found_any: 
+        return None
+    
+    try:
+        return pdf.output(dest='S').encode('latin-1')
+    except Exception as e:
+        st.error(f"Error al generar PDF: {e}")
+        return None
 
 def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, 15)
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    if logo_path.exists():
-        try: pdf.image(str(logo_path), x=10, y=8, w=30)
-        except: pass
-    pdf.ln(25)
-    pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
-    pdf.ln(6)
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
-    pdf.set_font("Arial", 'B', 9)
-    widths = [30, 60, 25, 25, 25]
-    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"] 
-    for w, h in zip(widths, headers): pdf.cell(w, 6, clean_pdf_text(h), 1)
-    pdf.ln()
-    pdf.set_font("Arial", '', 9)
-    def get_val(row, keys):
-        for k in keys:
-            if k in row: return str(row[k])
-            if k.lower() in row: return str(row[k.lower()])
-        return ""
-    distrib_df = apply_sorting_to_df(distrib_df)
-    for _, r in distrib_df.iterrows():
-        pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["Piso", "piso"])), 1)
-        pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
-        pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
-        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
-        pct_val = get_val(r, ["%Distrib", "pct"])
-        pdf.cell(widths[4], 6, clean_pdf_text(f"{pct_val}%"), 1)
-        pdf.ln()
-    
-    # --- TABLA SEMANAL ---
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
     try:
-        weekly_summary = calculate_weekly_usage_summary(distrib_df)
-        if not weekly_summary.empty:
-            pdf.set_font("Arial", 'B', 9)
-            w_wk = [80, 40, 40, 40]
-            h_wk = ["Equipo", "Total Semanal", "Días Asignados", "Promedio Diario"]
-            start_x = 20
-            pdf.set_x(start_x)
-            for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
-            pdf.ln()
-            pdf.set_font("Arial", '', 9)
-            for _, row in weekly_summary.iterrows():
-                pdf.set_x(start_x)
-                pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:30]), 1)
-                pdf.cell(w_wk[1], 6, clean_pdf_text(str(int(row["Total Cupos Semanales"]))), 1)
-                pdf.cell(w_wk[2], 6, clean_pdf_text(str(int(row["Días Asignados"]))), 1)
-                pdf.cell(w_wk[3], 6, clean_pdf_text(f"{row['Promedio Diario']:.1f}"), 1)
-                pdf.ln()
-        else:
-            pdf.set_font("Arial", 'I', 9)
-            pdf.cell(0, 6, clean_pdf_text("No hay datos suficientes para calcular el resumen semanal"), ln=True)
-    except Exception as e:
-        pdf.set_font("Arial", 'I', 9)
-        pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
-
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, clean_pdf_text("Glosario de Métricas y Cálculos:"), ln=True)
-    pdf.set_font("Arial", '', 9)
-    notas = [
-        "1. % Distribución Diario: Cupos asignados / Dotación total.",
-        "2. % Uso Semanal: Promedio de los 5 días hábiles.",
-        "3. Cálculo de Déficit: Diferencia entre cupos mínimos requeridos y asignados."
-    ]
-    for nota in notas:
-        pdf.set_x(10)
-        pdf.multi_cell(185, 6, clean_pdf_text(nota))
-
-    # --- DÉFICIT ---
-    if deficit_data and len(deficit_data) > 0:
+        pdf = FPDF()
+        pdf.set_auto_page_break(True, 15)
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 14)
-        pdf.set_text_color(200, 0, 0)
-        pdf.cell(0, 10, clean_pdf_text("Reporte de Déficit de Cupos"), ln=True, align='C')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(5)
-        pdf.set_font("Arial", 'B', 8) 
-        dw = [15, 45, 20, 15, 15, 15, 65]
-        dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
-        for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
+        pdf.set_font("Arial", 'B', 16)
+        
+        if logo_path.exists():
+            try: 
+                pdf.image(str(logo_path), x=10, y=8, w=30)
+            except Exception as e:
+                st.error(f"Error al cargar logo: {e}")
+        
+        pdf.ln(25)
+        pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
+        pdf.ln(6)
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
+
+        pdf.set_font("Arial", 'B', 9)
+        widths = [30, 60, 25, 25, 25]
+        headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"] 
+        for w, h in zip(widths, headers): 
+            pdf.cell(w, 6, clean_pdf_text(h), 1)
         pdf.ln()
-        pdf.set_font("Arial", '', 8)
-        for d in deficit_data:
-            piso = clean_pdf_text(d.get('piso',''))
-            equipo = clean_pdf_text(d.get('equipo',''))
-            dia = clean_pdf_text(d.get('dia',''))
-            dot = str(d.get('dotacion','-'))
-            mini = str(d.get('minimo','-'))
-            falt = str(d.get('deficit','-'))
-            causa = clean_pdf_text(d.get('causa',''))
-            line_height = 5
-            lines_eq = pdf.multi_cell(dw[1], line_height, equipo, split_only=True)
-            lines_ca = pdf.multi_cell(dw[6], line_height, causa, split_only=True)
-            max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
-            row_height = max_lines * line_height
-            if pdf.get_y() + row_height > 270:
-                pdf.add_page()
-                pdf.set_font("Arial", 'B', 8)
-                for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
-                pdf.ln()
-                pdf.set_font("Arial", '', 8)
-            y_start = pdf.get_y()
-            x_start = pdf.get_x()
-            pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
-            x_curr = pdf.get_x()
-            pdf.multi_cell(dw[1], line_height, equipo, 1, 'L')
-            pdf.set_xy(x_curr + dw[1], y_start)
-            pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
-            pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
-            pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
-            pdf.set_font("Arial", 'B', 8)
-            pdf.set_text_color(180, 0, 0)
-            pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_font("Arial", '', 8)
-            x_curr = pdf.get_x()
-            pdf.multi_cell(dw[6], line_height, causa, 1, 'L')
-            pdf.set_xy(x_start, y_start + row_height)
+
+        pdf.set_font("Arial", '', 9)
+        def get_val(row, keys):
+            for k in keys:
+                if k in row: return str(row[k])
+                if k.lower() in row: return str(row[k.lower()])
+            return ""
+
+        distrib_df = apply_sorting_to_df(distrib_df)
+        for _, r in distrib_df.iterrows():
+            pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["Piso", "piso"])), 1)
+            pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
+            pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
+            pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
+            pct_val = get_val(r, ["%Distrib", "pct"])
+            pdf.cell(widths[4], 6, clean_pdf_text(f"{pct_val}%"), 1)
+            pdf.ln()
+
+        # --- TABLA SEMANAL CORREGIDA ---
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
+        
+        try:
+            # Calcular resumen semanal
+            weekly_summary = calculate_weekly_usage_summary(distrib_df)
             
-    # --- CORRECCIÓN PDF: Retorno seguro ---
-    try:
-        return pdf.output(dest='S').encode('latin-1', 'replace')
-    except Exception:
-        # Fallback a bytes directos si falla la codificación
-        return pdf.output(dest='S')
+            if not weekly_summary.empty:
+                pdf.set_font("Arial", 'B', 9)
+                w_wk = [80, 40, 40, 40]
+                h_wk = ["Equipo", "Total Semanal", "Días Asignados", "Promedio Diario"]
+                start_x = 20
+                pdf.set_x(start_x)
+                for w, h in zip(w_wk, h_wk): 
+                    pdf.cell(w, 6, clean_pdf_text(h), 1)
+                pdf.ln()
+
+                pdf.set_font("Arial", '', 9)
+                for _, row in weekly_summary.iterrows():
+                    pdf.set_x(start_x)
+                    pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:30]), 1)
+                    pdf.cell(w_wk[1], 6, clean_pdf_text(str(int(row["Total Cupos Semanales"]))), 1)
+                    pdf.cell(w_wk[2], 6, clean_pdf_text(str(int(row["Días Asignados"]))), 1)
+                    pdf.cell(w_wk[3], 6, clean_pdf_text(f"{row['Promedio Diario']:.1f}"), 1)
+                    pdf.ln()
+            else:
+                pdf.set_font("Arial", 'I', 9)
+                pdf.cell(0, 6, clean_pdf_text("No hay datos suficientes para calcular el resumen semanal"), ln=True)
+                
+        except Exception as e:
+            pdf.set_font("Arial", 'I', 9)
+            pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
+
+        # --- GLOSARIO ---
+        pdf.ln(10)
+        pdf.set_font("Arial", 'B', 10)
+        pdf.cell(0, 8, clean_pdf_text("Glosario de Métricas y Cálculos:"), ln=True)
+        pdf.set_font("Arial", '', 9)
+        notas = [
+            "1. % Distribución Diario: Cupos asignados / Dotación total.",
+            "2. % Uso Semanal: Promedio de los 5 días hábiles.",
+            "3. Cálculo de Déficit: Diferencia entre cupos mínimos requeridos y asignados."
+        ]
+        for nota in notas:
+            pdf.set_x(10)
+            pdf.multi_cell(185, 6, clean_pdf_text(nota))
+
+        # --- DÉFICIT ---
+        if deficit_data and len(deficit_data) > 0:
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 14)
+            pdf.set_text_color(200, 0, 0)
+            pdf.cell(0, 10, clean_pdf_text("Reporte de Déficit de Cupos"), ln=True, align='C')
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", 'B', 8) 
+            dw = [15, 45, 20, 15, 15, 15, 65]
+            dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
+            for w, h in zip(dw, dh): 
+                pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
+            pdf.ln()
+            
+            pdf.set_font("Arial", '', 8)
+            for d in deficit_data:
+                piso = clean_pdf_text(d.get('piso',''))
+                equipo = clean_pdf_text(d.get('equipo',''))
+                dia = clean_pdf_text(d.get('dia',''))
+                dot = str(d.get('dotacion','-'))
+                mini = str(d.get('minimo','-'))
+                falt = str(d.get('deficit','-'))
+                causa = clean_pdf_text(d.get('causa',''))
+
+                line_height = 5
+                lines_eq = pdf.multi_cell(dw[1], line_height, equipo, split_only=True)
+                lines_ca = pdf.multi_cell(dw[6], line_height, causa, split_only=True)
+                max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
+                row_height = max_lines * line_height
+
+                if pdf.get_y() + row_height > 270:
+                    pdf.add_page()
+                    pdf.set_font("Arial", 'B', 8)
+                    for w, h in zip(dw, dh): 
+                        pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
+                    pdf.ln()
+                    pdf.set_font("Arial", '', 8)
+
+                y_start = pdf.get_y()
+                x_start = pdf.get_x()
+
+                pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
+                x_curr = pdf.get_x()
+                pdf.multi_cell(dw[1], line_height, equipo, 1, 'L')
+                pdf.set_xy(x_curr + dw[1], y_start)
+                pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
+                pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
+                pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
+                pdf.set_font("Arial", 'B', 8)
+                pdf.set_text_color(180, 0, 0)
+                pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
+                pdf.set_text_color(0, 0, 0)
+                pdf.set_font("Arial", '', 8)
+                x_curr = pdf.get_x()
+                pdf.multi_cell(dw[6], line_height, causa, 1, 'L')
+                pdf.set_xy(x_start, y_start + row_height)
+        
+        return pdf.output(dest='S').encode('latin-1')
+    
+    except Exception as e:
+        st.error(f"Error crítico al generar PDF: {e}")
+        return None
 
 # --- MODALES ---
 @st.dialog("Confirmar Anulación de Puesto")
@@ -792,22 +1042,27 @@ def confirm_delete_dialog(conn, usuario, fecha_str, area, piso):
     st.warning(f"¿Anular reserva de puesto?\n\n👤 {usuario} | 📅 {fecha_str}\n📍 {piso} - {area}")
     c1, c2 = st.columns(2)
     if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_p"):
-        if delete_reservation_from_db(conn, usuario, fecha_str, area): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_p"): st.rerun()
+        if delete_reservation_from_db(conn, usuario, fecha_str, area): 
+            st.success("Eliminada")
+            st.rerun()
+    if c2.button("Cancelar", width="stretch", key="no_p"): 
+        st.rerun()
 
 @st.dialog("Confirmar Anulación de Sala")
 def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
     st.warning(f"¿Anular reserva de sala?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
     c1, c2 = st.columns(2)
     if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_s"):
-        if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
+        if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): 
+            st.success("Eliminada")
+            st.rerun()
+    if c2.button("Cancelar", width="stretch", key="no_s"): 
+        st.rerun()
 
-def generate_token(): return uuid.uuid4().hex[:8].upper()
+def generate_token(): 
+    return uuid.uuid4().hex[:8].upper()
 
-# ---------------------------------------------------------
-# EDITOR DE ZONAS (CORREGIDO Y SEGURO)
-# ---------------------------------------------------------
+# NUEVA FUNCIÓN: Editor de zonas simplificado
 def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
     """Editor de zonas simplificado con fallback automático"""
     
@@ -819,8 +1074,10 @@ def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
         p_num = p_sel.replace("Piso ", "").strip()
         file_base = f"piso{p_num}"
         pim = PLANOS_DIR / f"{file_base}.png"
-        if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
-        if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
+        if not pim.exists(): 
+            pim = PLANOS_DIR / f"{file_base}.jpg"
+        if not pim.exists(): 
+            pim = PLANOS_DIR / f"Piso{p_num}.png"
         
         if pim.exists():
             img = PILImage.open(pim)
@@ -834,37 +1091,39 @@ def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
     p_num = p_sel.replace("Piso ", "").strip()
     file_base = f"piso{p_num}"
     pim = PLANOS_DIR / f"{file_base}.png"
-    if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
-    if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
+    if not pim.exists(): 
+        pim = PLANOS_DIR / f"{file_base}.jpg"
+    if not pim.exists(): 
+        pim = PLANOS_DIR / f"Piso{p_num}.png"
     
     if pim.exists():
-            # Abrir imagen con PIL
-            img = PILImage.open(pim)
-            
-            # Tu lógica de redimensionamiento (MANTENLA)
-            cw = 800
-            w, h = img.size
-            if w > cw:
-                ch = int(h * (cw / w))
-                img_resized = img.resize((cw, ch), PILImage.Resampling.LANCZOS)
-            else:
-                cw = w
-                ch = h
-                img_resized = img
+        # Abrir imagen con PIL
+        img = PILImage.open(pim)
+        
+        # Lógica de redimensionamiento
+        cw = 800
+        w, h = img.size
+        if w > cw:
+            ch = int(h * (cw / w))
+            img_resized = img.resize((cw, ch), PILImage.Resampling.LANCZOS)
+        else:
+            cw = w
+            ch = h
+            img_resized = img
 
-            # Canvas usando el objeto de imagen DIRECTO
-            canvas = st_canvas(
-                fill_color="rgba(0, 160, 74, 0.3)",
-                stroke_width=2,
-                stroke_color="#00A04A",
-                background_image=img_resized, 
-                update_streamlit=True,
-                width=cw,
-                height=ch,
-                drawing_mode="rect",
-                key=f"cv_{p_sel}"
-            )
-            
+        # Canvas usando el objeto de imagen
+        canvas = st_canvas(
+            fill_color="rgba(0, 160, 74, 0.3)",
+            stroke_width=2,
+            stroke_color="#00A04A",
+            background_image=img_resized, 
+            update_streamlit=True,
+            width=cw,
+            height=ch,
+            drawing_mode="rect",
+            key=f"cv_{p_sel}"
+        )
+
     # Formulario para agregar zonas
     st.subheader("➕ Agregar Nueva Zona")
     
@@ -877,9 +1136,12 @@ def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
             eqs += sorted(subset['equipo'].unique().tolist())
         
         salas_piso = []
-        if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
-        elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
-        elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
+        if "1" in p_sel: 
+            salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
+        elif "2" in p_sel: 
+            salas_piso = ["Sala Reuniones Piso 2"]
+        elif "3" in p_sel: 
+            salas_piso = ["Sala Reuniones Piso 3"]
         eqs = eqs + salas_piso
         
         col1, col2 = st.columns(2)
@@ -895,12 +1157,12 @@ def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
         
         # Lógica para tomar datos del canvas si se dibujó algo
         default_x, default_y, default_w, default_h = 100, 100, 100, 80
-        if canvas.json_data and canvas.json_data.get("objects"):
-             obj = canvas.json_data["objects"][-1]
-             default_x = int(obj["left"])
-             default_y = int(obj["top"])
-             default_w = int(obj["width"] * obj["scaleX"])
-             default_h = int(obj["height"] * obj["scaleY"])
+        if canvas and canvas.json_data and canvas.json_data.get("objects"):
+            obj = canvas.json_data["objects"][-1]
+            default_x = int(obj["left"])
+            default_y = int(obj["top"])
+            default_w = int(obj["width"] * obj["scaleX"])
+            default_h = int(obj["height"] * obj["scaleY"])
 
         x = col3.number_input("Posición X", min_value=0, max_value=2000, value=default_x, step=10, key="x_pos")
         y = col4.number_input("Posición Y", min_value=0, max_value=2000, value=default_y, step=10, key="y_pos")
@@ -945,306 +1207,21 @@ def simple_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
             subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
             current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
         
-        # Configuración por defecto
-        conf = {"title_text": f"Distribución {p_sel}", "subtitle_text": f"Día: {d_sel}", 
-                "bg_color": "#FFFFFF", "title_color": "#000000", "use_logo": True}
-        
-        out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
-        if out: 
-            ds = d_sel.lower().replace("é", "e").replace("á", "a")
-            fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
-            if fpng.exists(): 
-                st.image(str(fpng), caption="Vista Previa Generada", width=700)
-
-def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height):
-    """Editor manual mejorado con vista previa interactiva y KEYS únicos"""
-    
-    # 1. Definir p_num al inicio
-    p_num = p_sel.replace("Piso ", "").strip()
-
-    st.subheader("🎯 Modo de Dibujo Manual")
-    
-    # Mostrar la imagen con una cuadrícula de referencia (Tamaño ajustado)
-    fig, ax = plt.subplots(figsize=(10, 6)) # Reducido de 12,8
-    ax.imshow(img)
-    # Quitar ejes para limpieza visual
-    ax.axis('off')
-    ax.set_title(f"Plano del {p_sel} (Referencia)", fontsize=10)
-    
-    # Dibujar zonas existentes
-    if p_sel in zonas:
-        for i, zona in enumerate(zonas[p_sel]):
-            rect = plt.Rectangle(
-                (zona['x'], zona['y']), zona['w'], zona['h'],
-                linewidth=2, edgecolor=zona['color'], facecolor=zona['color'] + '40',
-                label=zona['team']
-            )
-            ax.add_patch(rect)
-            # Etiqueta simple
-            ax.text(zona['x'], zona['y'], zona['team'], fontsize=8, color='white', 
-                    bbox=dict(facecolor='black', alpha=0.5))
-    
-    st.pyplot(fig, use_container_width=False) # No expandir al 100%
-    
-    # Controles de dibujo mejorados
-    st.subheader("🖊️ Agregar Nueva Zona")
-    
-    # Key única para el formulario
-    with st.form(f"zona_form_advanced_{p_sel}"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Selección de equipo/sala
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
-            eqs = eqs + salas_piso
-            
-            # Key única input
-            equipo = st.selectbox("Equipo / Sala", eqs, key=f"team_select_adv_{p_sel}")
-            # Key única input
-            color = st.color_picker("Color de la Zona", "#00A04A", key=f"color_picker_adv_{p_sel}")
-            
-            if equipo and equipo in current_seats_dict:
-                st.info(f"📊 Cupos actuales: {current_seats_dict[equipo]}")
-        
-        with col2:
-            st.info("📍 **Coordenadas**")
-            col_x, col_y = st.columns(2)
-            with col_x:
-                # Key única slider
-                x = st.slider("Posición X", 0, img_width, min(100, img_width-100), 10, key=f"x_adv_{p_sel}")
-            with col_y:
-                # Key única slider
-                y = st.slider("Posición Y", 0, img_height, min(100, img_height-100), 10, key=f"y_adv_{p_sel}")
-            
-            col_w, col_h = st.columns(2)
-            with col_w:
-                # Key única slider
-                w = st.slider("Ancho", 10, min(500, img_width-x), 100, 10, key=f"w_adv_{p_sel}")
-            with col_h:
-                # Key única slider
-                h = st.slider("Alto", 10, min(300, img_height-y), 80, 10, key=f"h_adv_{p_sel}")
-        
-        # Vista previa en tiempo real
-        st.caption("Vista Previa de Ubicación")
-        preview_fig, preview_ax = plt.subplots(figsize=(8, 5)) # Más pequeño
-        preview_ax.imshow(img)
-        preview_ax.axis('off')
-        
-        if equipo:
-            rect = plt.Rectangle((x, y), w, h, linewidth=3, edgecolor=color, facecolor=color + '60')
-            preview_ax.add_patch(rect)
-        
-        st.pyplot(preview_fig, use_container_width=False)
-        
-        submitted = st.form_submit_button("💾 Guardar Zona", use_container_width=True)
-        
-        if submitted and equipo:
-            zonas.setdefault(p_sel, []).append({
-                "team": equipo, "x": x, "y": y, "w": w, "h": h, "color": color
-            })
-            save_zones(zonas)
-            st.success("✅ Zona guardada exitosamente!")
-            st.rerun()
-
-    # Gestión de zonas existentes
-    st.subheader("📋 Zonas Existentes")
-    if p_sel in zonas and zonas[p_sel]:
-        for i, zona in enumerate(zonas[p_sel]):
-            with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
-                with col1:
-                    st.markdown(f"**{zona['team']}**")
-                    st.caption(f"Pos: ({zona['x']}, {zona['y']})")
-                with col2:
-                    st.caption(f"Color: {zona['color']}")
-                with col3:
-                    # Key única botón editar
-                    if st.button("✏️", key=f"edit_{p_sel}_{i}"):
-                        st.toast("Edición rápida no disponible, borra y crea de nuevo.")
-                with col4:
-                    # Key única botón borrar
-                    if st.button("🗑️", key=f"del_{p_sel}_{i}"):
-                        zonas[p_sel].pop(i)
-                        save_zones(zonas)
-                        st.rerun()
-    else:
-        st.info("No hay zonas definidas para este piso")
-
-    # Generar vista previa final
-    st.divider()
-    st.subheader("🎨 Generar Imagen Final")
-    with st.expander("Configurar Estilos"):
-        col_style1, col_style2 = st.columns(2)
-        with col_style1:
-            # Keys únicas inputs texto
-            titulo = st.text_input("Título del Plano", f"Distribución {p_sel}", key=f"tit_man_{p_sel}")
-            subtitulo = st.text_input("Subtítulo", f"Día: {d_sel}", key=f"sub_man_{p_sel}")
-        with col_style2:
-            # Keys únicas color pickers
-            bg_color = st.color_picker("Color de Fondo", "#FFFFFF", key=f"bg_man_{p_sel}")
-            text_color = st.color_picker("Color de Texto", "#000000", key=f"txt_man_{p_sel}")
-        
-        incluir_logo = st.checkbox("Incluir Logo", True, key=f"logo_man_{p_sel}")
-    
-    # Key única botón generar
-    if st.button("🔄 Generar Vista Previa Completa", use_container_width=True, key=f"btn_gen_{p_sel}"):
+        # Configuración por defecto si no se expande el menú
         conf = {
-            "title_text": titulo, 
-            "subtitle_text": subtitulo, 
-            "bg_color": bg_color, 
-            "title_color": text_color, 
-            "use_logo": incluir_logo
+            "title_text": f"Distribución {p_sel}", 
+            "subtitle_text": f"Día: {d_sel}", 
+            "bg_color": "#FFFFFF", 
+            "title_color": "#000000", 
+            "use_logo": True
         }
-        st.session_state['last_style_config'] = conf
-        
-        # Generar vista previa
-        current_seats_dict = {}
-        if not df_d.empty:
-            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
         
         out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
         if out: 
-            st.success("✅ Vista previa generada!")
-            # Mostrar vista previa
             ds = d_sel.lower().replace("é", "e").replace("á", "a")
             fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
             if fpng.exists(): 
-                st.image(str(fpng), caption="Vista Previa Generada", width=700)
-
-def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
-    """Editor de zonas con interfaz moderna y capacidad de dibujo"""
-    
-    st.info("🎨 Editor de Zonas - Modo Avanzado")
-    
-    p_num = p_sel.replace("Piso ", "").strip()
-    file_base = f"piso{p_num}"
-    pim = PLANOS_DIR / f"{file_base}.png"
-    if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
-    if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
-
-    if not pim.exists():
-        st.error(f"❌ No se encontró el plano para {p_sel}")
-        return
-
-    # Cargar y mostrar el plano
-    img = PILImage.open(pim)
-    img_width, img_height = img.size
-    
-    # Convertir imagen a base64 para mostrar
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode()
-    
-    st.subheader("🖼️ Plano de Referencia")
-    # Ajuste de tamaño de imagen visualizada
-    st.image(img, caption=f"Plano del {p_sel} ({img_width}×{img_height} px)", width=700)
-    
-    # Intentar usar streamlit-image-annotation si está disponible
-    try:
-        from streamlit_image_annotation import image_annotation
-        
-        st.subheader("✏️ Herramienta de Dibujo")
-        st.info("💡 **Instrucciones:** Dibuja rectángulos sobre las áreas de cada equipo/sala")
-        
-        # Configuración de la herramienta de anotación
-        label_list = ["Zona"]
-        initial_labels = []
-        
-        # Convertir zonas existentes al formato de anotaciones
-        if p_sel in zonas:
-            for i, zona in enumerate(zonas[p_sel]):
-                initial_labels.append({
-                    "id": i,
-                    "label": "Zona",
-                    "is_selected": False,
-                    "x": zona["x"],
-                    "y": zona["y"], 
-                    "width": zona["w"],
-                    "height": zona["h"]
-                })
-        
-        # Mostrar la herramienta de anotación
-        result = image_annotation(
-            img_base64,
-            initial_labels=initial_labels,
-            labels=label_list,
-            key=f"annot_{p_sel}"
-        )
-        
-        # Procesar el resultado
-        if result and "annotations" in result:
-            # Limpiar zonas existentes para este piso
-            if p_sel in zonas:
-                zonas[p_sel] = []
-            
-            # Selección de equipo/sala
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Reuniones Pequeña Piso 1", "Sala Reuniones Grande Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
-            eqs = eqs + salas_piso
-            
-            # Asignar equipos a las zonas dibujadas
-            st.subheader("🏷️ Asignar Equipos a las Zonas")
-            
-            for i, annotation in enumerate(result["annotations"]):
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
-                with col1:
-                    equipo = st.selectbox(
-                        f"Zona {i+1} - Equipo/Sala:",
-                        eqs,
-                        key=f"team_{p_sel}_{i}"
-                    )
-                    color = st.color_picker(
-                        f"Color Zona {i+1}:",
-                        "#00A04A",
-                        key=f"color_{p_sel}_{i}"
-                    )
-                
-                with col2:
-                    st.metric("Posición", f"({annotation['x']}, {annotation['y']})")
-                
-                with col3:
-                    st.metric("Tamaño", f"{annotation['width']}×{annotation['height']}")
-                
-                # Guardar la zona
-                if equipo:
-                    zonas.setdefault(p_sel, []).append({
-                        "team": equipo,
-                        "x": annotation['x'],
-                        "y": annotation['y'], 
-                        "w": annotation['width'],
-                        "height": annotation['height'],
-                        "color": color
-                    })
-            
-            if st.button("💾 Guardar Todas las Zonas", type="primary", use_container_width=True):
-                save_zones(zonas)
-                st.success("✅ Todas las zonas guardadas exitosamente!")
-                st.rerun()
-                
-    except ImportError:
-        st.warning("⚠️ La herramienta de dibujo avanzada no está disponible. Usando modo manual mejorado.")
-        fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height)
+                st.image(str(fpng), caption="Vista Previa Generada", use_container_width=True)
 
 # ---------------------------------------------------------
 # INICIO APP
@@ -1291,7 +1268,8 @@ if menu == "Vista pública":
         df_view = df
         pisos_disponibles = ["Piso 1"]
 
-    if df.empty: st.info("Sin datos.")
+    if df.empty: 
+        st.info("Sin datos.")
     else:
         t1, t2, t3 = st.tabs(["Estadísticas", "Ver Planos", "Resumen Semanal"])
         with t1:
@@ -1316,7 +1294,8 @@ if menu == "Vista pública":
                 if m: 
                     st.success("✅ Dossier disponible.")
                     st.download_button("📥 Descargar Semana (PDF)", m, f"Planos_{p_sel}_Semana.pdf", "application/pdf", use_container_width=True)
-                else: st.warning("Sin planos generados.")
+                else: 
+                    st.warning("Sin planos generados.")
             else:
                 subset = df[(df['piso'] == p_sel) & (df['dia'] == ds)]
                 current_seats = dict(zip(subset['equipo'], subset['cupos']))
@@ -1332,16 +1311,21 @@ if menu == "Vista pública":
                     fpdf = COLORED_DIR / f"piso_{pn}_{dsf}_combined.pdf"
                     
                     opts = []
-                    if fpng.exists(): opts.append("Imagen (PNG)")
-                    if fpdf.exists(): opts.append("Documento (PDF)")
+                    if fpng.exists(): 
+                        opts.append("Imagen (PNG)")
+                    if fpdf.exists(): 
+                        opts.append("Documento (PDF)")
                     
                     if opts:
-                        if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
+                        if fpng.exists(): 
+                            st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
                         sf = st.selectbox("Formato:", opts, key="dl_pub")
                         tf = fpng if "PNG" in sf else fpdf
                         mim = "image/png" if "PNG" in sf else "application/pdf"
-                        with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
-                    else: st.warning("No generado.")
+                        with open(tf,"rb") as f: 
+                            st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
+                    else: 
+                        st.warning("No generado.")
 
         with t3:
             st.subheader("Resumen de Uso Semanal por Equipo")
@@ -1392,7 +1376,9 @@ elif menu == "Reservas":
                 st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
             else:
                 rg = df[(df["piso"] == pi) & (df["dia"] == dn) & (df["equipo"] == "Cupos libres")]
-                hay_config = False; total_cupos = 0; disponibles = 0
+                hay_config = False
+                total_cupos = 0
+                disponibles = 0
                 
                 if not rg.empty:
                     hay_config = True
@@ -1407,8 +1393,10 @@ elif menu == "Reservas":
                 if not hay_config:
                     st.warning(f"⚠️ El {pi} no tiene habilitados 'Cupos libres' para los días {dn}.")
                 else:
-                    if disponibles > 0: st.success(f"✅ **HAY CUPO: Quedan {disponibles} puestos** (Total: {total_cupos}).")
-                    else: st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
+                    if disponibles > 0: 
+                        st.success(f"✅ **HAY CUPO: Quedan {disponibles} puestos** (Total: {total_cupos}).")
+                    else: 
+                        st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
                     
                     st.markdown("### Datos del Solicitante")
                     with st.form("form_puesto"):
@@ -1418,10 +1406,14 @@ elif menu == "Reservas":
                         submitted = st.form_submit_button("Confirmar Reserva", type="primary", disabled=(disponibles <= 0))
                         
                         if submitted:
-                            if not nm or not em: st.error("Por favor completa nombre y correo.")
-                            elif user_has_reservation(conn, em, str(fe)): st.error("Ya tienes una reserva registrada para esta fecha.")
-                            elif count_monthly_free_spots(conn, em, fe) >= 2: st.error("Has alcanzado tu límite de 2 reservas mensuales.")
-                            elif disponibles <= 0: st.error("Lo sentimos, el cupo se acaba de agotar.")
+                            if not nm or not em: 
+                                st.error("Por favor completa nombre y correo.")
+                            elif user_has_reservation(conn, em, str(fe)): 
+                                st.error("Ya tienes una reserva registrada para esta fecha.")
+                            elif count_monthly_free_spots(conn, em, fe) >= 2: 
+                                st.error("Has alcanzado tu límite de 2 reservas mensuales.")
+                            elif disponibles <= 0: 
+                                st.error("Lo sentimos, el cupo se acaba de agotar.")
                             else:
                                 add_reservation(conn, nm, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
                                 msg = f"✅ Reserva Confirmada:\n\n- Usuario: {nm}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
@@ -1468,14 +1460,16 @@ elif menu == "Reservas":
             sub_sala = st.form_submit_button("Confirmar Sala", type="primary")
             
             if sub_sala:
-                if not n_s: st.error("Falta el nombre.")
+                if not n_s: 
+                    st.error("Falta el nombre.")
                 elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, i, f):
                     st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
                 else:
                     add_room_reservation(conn, n_s, e_s, pi_s, sl, str(fe_s), i, f, datetime.datetime.now(datetime.timezone.utc).isoformat())
                     msg = f"✅ Sala Confirmada:\n\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {i} - {f}"
                     st.success(msg)
-                    if e_s: send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
+                    if e_s: 
+                        send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
 
     elif opcion_reserva == "📋 Mis Reservas y Listados":
         st.subheader("Buscar y Cancelar mis reservas")
@@ -1487,14 +1481,17 @@ elif menu == "Reservas":
             # Buscar en columnas normalizadas 'Nombre' o 'Correo'
             if not dp.empty and 'Nombre' in dp.columns and 'Correo' in dp.columns:
                 mp = dp[(dp['Nombre'].str.lower().str.contains(q.lower())) | (dp['Correo'].str.lower().str.contains(q.lower()))]
-            else: mp = pd.DataFrame()
+            else: 
+                mp = pd.DataFrame()
 
             ds = clean_reservation_df(get_room_reservations_df(conn), "sala")
             if not ds.empty and 'Nombre' in ds.columns and 'Correo' in ds.columns:
                 ms = ds[(ds['Nombre'].str.lower().str.contains(q.lower())) | (ds['Correo'].str.lower().str.contains(q.lower()))]
-            else: ms = pd.DataFrame()
+            else: 
+                ms = pd.DataFrame()
             
-            if mp.empty and ms.empty: st.warning("No encontré reservas con esos datos.")
+            if mp.empty and ms.empty: 
+                st.warning("No encontré reservas con esos datos.")
             else:
                 if not mp.empty:
                     st.markdown("#### 🪑 Tus Puestos")
@@ -1522,18 +1519,23 @@ elif menu == "Reservas":
             st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
 
 # ==========================================
-# E. ADMINISTRADOR
+# C. ADMINISTRADOR
 # ==========================================
 elif menu == "Administrador":
     st.header("Admin")
     admin_user, admin_pass = get_admin_credentials(conn)
-    if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
+    if "is_admin" not in st.session_state: 
+        st.session_state["is_admin"] = False
     
     if not st.session_state["is_admin"]:
-        u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
+        u = st.text_input("Usuario")
+        p = st.text_input("Contraseña", type="password")
         if st.button("Ingresar"):
-            if u==admin_user and p==admin_pass: st.session_state["is_admin"]=True; st.rerun()
-            else: st.error("Credenciales incorrectas")
+            if u==admin_user and p==admin_pass: 
+                st.session_state["is_admin"]=True
+                st.rerun()
+            else: 
+                st.error("Credenciales incorrectas")
         with st.expander("Recuperar Contraseña"):
             em_chk = st.text_input("Email Registrado")
             if st.button("Solicitar"):
@@ -1541,16 +1543,26 @@ elif menu == "Administrador":
                 if re and em_chk.lower()==re.lower():
                     t = generate_token()
                     save_reset_token(conn, t, (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).isoformat())
-                    send_reservation_email(re, "Token", f"Token: {t}"); st.success("Enviado.")
-                else: st.error("Email no coincide.")
-            tk = st.text_input("Token"); nu = st.text_input("Nuevo User"); np = st.text_input("Nueva Pass", type="password")
+                    send_reservation_email(re, "Token", f"Token: {t}")
+                    st.success("Enviado.")
+                else: 
+                    st.error("Email no coincide.")
+            tk = st.text_input("Token")
+            nu = st.text_input("Nuevo User")
+            np = st.text_input("Nueva Pass", type="password")
             if st.button("Cambiar"):
                 ok, m = validate_and_consume_token(conn, tk)
-                if ok: save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); st.success("OK")
-                else: st.error(m)
+                if ok: 
+                    save_setting(conn, "admin_user", nu)
+                    save_setting(conn, "admin_pass", np)
+                    st.success("OK")
+                else: 
+                    st.error(m)
         st.stop()
 
-    if st.button("Cerrar Sesión"): st.session_state["is_admin"]=False; st.rerun()
+    if st.button("Cerrar Sesión"): 
+        st.session_state["is_admin"]=False
+        st.rerun()
 
     t1, t2, t3, t4, t5, t6 = st.tabs(["Excel", "Editor Visual", "Informes", "Config", "Apariencia", "Mantenimiento"])
     
@@ -1561,7 +1573,7 @@ elif menu == "Administrador":
         
         # NUEVO: Checkbox para ignorar parámetros
         ignore_params = st.checkbox("🎯 Ignorar hoja de parámetros y generar distribución ideal", 
-                                       help="Genera distribuciones optimizadas sin restricciones de capacidad")
+                                   help="Genera distribuciones optimizadas sin restricciones de capacidad")
         
         if ignore_params:
             estrategia = st.radio("Estrategia de Distribución Ideal:", 
@@ -1579,18 +1591,25 @@ elif menu == "Administrador":
         }
         sel_strat_code = strat_map.get(estrategia, "random")
 
-        if 'excel_equipos' not in st.session_state: st.session_state['excel_equipos'] = None
-        if 'excel_params' not in st.session_state: st.session_state['excel_params'] = None
-        if 'proposal_rows' not in st.session_state: st.session_state['proposal_rows'] = None
-        if 'proposal_deficit' not in st.session_state: st.session_state['proposal_deficit'] = None
-        if 'last_optimization_stats' not in st.session_state: st.session_state['last_optimization_stats'] = None
+        if 'excel_equipos' not in st.session_state: 
+            st.session_state['excel_equipos'] = None
+        if 'excel_params' not in st.session_state: 
+            st.session_state['excel_params'] = None
+        if 'proposal_rows' not in st.session_state: 
+            st.session_state['proposal_rows'] = None
+        if 'proposal_deficit' not in st.session_state: 
+            st.session_state['proposal_deficit'] = None
+        if 'last_optimization_stats' not in st.session_state: 
+            st.session_state['last_optimization_stats'] = None
         # NUEVO: Para almacenar múltiples opciones
-        if 'multiple_proposals' not in st.session_state: st.session_state['multiple_proposals'] = []
+        if 'multiple_proposals' not in st.session_state: 
+            st.session_state['multiple_proposals'] = []
 
         if up:
             try:
                 if st.button("📂 Procesar Inicial", type="primary"):
-                    df_eq = pd.read_excel(up, "Equipos")
+                    # Usar openpyxl como motor para leer Excel
+                    df_eq = pd.read_excel(up, "Equipos", engine='openpyxl')
                     
                     if ignore_params:
                         # Generar múltiples propuestas ideales
@@ -1614,7 +1633,7 @@ elif menu == "Administrador":
                         
                     else:
                         # Comportamiento original
-                        df_pa = pd.read_excel(up, "Parámetros")
+                        df_pa = pd.read_excel(up, "Parámetros", engine='openpyxl')
                         st.session_state['excel_equipos'] = df_eq
                         st.session_state['excel_params'] = df_pa
                         rows, deficit = get_distribution_proposal(df_eq, df_pa, strategy=sel_strat_code)
@@ -1667,7 +1686,8 @@ elif menu == "Administrador":
                 df_preview = pd.DataFrame(st.session_state['proposal_rows'])
                 if not df_preview.empty:
                     st.dataframe(apply_sorting_to_df(df_preview), hide_index=True, use_container_width=True)
-                else: st.warning("No se generaron asignaciones.")
+                else: 
+                    st.warning("No se generaron asignaciones.")
                 
                 # AGREGAR: Mostrar insights si es distribución ideal
                 if st.session_state.get('multiple_proposals'):
@@ -1677,7 +1697,8 @@ elif menu == "Administrador":
                 if st.session_state['proposal_deficit']:
                     def_df = pd.DataFrame(st.session_state['proposal_deficit'])
                     st.dataframe(def_df, use_container_width=True)
-                else: st.info("Sin conflictos.")
+                else: 
+                    st.info("Sin conflictos.")
 
             st.markdown("---")
             c_actions = st.columns([1, 1, 1])
@@ -1717,25 +1738,37 @@ elif menu == "Administrador":
                     # En modo ideal, no aplica la optimización por déficit
                     st.info("En modo ideal, la distribución ya está optimizada.")
                 else:
-                    NUM_INTENTOS = 20; my_bar = st.progress(0, text="Optimizando...")
-                    best_rows = None; best_deficit = None; min_unfairness_score = 999999
+                    NUM_INTENTOS = 20
+                    my_bar = st.progress(0, text="Optimizando...")
+                    best_rows = None
+                    best_deficit = None
+                    min_unfairness_score = 999999
                     for i in range(NUM_INTENTOS):
                         r, d = get_distribution_proposal(st.session_state['excel_equipos'], st.session_state['excel_params'], strategy="random")
                         unfairness_score = sum([1 for x in d]) if d else 0
                         if unfairness_score < min_unfairness_score:
-                            min_unfairness_score = unfairness_score; best_rows = r; best_deficit = d
+                            min_unfairness_score = unfairness_score
+                            best_rows = r
+                            best_deficit = d
                         my_bar.progress(int((i + 1) / NUM_INTENTOS * 100))
-                    st.session_state['proposal_rows'] = best_rows; st.session_state['proposal_deficit'] = best_deficit
-                    my_bar.empty(); st.rerun()
+                    st.session_state['proposal_rows'] = best_rows
+                    st.session_state['proposal_deficit'] = best_deficit
+                    my_bar.empty()
+                    st.rerun()
 
             if c_actions[2].button("💾 Guardar Definitivo", type="primary"):
-                clear_distribution(conn); insert_distribution(conn, st.session_state['proposal_rows'])
-                if st.session_state['proposal_deficit']: st.session_state['deficit_report'] = st.session_state['proposal_deficit']
-                elif 'deficit_report' in st.session_state: del st.session_state['deficit_report']
-                st.success("Guardado."); st.balloons(); st.rerun()
+                clear_distribution(conn)
+                insert_distribution(conn, st.session_state['proposal_rows'])
+                if st.session_state['proposal_deficit']: 
+                    st.session_state['deficit_report'] = st.session_state['proposal_deficit']
+                elif 'deficit_report' in st.session_state: 
+                    del st.session_state['deficit_report']
+                st.success("Guardado.")
+                st.balloons()
+                st.rerun()
 
     with t2:
-        # REEMPLAZADO: Usamos el editor simplificado en lugar del canvas problemático
+        # USAMOS EL EDITOR MEJORADO
         zonas = load_zones()
         c1, c2 = st.columns(2)
         df_d = read_distribution_df(conn)
@@ -1743,7 +1776,7 @@ elif menu == "Administrador":
         p_sel = c1.selectbox("Piso", pisos_list)
         d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
         
-        # Llamar al editor simplificado
+        # Llamar al editor mejorado
         enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path)
 
     with t3:
@@ -1752,18 +1785,33 @@ elif menu == "Administrador":
         if st.button("Generar"):
             df_raw = read_distribution_df(conn)
             if "Excel" in rf:
-                b = BytesIO(); 
-                with pd.ExcelWriter(b) as w: df_raw.to_excel(w, index=False)
-                st.download_button("Descargar", b.getvalue(), "d.xlsx")
+                try:
+                    b = BytesIO()
+                    # Usar openpyxl como motor para Excel
+                    with pd.ExcelWriter(b, engine='openpyxl') as w: 
+                        df_raw.to_excel(w, index=False)
+                    st.download_button("Descargar Excel", b.getvalue(), "distribucion.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error al generar Excel: {e}")
             else:
-                d_data = st.session_state.get('deficit_report', [])
-                pdf_bytes = generate_full_pdf(df_raw, df_raw, logo_path=Path(global_logo_path), deficit_data=d_data)
-                st.download_button("Descargar PDF", pdf_bytes, "reporte.pdf", "application/pdf")
+                try:
+                    d_data = st.session_state.get('deficit_report', [])
+                    pdf_bytes = generate_full_pdf(df_raw, df_raw, logo_path=Path(global_logo_path), deficit_data=d_data)
+                    if pdf_bytes:
+                        st.download_button("Descargar PDF", pdf_bytes, "reporte.pdf", "application/pdf", use_container_width=True)
+                    else:
+                        st.error("No se pudo generar el PDF")
+                except Exception as e:
+                    st.error(f"Error al generar PDF: {e}")
     
     with t4:
-        nu = st.text_input("User"); np = st.text_input("Pass", type="password"); ne = st.text_input("Email")
+        nu = st.text_input("User")
+        np = st.text_input("Pass", type="password")
+        ne = st.text_input("Email")
         if st.button("Guardar Credenciales"): 
-            save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne)
+            save_setting(conn, "admin_user", nu)
+            save_setting(conn, "admin_pass", np)
+            save_setting(conn, "admin_email", ne)
             st.success("OK")
 
     with t5: 
