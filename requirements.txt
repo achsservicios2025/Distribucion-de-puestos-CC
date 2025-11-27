@@ -9,6 +9,4 @@ google-auth
 requests
 openpyxl>=3.1.0
 xlsxwriter
-folium
-streamlit-folium
-branca
+plotly
