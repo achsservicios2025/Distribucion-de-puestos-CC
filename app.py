@@ -412,9 +412,10 @@ if menu == "Vista pública":
             lib = df_view[df_view["equipo"]=="Cupos libres"].groupby(["piso","dia"], as_index=True, observed=False).agg({"cupos":"sum"}).reset_index()
             lib = apply_sorting_to_df(lib)
             st.subheader("Distribución completa")
-            st.dataframe(df_view, hide_index=True, width=None, use_container_width=True)
+            # CORRECCIÓN ERROR 1: Quitamos width=None, usamos use_container_width=True
+            st.dataframe(df_view, hide_index=True, use_container_width=True)
             st.subheader("Cupos libres por piso y día")
-            st.dataframe(lib, hide_index=True, width=None, use_container_width=True)
+            st.dataframe(lib, hide_index=True, use_container_width=True)
         
         with t2:
             st.subheader("Descarga de Planos")
@@ -663,7 +664,8 @@ elif menu == "Administrador":
             with t_view:
                 df_preview = pd.DataFrame(st.session_state['proposal_rows'])
                 if not df_preview.empty:
-                    st.dataframe(apply_sorting_to_df(df_preview), hide_index=True, width=None, use_container_width=True)
+                    # CORRECCIÓN ERROR 1: Quitamos width=None, usamos use_container_width=True
+                    st.dataframe(apply_sorting_to_df(df_preview), hide_index=True, use_container_width=True)
                 else: st.warning("No se generaron asignaciones.")
             with t_def:
                 if st.session_state['proposal_deficit']:
@@ -697,7 +699,6 @@ elif menu == "Administrador":
                 elif 'deficit_report' in st.session_state: del st.session_state['deficit_report']
                 st.success("Guardado."); st.balloons(); st.rerun()
 
-    # --- T2: EDITOR VISUAL ---
     with t2:
         st.info("Editor de Zonas")
         zonas = load_zones()
@@ -715,13 +716,13 @@ elif menu == "Administrador":
 
         if pim.exists():
             # =========================================================
-            # CORRECCIÓN DEFINITIVA: SIN BASE64 Y SIN NAMEERROR
+            # CORRECCIÓN DEFINITIVA ERROR 'str object has no attribute height'
             # =========================================================
+            # Cargamos la imagen como OBJETO PIL. No usamos string base64.
             img = PILImage.open(pim)
-            cw = 800
-            w, h = img.size # w es minúscula
-
-            # Lógica de redimensionamiento corregida
+            
+            cw = 800; w, h = img.size
+            # Redimensionamiento simple
             if w > cw:
                 ch = int(h * (cw / w))
             else:
