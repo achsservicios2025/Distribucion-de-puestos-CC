@@ -19,23 +19,52 @@ import numpy as np
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
 # ---------------------------------------------------------
-import streamlit.elements.lib.image_utils
-
-if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
-    _orig_image_to_url = streamlit.elements.lib.image_utils.image_to_url
-
-    @dataclass
-    class WidthConfig:
-        width: int
-
-    def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-        if isinstance(width, int):
-            width = WidthConfig(width=width)
-        return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
-
-    streamlit.elements.lib.image_utils.image_to_url = _patched_image_to_url
-
 # ---------------------------------------------------------
+# 1. PARCHE COMPATIBLE CON STREAMLIT >= 1.51.0
+# ---------------------------------------------------------
+import streamlit as st
+import streamlit.elements.image as st_image
+import streamlit.runtime.media_file_storage as media_file_storage
+
+# Parche para compatibilidad con versiones recientes de Streamlit
+try:
+    # Intentar encontrar la función image_to_url en las nuevas ubicaciones
+    if hasattr(st_image, 'image_to_url'):
+        # Streamlit < 1.39
+        _orig_image_to_url = st_image.image_to_url
+    elif hasattr(media_file_storage, 'MediaFileStorage') and hasattr(media_file_storage.MediaFileStorage, 'image_to_url'):
+        # Streamlit >= 1.39
+        _orig_image_to_url = media_file_storage.MediaFileStorage.image_to_url
+    else:
+        # Último recurso: buscar en elementos lib
+        import streamlit.elements.lib as elements_lib
+        if hasattr(elements_lib, 'image_utils'):
+            _orig_image_to_url = elements_lib.image_utils.image_to_url
+        else:
+            _orig_image_to_url = None
+    
+    if _orig_image_to_url:
+        from dataclasses import dataclass
+        
+        @dataclass
+        class WidthConfig:
+            width: int
+
+        def _patched_image_to_url(image, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
+            if isinstance(width, int):
+                width = WidthConfig(width=width)
+            return _orig_image_to_url(image, width, clamp, channels, output_format, image_id)
+        
+        # Aplicar el parche según la ubicación encontrada
+        if hasattr(st_image, 'image_to_url'):
+            st_image.image_to_url = _patched_image_to_url
+        elif hasattr(media_file_storage.MediaFileStorage, 'image_to_url'):
+            media_file_storage.MediaFileStorage.image_to_url = _patched_image_to_url
+        else:
+            elements_lib.image_utils.image_to_url = _patched_image_to_url
+            
+except Exception as e:
+    st.warning(f"El parche de compatibilidad no pudo aplicarse: {e}")# ---------------------------------------------------------
 # 2. IMPORTACIONES DE MÓDULOS
 # ---------------------------------------------------------
 from modules.database import (
@@ -1083,45 +1112,112 @@ elif menu == "Administrador":
                 elif 'deficit_report' in st.session_state: del st.session_state['deficit_report']
                 st.success("Guardado."); st.balloons(); st.rerun()
 
-    with t2:
-        st.info("Editor de Zonas")
-        zonas = load_zones()
-        c1, c2 = st.columns(2)
-        df_d = read_distribution_df(conn)
-        pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
-        p_sel = c1.selectbox("Piso", pisos_list)
-        d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
-        p_num = p_sel.replace("Piso ", "").strip()
+with t2:
+    st.info("Editor de Zonas")
+    zonas = load_zones()
+    c1, c2 = st.columns(2)
+    df_d = read_distribution_df(conn)
+    pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+    p_sel = c1.selectbox("Piso", pisos_list)
+    d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
+    p_num = p_sel.replace("Piso ", "").strip()
+    
+    file_base = f"piso{p_num}"
+    pim = PLANOS_DIR / f"{file_base}.png"
+    if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
+    if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
+
+    if pim.exists():
+        # SOLUCIÓN ACTUALIZADA: Usar base64 para la imagen de fondo
+        import base64
+        from io import BytesIO
         
-        file_base = f"piso{p_num}"
-        pim = PLANOS_DIR / f"{file_base}.png"
-        if not pim.exists(): pim = PLANOS_DIR / f"{file_base}.jpg"
-        if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
+        img = PILImage.open(pim)
+        
+        cw = 800
+        w, h = img.size
+        # Redimensionamiento simple
+        if w > cw:
+            ch = int(h * (cw / w))
+            img_resized = img.resize((cw, ch), PILImage.Resampling.LANCZOS)
+        else:
+            cw = w
+            ch = h
+            img_resized = img
 
-        if pim.exists():
-            # CORRECCIÓN DEFINITIVA ERROR 'str object has no attribute height'
-            img = PILImage.open(pim)
-            
-            cw = 800; w, h = img.size
-            # Redimensionamiento simple
-            if w > cw:
-                ch = int(h * (cw / w))
-            else:
-                cw = w
-                ch = h
+        # Convertir imagen a base64
+        buffered = BytesIO()
+        img_resized.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        background_image_url = f"data:image/png;base64,{img_str}"
 
-            # Pasamos el objeto 'img' directo al parámetro background_image
-            canvas = st_canvas(
-                fill_color="rgba(0, 160, 74, 0.3)",
-                stroke_width=2,
-                stroke_color="#00A04A",
-                background_image=img,  # <--- SE PASA EL OBJETO IMAGEN
-                update_streamlit=True,
-                width=int(cw), height=int(ch),
-                drawing_mode="rect",
-                key=f"cv_{p_sel}"
-            )
-            
+        canvas = st_canvas(
+            fill_color="rgba(0, 160, 74, 0.3)",
+            stroke_width=2,
+            stroke_color="#00A04A",
+            background_image=background_image_url,  # Usar URL base64
+            update_streamlit=True,
+            width=cw,
+            height=ch,
+            drawing_mode="rect",
+            key=f"cv_{p_sel}"
+        )
+        
+        # El resto del código permanece igual...
+        current_seats_dict = {}
+        eqs = [""]
+        if not df_d.empty:
+            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+            eqs += sorted(subset['equipo'].unique().tolist())
+        
+        salas_piso = []
+        if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
+        elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
+        elif "3" in p_sel: salas_piso = ["Sala Reuniones - Piso 3"]
+        eqs = eqs + salas_piso
+        
+        c1, c2, c3 = st.columns([2, 1, 1])
+        tn = c1.selectbox("Equipo / Sala", eqs)
+        tc = c2.color_picker("Color", "#00A04A")
+        if tn and tn in current_seats_dict: st.info(f"Cupos: {current_seats_dict[tn]}")
+        
+        if c3.button("Guardar", key="sz"):
+            if tn and canvas.json_data and canvas.json_data.get("objects"):
+                o = canvas.json_data["objects"][-1]
+                zonas.setdefault(p_sel, []).append({
+                    "team": tn, "x": int(o.get("left", 0)), "y": int(o.get("top", 0)),
+                    "w": int(o.get("width", 0) * o.get("scaleX", 1)),
+                    "h": int(o.get("height", 0) * o.get("scaleY", 1)), "color": tc
+                })
+                save_zones(zonas); st.success("OK")
+            else: st.warning("Dibuja algo primero.")
+        
+        st.divider()
+        if p_sel in zonas:
+            for i, z in enumerate(zonas[p_sel]):
+                c1, c2 = st.columns([4, 1])
+                c1.markdown(f"<span style='color:{z['color']}'>■</span> {z['team']}", unsafe_allow_html=True)
+                if c2.button("X", key=f"d{i}"):
+                    zonas[p_sel].pop(i); save_zones(zonas); st.rerun()
+
+        st.divider()
+        with st.expander("🎨 Editar Estilos", expanded=True):
+            tm = st.text_input("Título", f"Distribución {p_sel}")
+            ts = st.text_input("Subtítulo", f"Día: {d_sel}")
+            bg = st.color_picker("Fondo", "#FFFFFF")
+            tx = st.color_picker("Texto", "#000000")
+            lg = st.checkbox("Logo", True)
+
+        if st.button("🎨 Actualizar Vista"):
+            conf = {"title_text": tm, "subtitle_text": ts, "bg_color": bg, "title_color": tx, "use_logo": lg}
+            st.session_state['last_style_config'] = conf
+            out = generate_colored_plan(p_sel, d_sel, current_seats_dict, "PNG", conf, global_logo_path)
+            if out: st.success("Generado.")
+        
+        ds = d_sel.lower().replace("é", "e").replace("á", "a")
+        fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
+        if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")     
             current_seats_dict = {}
             eqs = [""]
             if not df_d.empty:
@@ -1200,3 +1296,4 @@ elif menu == "Administrador":
     with t5: admin_appearance_ui(conn)
     with t6:
         if st.button("BORRAR TODO (CUIDADO)", type="primary"): perform_granular_delete(conn, "TODO"); st.success("Borrado.")
+
