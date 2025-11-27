@@ -10,22 +10,19 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from fpdf import FPDF
 from PIL import Image as PILImage
-from PIL import Image, ImageDraw
+from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
 import base64
 import numpy as np
 
 # ---------------------------------------------------------
-# ---------------------------------------------------------
 # 1. PARCHE DE COMPATIBILIDAD (Reforzado para Streamlit 1.51+)
 # ---------------------------------------------------------
-import streamlit as st
+# Este bloque debe ir ANTES de importar st_canvas
 import streamlit.elements.image as st_image
-from dataclasses import dataclass
 
 # Intentamos "secuestrar" la función image_to_url de donde vive ahora
-# para inyectarla donde st_canvas la está buscando.
 try:
     # Intento 1: Ubicación moderna (Streamlit 1.39 - 1.51+)
     from streamlit.elements.lib.image_utils import image_to_url as _internal_image_to_url
@@ -34,7 +31,7 @@ except ImportError:
         # Intento 2: Ubicación intermedia
         from streamlit.runtime.media_file_storage import image_to_url as _internal_image_to_url
     except ImportError:
-        # Fallback: Definir función vacía si todo falla (evita crash, aunque no muestre imagen)
+        # Fallback: Definir función vacía si todo falla
         def _internal_image_to_url(image, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
             return ""
 
@@ -48,8 +45,14 @@ if not hasattr(st_image, 'WidthConfig'):
     class WidthConfig:
         width: int
     st_image.WidthConfig = WidthConfig
+
 # ---------------------------------------------------------
-# 2. IMPORTACIONES DE MÓDULOS
+# 2. IMPORTACIÓN DEL CANVAS (¡ESTO FALTABA!)
+# ---------------------------------------------------------
+from streamlit_drawable_canvas import st_canvas
+
+# ---------------------------------------------------------
+# 3. IMPORTACIONES DE MÓDULOS PROPIOS
 # ---------------------------------------------------------
 from modules.database import (
     get_conn, init_db, insert_distribution, clear_distribution,
@@ -67,6 +70,12 @@ from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
 
+# ---------------------------------------------------------
+# 4. CONFIGURACIÓN GENERAL
+# ---------------------------------------------------------
+st.set_page_config(page_title="Distribución de Puestos", layout="wide")
+
+# ... (El resto de tu código sigue igual hacia abajo)
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------
@@ -1395,4 +1404,5 @@ elif menu == "Administrador":
                 st.dataframe(weekly_summary, hide_index=True, use_container_width=True)
             else:
                 st.info("No hay datos suficientes para el resumen semanal")
+
 
