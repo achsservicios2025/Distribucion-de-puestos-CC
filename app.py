@@ -964,22 +964,20 @@ elif menu == "Administrador":
             pim = PLANOS_DIR / f"Piso{p_num}.png"
 
         if pim.exists():
-            img = PILImage.open(pim)
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            img_url = f"data:image/png;base64,{img_str}"
+            img = PILImage.open(pim) # Abrimos la imagen como objeto PIL
 
+            # Calculamos las dimensiones para mostrar
             cw = 800
             w, h = img.size
             ch = int(h * (cw / w)) if w > cw else h
             cw = w if w <= cw else cw
 
+            # Pasamos 'img' directamente (el objeto), NO 'img_url'
             canvas = st_canvas(
                 fill_color="rgba(0, 160, 74, 0.3)",
                 stroke_width=2,
                 stroke_color="#00A04A",
-                background_image=img_url,
+                background_image=img,  # <--- CAMBIO CLAVE: Pasamos el objeto PIL
                 update_streamlit=True,
                 width=cw,
                 height=ch,
@@ -1196,4 +1194,5 @@ elif menu == "Administrador":
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
         # El doble botón "BORRAR" al final de tu código original ha sido consolidado en uno solo.
         if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
 
