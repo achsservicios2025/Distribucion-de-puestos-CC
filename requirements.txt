@@ -1,26 +1,28 @@
-# requirements.txt - VERSIÓN COMPATIBLE Y ESTABLE
-dash==2.16.1
+# requirements.txt - Lista optimizada y congelada
+# ------------------------------------------------
+# Frameworks (Fijamos las versiones encontradas)
+dash==3.3.0
 dash-core-components==2.0.0
 dash-html-components==2.0.0
 dash-table==5.0.0
-streamlit==1.32.0
+streamlit==1.50.0
 
-# DATOS (IMPORTANTE: Numpy versión 1.x)
-pandas==2.2.1
-openpyxl==3.1.2
+# Librerías de I/O y Datos
+pandas==2.3.3
+openpyxl==3.1.5
 xlsxwriter
 numpy==1.26.4
-gspread==6.0.2
-google-auth==2.28.1
+gspread==6.2.1
+google-auth==2.41.1
 
-# INTERFAZ
+# Extensiones de Interfaz
 streamlit-drawable-canvas==0.9.3
-# Nota: Si usas el fix, asegúrate que sea compatible con numpy < 2
-# streamlit-drawable-canvas-fix==0.9.7 
+streamlit-drawable-canvas-fix==0.9.7
 
-# UTILIDADES
-matplotlib==3.8.3
-Pillow==10.2.0
+# Utilidades
+matplotlib==3.10.7
+Pillow==11.3.0
 fpdf==1.7.2
-gunicorn
+gunicorn==23.0.0
 requests
+ 
