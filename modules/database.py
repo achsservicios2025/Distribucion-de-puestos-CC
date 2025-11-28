@@ -212,20 +212,24 @@ def get_room_reservations_df(_conn):
     try: return pd.DataFrame(ws.get_all_records())
     except: return pd.DataFrame()
 
-def delete_room_reservation_from_db(conn, user, date, room, start):
-    ws = get_worksheet(conn, "room_reservations")
-    if ws is None: return False
-    
+def delete_reservation_from_db(conn, user_name, date_str, team_area):
+    ws = get_worksheet(conn, "reservations")
+    if not ws: return False
     try:
-        vals = ws.get_all_values()
-        for i in range(len(vals)-1, 0, -1):
-            r = vals[i]
-            if len(r)>=6 and r[0]==user and r[4]==str(date) and r[3]==room and r[5]==str(start):
-                ws.delete_rows(i+1)
-                get_room_reservations_df.clear()
+        # Busca todas las celdas que coincidan con la fecha (optimización)
+        cell_list = ws.findall(str(date_str))
+        for cell in cell_list:
+            row_val = ws.row_values(cell.row)
+            # Verifica User y Area
+            # (Ajustar índices según tu estructura exacta de columnas)
+            if row_val[0] == user_name and row_val[4] == team_area:
+                ws.delete_rows(cell.row)
+                list_reservations_df.clear() # Limpiar caché
                 return True
         return False
-    except: return False
+    except Exception as e:
+        print(f"Error borrando: {e}")
+        return False
 
 # --- SETTINGS & TOKENS ---
 
@@ -306,3 +310,4 @@ def perform_granular_delete(conn, option):
             msg.append("Distribución eliminada")
         
     return ", ".join(msg) + "."
+
