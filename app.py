@@ -1,1041 +1,305 @@
 import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+from gspread.exceptions import WorksheetNotFound, APIError
 import pandas as pd
 import datetime
-import os
-import uuid
-import json
-import re
-from pathlib import Path
-import matplotlib.pyplot as plt
-from fpdf import FPDF
-from PIL import Image as PILImage
-from PIL import Image
-from io import BytesIO
-import numpy as np
+import time
 
-# ---------------------------------------------------------
-# CONFIGURACIÓN INICIAL
-# ---------------------------------------------------------
-st.set_page_config(page_title="Distribución de Puestos", layout="wide")
+# --- CONFIGURACIÓN DE CONEXIÓN ---
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-# ---------------------------------------------------------
-# IMPORTACIONES
-# ---------------------------------------------------------
-try:
-    from modules.database import (
-        get_conn, init_db, insert_distribution, clear_distribution,
-        read_distribution_df, save_setting, get_all_settings,
-        add_reservation, user_has_reservation, list_reservations_df,
-        add_room_reservation, get_room_reservations_df,
-        count_monthly_free_spots, delete_reservation_from_db, 
-        delete_room_reservation_from_db, perform_granular_delete,
-        ensure_reset_table, save_reset_token, validate_and_consume_token
-    )
-    from modules.seats import compute_distribution_from_excel, get_ideal_distribution_proposal, calculate_distribution_stats, get_realistic_distribution_proposal
-    from modules.rooms import generate_time_slots, check_room_conflict
-    from modules.zones import generate_colored_plan, load_zones, save_zones
-    
-    MODULES_LOADED = True
-except ImportError as e:
-    st.error(f"⚠️ Error importando módulos: {e}")
-    MODULES_LOADED = False
-
-# ---------------------------------------------------------
-# CONSTANTES
-# ---------------------------------------------------------
-ORDER_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-PLANOS_DIR = Path("planos")
-DATA_DIR = Path("data")
-COLORED_DIR = Path("planos_coloreados")
-
-# Crear directorios necesarios
-for directory in [DATA_DIR, PLANOS_DIR, COLORED_DIR]:
-    directory.mkdir(exist_ok=True)
-
-# ---------------------------------------------------------
-# INICIALIZACIÓN
-# ---------------------------------------------------------
-st.title("🏢 Sistema de Gestión de Espacios - ACHS Servicios")
-
-# Verificar módulos
-if not MODULES_LOADED:
-    st.error("❌ Error crítico: No se pudieron cargar los módulos necesarios")
-    st.stop()
-
-# Intentar conexión a base de datos
-try:
-    conn = get_conn()
-    if conn is None:
-        st.error("❌ No se pudo establecer conexión con la base de datos")
-        st.stop()
-    
-    if "db_initialized" not in st.session_state:
-        with st.spinner('Inicializando base de datos...'):
-            init_db(conn)
-        st.session_state["db_initialized"] = True
-        
-except Exception as e:
-    st.error(f"❌ Error de conexión: {e}")
-    st.stop()
-
-# Cargar configuración
-try:
-    settings = get_all_settings(conn)
-except:
-    settings = {}
-
-# ---------------------------------------------------------
-# FUNCIONES MEJORADAS
-# ---------------------------------------------------------
-def apply_sorting_to_df(df):
-    """Ordenar DataFrame correctamente"""
-    if df.empty: 
-        return df
-    
-    df = df.copy()
-    
-    # Identificar columnas
-    col_piso = None
-    col_dia = None
-    for col in df.columns:
-        col_str = str(col).lower()  # Convertir a string para evitar el error
-        if 'piso' in col_str:
-            col_piso = col
-        elif 'dia' in col_str or 'día' in col_str:
-            col_dia = col
-    
-    # Ordenar por piso y día
-    if col_piso and col_dia:
-        # Convertir a categórico para orden personalizado
-        df[col_piso] = pd.Categorical(df[col_piso], 
-                                    categories=sorted(df[col_piso].unique(), key=lambda x: int(re.findall(r'\d+', str(x))[0]) if re.findall(r'\d+', str(x)) else 0),
-                                    ordered=True)
-        df[col_dia] = pd.Categorical(df[col_dia], 
-                                    categories=ORDER_DIAS,
-                                    ordered=True)
-        df = df.sort_values([col_piso, col_dia])
-    
-    return df
-
-def calculate_weekly_usage_summary(distrib_df):
-    """Calcular resumen semanal mejorado con porcentajes realistas"""
-    if distrib_df.empty: 
-        return pd.DataFrame()
-    
+@st.cache_resource
+def get_conn():
+    """Conecta a Google Sheets."""
     try:
-        # Filtrar solo equipos (excluir cupos libres)
-        equipos_df = distrib_df[distrib_df['equipo'] != "Cupos libres"]
-        if equipos_df.empty:
-            return pd.DataFrame()
-        
-        # Calcular total semanal por equipo
-        weekly = equipos_df.groupby('equipo').agg({
-            'cupos': 'sum'
-        }).reset_index()
-        weekly.columns = ['Equipo', 'Total Cupos Semanales']
-        
-        # Calcular porcentaje de distribución semanal BASADO EN CUPOS TOTALES
-        total_cupos_semanales = weekly['Total Cupos Semanales'].sum()
-        if total_cupos_semanales > 0:
-            weekly['% Semanal'] = (weekly['Total Cupos Semanales'] / total_cupos_semanales * 100).round(1)
-        else:
-            weekly['% Semanal'] = 0
-        
-        # Calcular porcentaje mensual aproximado
-        weekly['% Mensual'] = (weekly['% Semanal']).round(1)  # Mismo que semanal para vista simplificada
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+            client = gspread.authorize(creds)
             
-        return weekly[['Equipo', '% Semanal', '% Mensual']].sort_values('% Semanal', ascending=False)
+            if "sheets" in st.secrets and "sheet_name" in st.secrets["sheets"]:
+                sheet_name = st.secrets["sheets"]["sheet_name"] 
+                return client.open(sheet_name)
+            else:
+                st.error("Falta la configuración 'sheet_name' en st.secrets")
+                return None
+        return None
     except Exception as e:
-        st.error(f"Error calculando resumen: {e}")
-        return pd.DataFrame()
-
-def clean_reservation_df(df, tipo="puesto"):
-    """Limpiar DataFrame de reservas"""
-    if df.empty: 
-        return df
-    
-    try:
-        cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at', 'registro', 'id.1']]
-        df = df.drop(columns=cols_drop, errors='ignore')
-        
-        if tipo == "puesto":
-            rename_map = {
-                'user_name': 'Nombre', 
-                'user_email': 'Correo', 
-                'piso': 'Piso', 
-                'reservation_date': 'Fecha Reserva', 
-                'team_area': 'Ubicación'
-            }
-            df = df.rename(columns=rename_map)
-            desired_cols = ['Fecha Reserva', 'Piso', 'Ubicación', 'Nombre', 'Correo']
-            existing_cols = [c for c in desired_cols if c in df.columns]
-            return df[existing_cols]
-            
-        elif tipo == "sala":
-            rename_map = {
-                'user_name': 'Nombre', 
-                'user_email': 'Correo', 
-                'piso': 'Piso', 
-                'room_name': 'Sala', 
-                'reservation_date': 'Fecha', 
-                'start_time': 'Inicio', 
-                'end_time': 'Fin'
-            }
-            df = df.rename(columns=rename_map)
-            desired_cols = ['Fecha', 'Inicio', 'Fin', 'Sala', 'Piso', 'Nombre', 'Correo']
-            existing_cols = [c for c in desired_cols if c in df.columns]
-            return df[existing_cols]
-        return df
-    except:
-        return df
-
-def get_available_slots(conn, piso, fecha):
-    """Obtener cupos disponibles en tiempo real para un piso y fecha"""
-    try:
-        # Obtener distribución base
-        df_distrib = read_distribution_df(conn)
-        dia_nombre = ORDER_DIAS[fecha.weekday()]
-        
-        # Cupos totales para ese piso y día
-        distrib_dia = df_distrib[(df_distrib['piso'] == piso) & 
-                                (df_distrib['dia'] == dia_nombre) &
-                                (df_distrib['equipo'] == 'Cupos libres')]
-        
-        if distrib_dia.empty:
-            return 0, 0
-        
-        cupos_totales = int(distrib_dia.iloc[0]['cupos'])
-        
-        # Cupos ya reservados
-        reservas_existentes = list_reservations_df(conn)
-        if not reservas_existentes.empty:
-            reservas_dia = reservas_existentes[
-                (reservas_existentes['piso'] == piso) &
-                (reservas_existentes['reservation_date'] == str(fecha)) &
-                (reservas_existentes['team_area'] == 'Cupos libres')
-            ]
-            cupos_ocupados = len(reservas_dia)
-        else:
-            cupos_ocupados = 0
-            
-        cupos_disponibles = max(0, cupos_totales - cupos_ocupados)
-        return cupos_disponibles, cupos_totales
-        
-    except Exception as e:
-        st.error(f"Error calculando disponibilidad: {e}")
-        return 0, 0
-
-def generate_full_pdf_report(distrib_df, logo_path, deficit_data=None):
-    """Generar reporte PDF completo"""
-    try:
-        pdf = FPDF()
-        pdf.set_auto_page_break(True, 15)
-        
-        # Página 1: Distribución diaria
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        
-        # Logo
-        try:
-            if Path(logo_path).exists():
-                pdf.image(str(logo_path), x=10, y=8, w=30)
-        except:
-            pass
-            
-        pdf.ln(25)
-        pdf.cell(0, 10, "Informe de Distribución", ln=True, align='C')
-        pdf.ln(6)
-        
-        pdf.set_font("Arial", 'B', 11)
-        pdf.cell(0, 8, "1. Detalle de Distribución Diaria", ln=True)
-
-        # Tabla Diaria
-        pdf.set_font("Arial", 'B', 9)
-        widths = [30, 60, 25, 25, 25]
-        headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib"]    
-        for w, h in zip(widths, headers): 
-            pdf.cell(w, 6, h, 1)
-        pdf.ln()
-
-        pdf.set_font("Arial", '', 9)
-        distrib_df_sorted = apply_sorting_to_df(distrib_df)
-        
-        for _, r in distrib_df_sorted.iterrows():
-            piso = str(r.get('piso', ''))
-            equipo = str(r.get('equipo', ''))[:35]
-            dia = str(r.get('dia', ''))
-            cupos = str(r.get('cupos', ''))
-            pct = str(r.get('pct', '0'))
-            
-            pdf.cell(widths[0], 6, piso, 1)
-            pdf.cell(widths[1], 6, equipo, 1)
-            pdf.cell(widths[2], 6, dia, 1)
-            pdf.cell(widths[3], 6, cupos, 1)
-            pdf.cell(widths[4], 6, f"{pct}%", 1)
-            pdf.ln()
-
-        # Resumen semanal
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 11)
-        pdf.cell(0, 10, "2. Resumen de Uso Semanal por Equipo", ln=True)
-        
-        weekly_summary = calculate_weekly_usage_summary(distrib_df)
-        if not weekly_summary.empty:
-            pdf.set_font("Arial", 'B', 9)
-            w_wk = [80, 40, 40]
-            h_wk = ["Equipo", "Total Semanal", "% Distrib Semanal"]
-            start_x = 25
-            pdf.set_x(start_x)
-            for w, h in zip(w_wk, h_wk): 
-                pdf.cell(w, 6, h, 1)
-            pdf.ln()
-            
-            pdf.set_font("Arial", '', 9)
-            for _, row in weekly_summary.iterrows():
-                pdf.set_x(start_x)
-                pdf.cell(w_wk[0], 6, str(row["Equipo"])[:30], 1)
-                pdf.cell(w_wk[1], 6, str(int(row["Total Cupos Semanales"])), 1)
-                pdf.cell(w_wk[2], 6, f"{row['% Semanal']}%", 1)
-                pdf.ln()
-        
-        return pdf.output(dest='S').encode('latin-1')
-        
-    except Exception as e:
-        st.error(f"Error generando PDF: {e}")
+        print(f"Error conectando a Google Sheets: {e}") 
+        st.error(f"Error conectando a Google Sheets: {e}") 
         return None
 
-# ---------------------------------------------------------
-# DIÁLOGOS DE CONFIRMACIÓN
-# ---------------------------------------------------------
-@st.dialog("Confirmar Distribución con Equipos Problemáticos")
-def confirm_problematic_teams_dialog(equipos_problema):
-    st.warning("⚠️ **Atención: Equipos con menos de 2 integrantes detectados**")
-    
-    for equipo in equipos_problema:
-        st.error(f"• {equipo}")
-    
-    st.write("Estos equipos no podrán recibir el mínimo de 2 cupos por día.")
-    st.write("¿Desea continuar con la distribución?")
-    
-    col1, col2 = st.columns(2)
-    if col1.button("✅ Sí, continuar", type="primary", use_container_width=True):
-        st.session_state.confirm_distribution = True
-        st.rerun()
-    if col2.button("❌ Cancelar", use_container_width=True):
-        st.session_state.confirm_distribution = False
-        st.rerun()
+def get_worksheet(conn, sheet_name):
+    """Obtiene pestaña con reintento anti-429 y protección contra None."""
+    if conn is None:
+        return None
 
-@st.dialog("Confirmar Borrado Masivo")
-def confirm_mass_delete_dialog(opcion):
-    st.warning(f"⚠️ **¿Está seguro que desea borrar {opcion}?**")
-    st.error("⚠️ **Esta acción no se puede deshacer**")
-    
-    col1, col2 = st.columns(2)
-    if col1.button("✅ Sí, borrar", type="primary", use_container_width=True):
-        st.session_state.confirm_delete = True
-        st.rerun()
-    if col2.button("❌ Cancelar", use_container_width=True):
-        st.session_state.confirm_delete = False
-        st.rerun()
-
-@st.dialog("Confirmar Guardar Distribución")
-def confirm_save_distribution_dialog():
-    st.info("💾 **¿Guardar esta distribución como definitiva?**")
-    
-    col1, col2 = st.columns(2)
-    if col1.button("✅ Sí, guardar", type="primary", use_container_width=True):
-        st.session_state.confirm_save = True
-        st.rerun()
-    if col2.button("❌ Cancelar", use_container_width=True):
-        st.session_state.confirm_save = False
-        st.rerun()
-
-# ---------------------------------------------------------
-# MENÚ PRINCIPAL
-# ---------------------------------------------------------
-menu = st.sidebar.selectbox("Navegación", ["Vista Pública", "Reservas", "Administrador"])
-
-# ==========================================
-# VISTA PÚBLICA
-# ==========================================
-if menu == "Vista Pública":
-    st.header("🏢 Sistema de Gestión de Espacios - ACHS Servicios")
-    
-    # Mostrar rankings inmediatamente
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🏆 Ranking Uso de Salas")
-        reservas_salas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-        if not reservas_salas.empty and 'Nombre' in reservas_salas.columns:
-            ranking_salas = reservas_salas['Nombre'].value_counts().head(10).reset_index()
-            ranking_salas.columns = ['Equipo', 'Reservas']
-            for idx, (_, row) in enumerate(ranking_salas.iterrows(), 1):
-                st.write(f"{idx}. **{row['Equipo']}** - {row['Reservas']} reservas")
-        else:
-            st.info("No hay datos de reservas de salas")
-    
-    with col2:
-        st.subheader("🏆 Ranking Uso Puestos Flex")
-        reservas_puestos = clean_reservation_df(list_reservations_df(conn), "puesto")
-        if not reservas_puestos.empty and 'Nombre' in reservas_puestos.columns:
-            ranking_puestos = reservas_puestos['Nombre'].value_counts().head(10).reset_index()
-            ranking_puestos.columns = ['Equipo', 'Reservas']
-            for idx, (_, row) in enumerate(ranking_puestos.iterrows(), 1):
-                st.write(f"{idx}. **{row['Equipo']}** - {row['Reservas']} reservas")
-        else:
-            st.info("No hay datos de reservas de puestos")
-    
-    st.markdown("---")
-    
-    # Reservas activas de salas (transparentar uso)
-    st.subheader("📅 Reservas Activas de Salas")
-    reservas_salas_activas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-    if not reservas_salas_activas.empty:
-        # Mostrar solo reservas futuras
-        hoy = datetime.date.today()
-        reservas_futuras = []
-        for _, reserva in reservas_salas_activas.iterrows():
+    for attempt in range(3):
+        try:
+            return conn.worksheet(sheet_name)
+        except WorksheetNotFound:
             try:
-                fecha_reserva = datetime.datetime.strptime(reserva['Fecha'], '%Y-%m-%d').date()
-                if fecha_reserva >= hoy:
-                    reservas_futuras.append(reserva)
-            except:
+                time.sleep(1)
+                return conn.add_worksheet(title=sheet_name, rows=100, cols=20)
+            except APIError:
+                time.sleep(1)
+                if conn: return conn.worksheet(sheet_name)
+        except APIError as e:
+            if "429" in str(e):
+                time.sleep(2 * (attempt + 1))
                 continue
-        
-        if reservas_futuras:
-            df_futuras = pd.DataFrame(reservas_futuras)
-            # Ordenar por fecha
-            df_futuras['Fecha'] = pd.to_datetime(df_futuras['Fecha'])
-            df_futuras = df_futuras.sort_values('Fecha')
-            
-            for _, reserva in df_futuras.head(15).iterrows():  # Mostrar solo 15 más recientes
-                with st.container(border=True):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.write(f"**{reserva['Nombre']}**")
-                        st.write(f"📅 {reserva['Fecha'].strftime('%d/%m/%Y')} | 🕒 {reserva['Inicio']} - {reserva['Fin']}")
-                        st.write(f"📍 {reserva['Sala']} | 🏢 {reserva['Piso']}")
-                    with col2:
-                        st.write("👥 **Equipo:**")
-                        st.write(reserva['Correo'].split('@')[0] if '@' in str(reserva['Correo']) else reserva['Correo'])
-        else:
-            st.info("No hay reservas futuras de salas")
-    else:
-        st.info("No hay reservas de salas registradas")
-    
-    st.markdown("---")
-    
-    # Distribución de cupos (en acordeones para compactar)
-    try:
-        df = read_distribution_df(conn)
-        
-        if not df.empty:
-            st.subheader("📊 Distribución de Cupos")
-            
-            # Resumen compacto
-            with st.expander("📈 Resumen Semanal por Equipo", expanded=False):
-                weekly_summary = calculate_weekly_usage_summary(df)
-                if not weekly_summary.empty:
-                    st.dataframe(weekly_summary, use_container_width=True)
-            
-            # Distribución por pisos en acordeones
-            pisos = sorted(df['piso'].unique())
-            for piso in pisos:
-                with st.expander(f"🏢 {piso} - Ver distribución", expanded=False):
-                    df_piso = df[df['piso'] == piso]
-                    st.dataframe(df_piso[['equipo', 'dia', 'cupos', 'pct']], use_container_width=True)
-        else:
-            st.info("📝 No hay datos de distribución cargados.")
-            
-    except Exception as e:
-        st.error(f"Error cargando datos: {e}")
+            print(f"Error API (get_worksheet): {e}")
+            return None 
+        except Exception as e:
+            print(f"Error inesperado (get_worksheet): {e}")
+            return None
+    return None
 
-# ==========================================
-# RESERVAS
-# ==========================================
-elif menu == "Reservas":
-    st.header("🎯 Sistema de Reservas")
+def init_db(conn):
+    """Inicializa DB una sola vez."""
+    if conn is None: return 
     
-    # Obtener equipos de la distribución
-    df_distrib = read_distribution_df(conn)
-    equipos = []
-    if not df_distrib.empty:
-        equipos = sorted(df_distrib[df_distrib['equipo'] != 'Cupos libres']['equipo'].unique())
-    
-    opcion_reserva = st.selectbox(
-        "Tipo de Reserva",
-        ["🪑 Reservar Puesto Flex", "🏢 Reservar Sala de Reuniones", "📋 Mis Reservas Activas"],
-        key="reserva_type"
-    )
-    
-    st.markdown("---")
-
-    if opcion_reserva == "🪑 Reservar Puesto Flex":
-        st.subheader("Reserva de Puesto Flex")
-        st.info("💡 Máximo 2 reservas por mes por equipo")
-        
-        if not equipos:
-            st.warning("❌ No hay equipos cargados en el sistema. Genere una distribución primero.")
-        else:
-            # Formulario de reserva mejorado
-            with st.form("form_puesto_flex"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    equipo = st.selectbox("Seleccione su Equipo", equipos, key="equipo_puesto")
-                    fecha = st.date_input("Fecha de Reserva", 
-                                        min_value=datetime.date.today(),
-                                        key="fecha_puesto")
-                    piso = st.selectbox("Piso", ["Piso 1", "Piso 2", "Piso 3"], key="piso_puesto")
-                
-                with col2:
-                    email = st.text_input("Correo Electrónico del Equipo", 
-                                        placeholder="equipo@empresa.com",
-                                        key="email_puesto")
-                    
-                    # Mostrar información del día
-                    dia_semana = ORDER_DIAS[fecha.weekday()] if fecha.weekday() < 5 else "Fin de Semana"
-                    st.info(f"📅 Día seleccionado: **{dia_semana}**")
-                
-                # Mostrar disponibilidad en tiempo real
-                if fecha and piso and fecha.weekday() < 5:
-                    cupos_disponibles, cupos_totales = get_available_slots(conn, piso, fecha)
-                    
-                    # Mostrar indicador de disponibilidad
-                    st.subheader("📊 Disponibilidad")
-                    
-                    col_avail1, col_avail2 = st.columns(2)
-                    with col_avail1:
-                        st.metric("Cupos Disponibles", cupos_disponibles)
-                    with col_avail2:
-                        st.metric("Capacidad Total", cupos_totales)
-                    
-                    # Barra de progreso
-                    if cupos_totales > 0:
-                        porcentaje_ocupado = ((cupos_totales - cupos_disponibles) / cupos_totales) * 100
-                        st.progress(porcentaje_ocupado / 100)
-                        st.caption(f"🟢 {cupos_disponibles} disponibles de {cupos_totales} totales")
-                    
-                    if cupos_disponibles == 0:
-                        st.warning("⚠️ No hay cupos disponibles para esta fecha y piso")
-                
-                submitted = st.form_submit_button("📅 Confirmar Reserva", type="primary")
-                
-                if submitted:
-                    if not equipo or not email:
-                        st.error("❌ Complete todos los campos obligatorios")
-                    elif fecha.weekday() >= 5:
-                        st.error("❌ No se pueden realizar reservas los fines de semana")
-                    elif cupos_disponibles <= 0:
-                        st.error("❌ No hay cupos disponibles para esta fecha")
-                    else:
-                        # Verificar límite mensual
-                        reservas_mes = count_monthly_free_spots(conn, email, fecha)
-                        st.info(f"📊 Usted tiene {reservas_mes} reservas flex este mes")
-                        
-                        if reservas_mes >= 2:
-                            st.error(f"❌ Ha alcanzado el límite máximo de 2 reservas flex por mes")
-                        else:
-                            # Verificar si ya tiene reserva para esta fecha
-                            if user_has_reservation(conn, email, str(fecha)):
-                                st.error("❌ Ya tiene una reserva registrada para esta fecha")
-                            else:
-                                try:
-                                    add_reservation(conn, equipo, email, piso, str(fecha), "Cupos libres", 
-                                                  datetime.datetime.now().isoformat())
-                                    st.success(f"✅ Reserva confirmada para **{equipo}** el {fecha}")
-                                    st.toast("✅ Reserva confirmada exitosamente", icon="✅")
-                                except Exception as e:
-                                    st.error(f"❌ Error al guardar reserva: {e}")
-
-    elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
-        st.subheader("Reserva de Sala de Reuniones")
-        
-        if not equipos:
-            st.warning("❌ No hay equipos cargados en el sistema. Genere una distribución primero.")
-        else:
-            with st.form("form_sala_reuniones"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    sala = st.selectbox("Sala", [
-                        "Sala Reuniones Pequeña Piso 1",
-                        "Sala Reuniones Grande Piso 1", 
-                        "Sala Reuniones Piso 2",
-                        "Sala Reuniones Piso 3"
-                    ], key="sala_select")
-                    
-                    fecha_sala = st.date_input("Fecha", 
-                                             min_value=datetime.date.today(),
-                                             key="fecha_sala")
-                
-                with col2:
-                    equipo_sala = st.selectbox("Equipo Solicitante", equipos, key="equipo_sala")
-                    email_sala = st.text_input("Correo Electrónico", 
-                                             placeholder="equipo@empresa.com",
-                                             key="email_sala")
-                
-                # Horarios
-                st.subheader("Horario")
-                col_t1, col_t2 = st.columns(2)
-                with col_t1:
-                    hora_inicio = st.selectbox("Hora Inicio", 
-                                             generate_time_slots("08:00", "20:00", 30),
-                                             key="hora_inicio")
-                with col_t2:
-                    hora_fin = st.selectbox("Hora Fin", 
-                                          generate_time_slots("08:30", "20:30", 30),
-                                          index=1, key="hora_fin")
-                
-                submitted_sala = st.form_submit_button("🏢 Confirmar Reserva de Sala", type="primary")
-                
-                if submitted_sala:
-                    if not equipo_sala or not email_sala:
-                        st.error("❌ Complete todos los campos obligatorios")
-                    else:
-                        # Verificar conflicto
-                        if check_room_conflict(get_room_reservations_df(conn).to_dict("records"), 
-                                             str(fecha_sala), sala, hora_inicio, hora_fin):
-                            st.error("❌ La sala ya está reservada en ese horario")
-                        else:
-                            try:
-                                # Determinar piso basado en la sala
-                                piso_sala = "Piso 1"
-                                if "Piso 2" in sala:
-                                    piso_sala = "Piso 2"
-                                elif "Piso 3" in sala:
-                                    piso_sala = "Piso 3"
-                                
-                                add_room_reservation(conn, equipo_sala, email_sala, piso_sala, sala, 
-                                                   str(fecha_sala), hora_inicio, hora_fin,
-                                                   datetime.datetime.now().isoformat())
-                                st.success(f"✅ Sala **{sala}** reservada para **{equipo_sala}**")
-                                st.toast("✅ Reserva de sala confirmada exitosamente", icon="✅")
-                            except Exception as e:
-                                st.error(f"❌ Error al reservar sala: {e}")
-
-    elif opcion_reserva == "📋 Mis Reservas Activas":
-        st.subheader("Mis Reservas Activas")
-        
-        email_busqueda = st.text_input("Ingrese su correo electrónico para buscar reservas:",
-                                     placeholder="equipo@empresa.com")
-        
-        if email_busqueda:
-            # Buscar reservas de puestos
-            reservas_puestos = clean_reservation_df(list_reservations_df(conn), "puesto")
-            mis_puestos = pd.DataFrame()
-            if not reservas_puestos.empty and 'Correo' in reservas_puestos.columns:
-                mis_puestos = reservas_puestos[reservas_puestos['Correo'].str.contains(email_busqueda, case=False, na=False)]
-            
-            # Buscar reservas de salas
-            reservas_salas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-            mis_salas = pd.DataFrame()
-            if not reservas_salas.empty and 'Correo' in reservas_salas.columns:
-                mis_salas = reservas_salas[reservas_salas['Correo'].str.contains(email_busqueda, case=False, na=False)]
-            
-            if mis_puestos.empty and mis_salas.empty:
-                st.info("📝 No se encontraron reservas activas para este correo")
-            else:
-                if not mis_puestos.empty:
-                    st.subheader("🪑 Mis Reservas de Puestos")
-                    for idx, reserva in mis_puestos.iterrows():
-                        with st.container(border=True):
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.write(f"**{reserva['Nombre']}**")
-                                st.write(f"📅 {reserva['Fecha Reserva']} | 📍 {reserva['Piso']} | 🏷️ {reserva['Ubicación']}")
-                            with col2:
-                                if st.button("❌ Cancelar", key=f"cancel_p_{idx}"):
-                                    if delete_reservation_from_db(conn, reserva['Nombre'], reserva['Fecha Reserva'], reserva['Ubicación']):
-                                        st.success("✅ Reserva cancelada exitosamente")
-                                        st.toast("✅ Reserva cancelada", icon="✅")
-                                        st.rerun()
-                
-                if not mis_salas.empty:
-                    st.subheader("🏢 Mis Reservas de Salas")
-                    for idx, reserva in mis_salas.iterrows():
-                        with st.container(border=True):
-                            col1, col2 = st.columns([4, 1])
-                            with col1:
-                                st.write(f"**{reserva['Nombre']}**")
-                                st.write(f"📅 {reserva['Fecha']} | 🕒 {reserva['Inicio']} - {reserva['Fin']}")
-                                st.write(f"📍 {reserva['Sala']} | 🏢 {reserva['Piso']}")
-                            with col2:
-                                if st.button("❌ Cancelar", key=f"cancel_s_{idx}"):
-                                    if delete_room_reservation_from_db(conn, reserva['Nombre'], reserva['Fecha'], reserva['Sala'], reserva['Inicio']):
-                                        st.success("✅ Reserva cancelada exitosamente")
-                                        st.toast("✅ Reserva de sala cancelada", icon="✅")
-                                        st.rerun()
-
-# ==========================================
-# ADMINISTRADOR
-# ==========================================
-elif menu == "Administrador":
-    st.header("⚙️ Panel de Administración")
-    
-    # Verificar credenciales
-    if "admin_logged_in" not in st.session_state:
-        st.session_state.admin_logged_in = False
-    
-    if not st.session_state.admin_logged_in:
-        st.subheader("🔐 Autenticación Requerida")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            usuario = st.text_input("Usuario", value="admin")
-        with col2:
-            password = st.text_input("Contraseña", type="password", value="admin123")
-        
-        if st.button("🔓 Ingresar", type="primary"):
-            if usuario == "admin" and password == "admin123":
-                st.session_state.admin_logged_in = True
-                st.rerun()
-            else:
-                st.error("❌ Credenciales incorrectas")
-        st.stop()
-    
-    # Barra superior de administrador
-    col_top1, col_top2, col_top3 = st.columns([3, 1, 1])
-    with col_top1:
-        st.success(f"🔓 Sesión activa: **Administrador**")
-    with col_top2:
-        if st.button("🔄 Recargar Datos"):
-            st.cache_data.clear()
-            st.rerun()
-    with col_top3:
-        if st.button("🚪 Cerrar Sesión"):
-            st.session_state.admin_logged_in = False
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # Pestañas de administrador
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Distribución", "🎨 Editor Visual", "📋 Informes", "⚙️ Configuración", "🛠️ Mantenimiento"])
-    
-    with tab1:
-        st.subheader("Generador de Distribución")
-        
-        uploaded_file = st.file_uploader("Subir archivo Excel", type=["xlsx"], 
-                                       help="El archivo debe contener hojas 'Equipos' y 'Parámetros'")
-        
-        col_strat1, col_strat2 = st.columns(2)
-        with col_strat1:
-            use_realistic = st.checkbox("🎯 Usar distribución realista (con déficit)", 
-                                      value=True,
-                                      help="Genera distribución realista que respeta capacidades y genera déficit")
-        with col_strat2:
-            if use_realistic:
-                estrategia = st.selectbox("Estrategia", 
-                                        ["⚖️ Equitativa Realista", "🔄 Balanceada con Flex", "🎲 Aleatoria Controlada"])
-            else:
-                estrategia = st.selectbox("Estrategia Base", 
-                                        ["🎲 Aleatorio", "🧩 Tetris", "🐜 Relleno"])
-        
-        strat_map = {
-            "🎲 Aleatorio": "random",
-            "🧩 Tetris": "size_desc", 
-            "🐜 Relleno": "size_asc",
-            "⚖️ Equitativa Realista": "realistic_equity",
-            "🔄 Balanceada con Flex": "balanced_flex",
-            "🎲 Aleatoria Controlada": "controlled_random"
-        }
-        
-        if uploaded_file and st.button("🚀 Generar Distribución", type="primary"):
+    sheets_config = {
+        "reservations": ["user_name", "user_email", "piso", "reservation_date", "team_area", "created_at"],
+        "room_reservations": ["user_name", "user_email", "piso", "room_name", "reservation_date", "start_time", "end_time", "created_at"],
+        "distribution": ["piso", "equipo", "dia", "cupos", "pct", "created_at"],
+        "settings": ["key", "value", "updated_at"],
+        "reset_tokens": ["token", "created_at", "expires_at", "used"]
+    }
+    for name, headers in sheets_config.items():
+        ws = get_worksheet(conn, name)
+        if ws:
             try:
-                df_equipos = pd.read_excel(uploaded_file, "Equipos")
-                st.session_state.df_equipos = df_equipos  # Guardar en session_state
-                st.success(f"✅ Equipos cargados: {len(df_equipos)} equipos")
-                
-                if use_realistic:
-                    # Generar distribución realista
-                    rows, equipos_problema = get_realistic_distribution_proposal(df_equipos, strategy=strat_map[estrategia])
-                    deficit = []
-                else:
-                    df_parametros = pd.read_excel(uploaded_file, "Parámetros")
-                    rows, deficit = compute_distribution_from_excel(df_equipos, df_parametros, strategy=strat_map[estrategia])
-                    equipos_problema = []
-                
-                # Mostrar equipos problemáticos si los hay
-                if equipos_problema:
-                    st.session_state.problematic_teams = equipos_problema
-                    st.session_state.generated_rows = rows
-                    st.session_state.generated_deficit = deficit
-                    confirm_problematic_teams_dialog(equipos_problema)
-                else:
-                    st.session_state.generated_rows = rows
-                    st.session_state.generated_deficit = deficit
-                    st.success("✅ Distribución generada exitosamente")
-                    st.toast("✅ Distribución generada exitosamente", icon="✅")
-                
-            except Exception as e:
-                st.error(f"❌ Error procesando archivo: {e}")
-        
-        # Manejar confirmación de distribución
-        if hasattr(st.session_state, 'confirm_distribution'):
-            if st.session_state.confirm_distribution:
-                st.success("✅ Distribución confirmada y generada")
-                st.session_state.confirm_distribution = None
-            else:
-                st.info("❌ Distribución cancelada")
-                st.session_state.confirm_distribution = None
-        
-        # Mostrar distribución generada
-        if hasattr(st.session_state, 'generated_rows') and st.session_state.generated_rows:
-            st.subheader("Vista Previa de Distribución")
-            
-            df_preview = pd.DataFrame(st.session_state.generated_rows)
-            st.dataframe(apply_sorting_to_df(df_preview), use_container_width=True)
-            
-            # Estadísticas - SOLO si df_equipos está disponible
-            if st.session_state.generated_rows and 'df_equipos' in st.session_state:
-                stats = calculate_distribution_stats(st.session_state.generated_rows, st.session_state.df_equipos)
-                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-                col_stat1.metric("Total Cupos", stats['total_cupos_asignados'])
-                col_stat2.metric("Cupos Libres", stats['cupos_libres'])
-                col_stat3.metric("Equipos con Déficit", stats['equipos_con_deficit'])
-                col_stat4.metric("Uniformidad", f"{stats['uniformidad']:.1f}")
-            
-            # Botón para guardar
-            if st.button("💾 Guardar Distribución Definitiva", type="primary"):
-                confirm_save_distribution_dialog()
-        
-        # Manejar confirmación de guardado
-        if hasattr(st.session_state, 'confirm_save'):
-            if st.session_state.confirm_save:
-                try:
-                    clear_distribution(conn)
-                    insert_distribution(conn, st.session_state.generated_rows)
-                    st.success("✅ Distribución guardada exitosamente en la base de datos")
-                    st.toast("✅ Distribución guardada exitosamente", icon="✅")
-                    st.session_state.confirm_save = None
-                except Exception as e:
-                    st.error(f"❌ Error guardando distribución: {e}")
-            else:
-                st.info("❌ Guardado cancelado")
-                st.session_state.confirm_save = None
-    
-    with tab2:
-        st.subheader("Editor Visual de Planos")
-        st.info("🎨 Esta funcionalidad permite editar zonas en los planos de los pisos")
-        
-        # Cargar zonas existentes
-        zonas = load_zones()
-        
-        col_edit1, col_edit2 = st.columns(2)
-        with col_edit1:
-            piso_editor = st.selectbox("Piso", ["Piso 1", "Piso 2", "Piso 3"], key="editor_piso")
-        with col_edit2:
-            dia_editor = st.selectbox("Día de Referencia", ORDER_DIAS, key="editor_dia")
-        
-        # Mostrar plano base si existe
-        piso_num = piso_editor.replace("Piso ", "").strip()
-        plano_path = PLANOS_DIR / f"piso{piso_num}.png"
-        
-        if plano_path.exists():
-            st.image(str(plano_path), caption=f"Plano base - {piso_editor}", use_container_width=True)
-            
-            # Editor simple de zonas
-            with st.expander("✏️ Agregar/Editar Zonas"):
-                st.info("Seleccione un equipo y defina su zona en el plano")
-                
-                equipos_disponibles = []
-                df_distrib_editor = read_distribution_df(conn)
-                if not df_distrib_editor.empty:
-                    equipos_disponibles = sorted(df_distrib_editor['equipo'].unique())
-                
-                if equipos_disponibles:
-                    equipo_zona = st.selectbox("Equipo", equipos_disponibles)
-                    color_zona = st.color_picker("Color", "#00A04A")
-                    
-                    col_coord1, col_coord2 = st.columns(2)
-                    with col_coord1:
-                        x_pos = st.slider("Posición X", 0, 800, 100)
-                        ancho = st.slider("Ancho", 10, 400, 100)
-                    with col_coord2:
-                        y_pos = st.slider("Posición Y", 0, 600, 100)
-                        alto = st.slider("Alto", 10, 400, 80)
-                    
-                    if st.button("💾 Guardar Zona"):
-                        if piso_editor not in zonas:
-                            zonas[piso_editor] = []
-                        
-                        # Actualizar zona existente o agregar nueva
-                        zona_existente = False
-                        for i, zona in enumerate(zonas[piso_editor]):
-                            if zona['team'] == equipo_zona:
-                                zonas[piso_editor][i] = {
-                                    'team': equipo_zona,
-                                    'x': x_pos,
-                                    'y': y_pos, 
-                                    'w': ancho,
-                                    'h': alto,
-                                    'color': color_zona
-                                }
-                                zona_existente = True
-                                break
-                        
-                        if not zona_existente:
-                            zonas[piso_editor].append({
-                                'team': equipo_zona,
-                                'x': x_pos,
-                                'y': y_pos,
-                                'w': ancho,
-                                'h': alto,
-                                'color': color_zona
-                            })
-                        
-                        save_zones(zonas)
-                        st.success("✅ Zona guardada exitosamente")
-                        st.toast("✅ Zona guardada exitosamente", icon="✅")
-                else:
-                    st.warning("No hay equipos cargados en la distribución")
-        else:
-            st.warning(f"❌ No se encontró el plano para {piso_editor}")
-            st.info("💡 Suba los planos en formato PNG a la carpeta 'planos/' con nombres: piso1.png, piso2.png, piso3.png")
-    
-    with tab3:
-        st.subheader("Generador de Informes")
-        
-        # Informes de uso
-        with st.expander("📈 Informes de Uso", expanded=True):
-            st.subheader("Resumen de Reservas")
-            
-            reservas_puestos = clean_reservation_df(list_reservations_df(conn), "puesto")
-            if not reservas_puestos.empty:
-                st.write("**Reservas de Puestos por Equipo**")
-                uso_equipos = reservas_puestos.groupby('Nombre').agg({
-                    'Fecha Reserva': 'count',
-                    'Correo': 'first'
-                }).reset_index()
-                uso_equipos = uso_equipos.rename(columns={'Fecha Reserva': 'Total Reservas'})
-                uso_equipos = uso_equipos.sort_values('Total Reservas', ascending=False)
-                st.dataframe(uso_equipos, use_container_width=True)
-            
-            reservas_salas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-            if not reservas_salas.empty:
-                st.write("**Reservas de Salas por Equipo**")
-                uso_salas = reservas_salas.groupby('Nombre').agg({
-                    'Fecha': 'count',
-                    'Correo': 'first',
-                    'Sala': lambda x: ', '.join(x.unique())
-                }).reset_index()
-                uso_salas = uso_salas.rename(columns={'Fecha': 'Total Reservas'})
-                uso_salas = uso_salas.sort_values('Total Reservas', ascending=False)
-                st.dataframe(uso_salas, use_container_width=True)
-        
-        # Generar reportes
-        st.subheader("Generar Reportes Completos")
-        col_report1, col_report2 = st.columns(2)
-        
-        with col_report1:
-            formato_reporte = st.selectbox("Formato", ["PDF", "Excel"])
-        
-        with col_report2:
-            if st.button("📊 Generar Reporte Completo", type="primary"):
-                df_reporte = read_distribution_df(conn)
-                if not df_reporte.empty:
-                    if formato_reporte == "PDF":
-                        pdf_bytes = generate_full_pdf_report(df_reporte, "static/logo.png")
-                        if pdf_bytes:
-                            st.download_button("📥 Descargar PDF", pdf_bytes, "reporte_distribucion.pdf", "application/pdf")
-                        else:
-                            st.error("❌ Error generando PDF")
-                    else:
-                        # Generar Excel
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                            df_reporte.to_excel(writer, sheet_name='Distribución', index=False)
-                            weekly = calculate_weekly_usage_summary(df_reporte)
-                            if not weekly.empty:
-                                weekly.to_excel(writer, sheet_name='Resumen Semanal', index=False)
-                        st.download_button("📥 Descargar Excel", output.getvalue(), "reporte_distribucion.xlsx", 
-                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                else:
-                    st.error("❌ No hay datos de distribución para generar reportes")
-    
-    with tab4:
-        st.subheader("Configuración del Sistema")
-        
-        col_config1, col_config2 = st.columns(2)
-        
-        with col_config1:
-            st.write("**Credenciales de Administrador**")
-            nuevo_user = st.text_input("Nuevo Usuario", value="admin")
-            nueva_pass = st.text_input("Nueva Contraseña", type="password", value="admin123")
-            
-            if st.button("💾 Guardar Credenciales"):
-                save_setting(conn, "admin_user", nuevo_user)
-                save_setting(conn, "admin_pass", nueva_pass)
-                st.success("✅ Credenciales actualizadas")
-                st.toast("✅ Credenciales actualizadas", icon="✅")
-        
-        with col_config2:
-            st.write("**Configuración General**")
-            titulo_sitio = st.text_input("Título del Sitio", value=settings.get("site_title", "Gestor de Puestos y Salas — ACHS Servicios"))
-            color_primario = st.color_picker("Color Primario", value=settings.get("primary", "#00A04A"))
-            
-            if st.button("🎨 Aplicar Configuración"):
-                save_setting(conn, "site_title", titulo_sitio)
-                save_setting(conn, "primary", color_primario)
-                st.success("✅ Configuración aplicada")
-                st.toast("✅ Configuración aplicada", icon="✅")
-    
-    with tab5:
-        st.subheader("Herramientas de Mantenimiento")
-        st.warning("⚠️ **ADVERTENCIA**: Estas operaciones son irreversibles")
-        
-        opcion_borrado = st.selectbox(
-            "Seleccione qué desea borrar:",
-            ["Reservas", "Distribución", "Planos/Zonas", "TODO (Todo el contenido)"],
-            key="delete_option"
-        )
-        
-        if st.button("🗑️ Ejecutar Borrado Masivo", type="primary"):
-            st.session_state.pending_delete = opcion_borrado
-            confirm_mass_delete_dialog(opcion_borrado)
-        
-        # Manejar confirmación de borrado
-        if hasattr(st.session_state, 'confirm_delete'):
-            if st.session_state.confirm_delete:
-                try:
-                    resultado = perform_granular_delete(conn, st.session_state.pending_delete)
-                    st.success(f"✅ {resultado}")
-                    st.toast("✅ Borrado completado exitosamente", icon="✅")
-                    st.session_state.confirm_delete = None
-                    st.session_state.pending_delete = None
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error durante el borrado: {e}")
-            else:
-                st.info("❌ Borrado cancelado")
-                st.session_state.confirm_delete = None
-                st.session_state.pending_delete = None
-        
-        # Información del sistema
-        st.subheader("Información del Sistema")
-        col_info1, col_info2, col_info3 = st.columns(3)
-        
-        with col_info1:
-            df_dist = read_distribution_df(conn)
-            st.metric("Registros de Distribución", len(df_dist))
-        
-        with col_info2:
-            df_reservas = list_reservations_df(conn)
-            st.metric("Reservas de Puestos", len(df_reservas))
-        
-        with col_info3:
-            df_salas = get_room_reservations_df(conn)
-            st.metric("Reservas de Salas", len(df_salas))
+                if not ws.row_values(1): ws.append_row(headers)
+            except: pass
+        time.sleep(0.2)
 
-# ---------------------------------------------------------
-# FOOTER
-# ---------------------------------------------------------
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: gray;'>"
-    "Sistema de Gestión de Espacios - ACHS Servicios v2.0 | "
-    "Desarrollado para optimización de espacios de trabajo"
-    "</div>", 
-    unsafe_allow_html=True
-)
+# --- FUNCIONES DE LECTURA (CON CACHÉ Y LIMPIEZA) ---
+
+@st.cache_data(ttl=60, show_spinner=False)
+def read_distribution_df(_conn):
+    ws = get_worksheet(_conn, "distribution")
+    if ws is None: return pd.DataFrame() 
+    
+    try:
+        data = ws.get_all_records()
+        return pd.DataFrame(data)
+    except Exception as e:
+        print(f"Error leyendo distribution: {e}")
+        return pd.DataFrame()
+
+def insert_distribution(conn, rows):
+    ws = get_worksheet(conn, "distribution")
+    if ws is None: return 
+    
+    try:
+        ws.clear()
+        ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
+        
+        data = []
+        now = datetime.datetime.now().isoformat()
+        for r in rows:
+            data.append([
+                str(r.get('Piso', r.get('piso',''))), 
+                str(r.get('Equipo', r.get('equipo',''))), 
+                str(r.get('Día', r.get('dia',''))), 
+                str(r.get('Cupos', r.get('cupos',0))), 
+                str(r.get('%Distrib', r.get('pct',0))), 
+                now
+            ])
+        
+        if data: ws.append_rows(data)
+        
+        read_distribution_df.clear() 
+        st.cache_data.clear() 
+    except Exception as e:
+        st.error(f"Error guardando distribución: {e}")
+
+def clear_distribution(conn):
+    ws = get_worksheet(conn, "distribution")
+    if ws is None: return
+    
+    try:
+        ws.clear()
+        read_distribution_df.clear()
+    except: pass
+
+# --- RESERVAS PUESTOS ---
+
+def add_reservation(conn, name, email, piso, date_str, area, created_at):
+    ws = get_worksheet(conn, "reservations")
+    if ws is None: return
+    
+    try:
+        ws.append_row([name, email, piso, date_str, area, created_at])
+        list_reservations_df.clear()
+    except Exception as e:
+        st.error(f"Error al reservar: {e}")
+
+def user_has_reservation(conn, email, date_str):
+    ws = get_worksheet(conn, "reservations")
+    if ws is None: return False
+    
+    try:
+        records = ws.get_all_records()
+        df = pd.DataFrame(records)
+        if df.empty: return False
+        match = df[(df['user_email'].astype(str) == str(email)) & (df['reservation_date'].astype(str) == str(date_str))]
+        return not match.empty
+    except: return False
+
+@st.cache_data(ttl=60, show_spinner=False)
+def list_reservations_df(_conn):
+    ws = get_worksheet(_conn, "reservations")
+    if ws is None: return pd.DataFrame()
+    
+    try: return pd.DataFrame(ws.get_all_records())
+    except: return pd.DataFrame()
+
+def delete_reservation_from_db(conn, user_name, date_str, team_area):
+    ws = get_worksheet(conn, "reservations")
+    if ws is None: return False
+    
+    try:
+        # Búsqueda optimizada por fecha primero
+        cell_list = ws.findall(str(date_str))
+        for cell in cell_list:
+            row_val = ws.row_values(cell.row)
+            # row_val indexes: 0=name, 1=email, 2=piso, 3=date, 4=area
+            if len(row_val) >= 5 and row_val[0] == user_name and row_val[4] == team_area:
+                ws.delete_rows(cell.row)
+                list_reservations_df.clear()
+                return True
+        return False
+    except Exception as e:
+        print(f"Error borrando reserva: {e}")
+        return False
+
+def count_monthly_free_spots(conn, identifier, date_obj):
+    df = list_reservations_df(conn) 
+    if df.empty: return 0
+    
+    try:
+        m_str = date_obj.strftime("%Y-%m")
+        mask = ((df['user_email'].astype(str)==identifier)|(df['user_name'].astype(str)==identifier)) & \
+               (df['reservation_date'].astype(str).str.contains(m_str)) & \
+               (df['team_area']=='Cupos libres')
+        return len(df[mask])
+    except: return 0
+
+# --- SALAS ---
+
+def add_room_reservation(conn, name, email, piso, room, date, start, end, created):
+    ws = get_worksheet(conn, "room_reservations")
+    if ws is None: return
+    
+    try:
+        ws.append_row([name, email, piso, room, date, start, end, created])
+        get_room_reservations_df.clear()
+    except: pass
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_room_reservations_df(_conn):
+    ws = get_worksheet(_conn, "room_reservations")
+    if ws is None: return pd.DataFrame()
+    
+    try: return pd.DataFrame(ws.get_all_records())
+    except: return pd.DataFrame()
+
+def delete_room_reservation_from_db(conn, user, date, room, start):
+    ws = get_worksheet(conn, "room_reservations")
+    if ws is None: return False
+    
+    try:
+        cell_list = ws.findall(str(date))
+        for cell in cell_list:
+            row_val = ws.row_values(cell.row)
+            # Indexes: 0=name, 3=room, 4=date, 5=start
+            if len(row_val) >= 6 and row_val[0] == user and row_val[3] == room and row_val[5] == str(start):
+                ws.delete_rows(cell.row)
+                get_room_reservations_df.clear()
+                return True
+        return False
+    except: return False
+
+# --- SETTINGS & TOKENS ---
+
+def save_setting(conn, key, value):
+    ws = get_worksheet(conn, "settings")
+    if ws is None: return
+    
+    try:
+        cell = ws.find(key, in_column=1)
+        ws.update_cell(cell.row, 2, value)
+    except Exception as e:
+        if "cell must be a Cell object" in str(e):
+             print(f"Error de gspread: {e}")
+        try: 
+            ws.append_row([key, value, datetime.datetime.now().isoformat()])
+        except: 
+            pass
+    get_all_settings.clear()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_settings(_conn):
+    ws = get_worksheet(_conn, "settings")
+    if ws is None: return {}
+    
+    try: return {r['key']: r['value'] for r in ws.get_all_records()}
+    except: return {}
+
+def ensure_reset_table(conn): 
+    if conn is None: return
+    pass
+
+def save_reset_token(conn, t, e): 
+    ws = get_worksheet(conn, "reset_tokens")
+    if ws:
+        try: ws.append_row([t, datetime.datetime.now().isoformat(), e, 0])
+        except: pass
+
+def validate_and_consume_token(conn, t):
+    ws = get_worksheet(conn, "reset_tokens")
+    if ws is None: return False, "Error de conexión"
+    
+    try:
+        cell = ws.find(t)
+        if not cell: return False, "Inválido"
+        row = ws.row_values(cell.row)
+        if int(row[3])==1 or datetime.datetime.utcnow()>datetime.datetime.fromisoformat(row[2]): return False, "Expirado"
+        ws.update_cell(cell.row, 4, 1)
+        return True, "OK"
+    except: return False, "Error"
+
+def perform_granular_delete(conn, option):
+    if conn is None: return "Error: No hay conexión."
+    
+    msg = []
+    if "RESERVAS" in option or "TODO" in option:
+        ws = get_worksheet(conn, "reservations")
+        if ws:
+            ws.clear()
+            ws.append_row(["user_name", "user_email", "piso", "reservation_date", "team_area", "created_at"])
+            list_reservations_df.clear()
+            msg.append("Reservas eliminadas")
+        
+        ws2 = get_worksheet(conn, "room_reservations")
+        if ws2:
+            ws2.clear()
+            ws2.append_row(["user_name", "user_email", "piso", "room_name", "reservation_date", "start_time", "end_time", "created_at"])
+            get_room_reservations_df.clear()
+            msg.append("Salas eliminadas")
+        
+    if "DISTRIBUCION" in option or "TODO" in option:
+        ws = get_worksheet(conn, "distribution")
+        if ws:
+            ws.clear()
+            ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
+            read_distribution_df.clear()
+            msg.append("Distribución eliminada")
+        
+    return ", ".join(msg) + "."
