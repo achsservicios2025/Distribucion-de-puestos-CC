@@ -1,32 +1,17 @@
-# modules/seats.py
 import pandas as pd
 import math
 import re
 import numpy as np
 
-# --- CONSTANTES ---
-ORDER_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-
 # --- FUNCIONES AUXILIARES ---
 
 def normalize_text(text):
     """Limpia textos para comparaciones (maneja tildes y normaliza espacios)."""
-    if pd.isna(text) or text == "": 
-        return ""
+    if pd.isna(text) or text == "": return ""
     text = str(text).strip().lower()
-    
-    # Manejo completo de tildes y caracteres especiales
-    replacements = {
-        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
-        'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
-        'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
-        'ñ': 'n', 'ç': 'c',
-        '/': ' ', '-': ' ', '_': ' ', '.': ' ', ',': ' '
-    }
-    
+    replacements = {'á':'a', 'é':'e', 'í':'i', 'ó':'o', 'ú':'u', 'ñ':'n', '/': ' ', '-': ' '}
     for bad, good in replacements.items():
         text = text.replace(bad, good)
-    
     return re.sub(r'\s+', ' ', text)
 
 def parse_days_from_text(text):
@@ -60,7 +45,7 @@ def parse_days_from_text(text):
 
     return {'fijos': fijos, 'flexibles': flexible_options}
 
-# --- ALGORITMO PRINCIPAL DE DISTRIBUCIÓN ---
+# --- ALGORITMO ORIGINAL (MANTENIDO) ---
 
 def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
     rows = []
@@ -176,7 +161,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                 if is_fd_today: fd_teams.append(t)
                 else: normal_teams.append(t)
 
-            # 2. Prioridad 0: Full Day (Entran completos sí o sí)
+            # 2. Prioridad 0: Full Day
             current_cap = cap_total_piso
             for t in fd_teams:
                 t['asig'] = t['per']
@@ -184,26 +169,26 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
             
             remaining_cap = max(0, current_cap)
 
-            # --- Rotación Inicial (Aplica solo a normal_teams) ---
+            # --- Rotación Inicial ---
             if len(normal_teams) > 0:
                 shift = dia_idx % len(normal_teams)
                 normal_teams = normal_teams[shift:] + normal_teams[:shift]
 
-            # 3. ALGORITMO DE RONDAS (Equidad Garantizada)
+            # 3. ALGORITMO DE RONDAS
             
-            # RONDA 1: Supervivencia (Asegurar 1 cupo a todos que lo necesiten)
+            # RONDA 1: Supervivencia
             for t in normal_teams:
                 if remaining_cap > 0 and t['asig'] < t['per']:
                     t['asig'] += 1
                     remaining_cap -= 1
             
-            # RONDA 2: Regla del Mínimo 2 (Asegurar 2 cupos a todos que lo necesiten)
+            # RONDA 2: Mínimo 2
             for t in normal_teams:
                 if remaining_cap > 0 and t['asig'] < 2 and t['asig'] < t['per']:
                     t['asig'] += 1
                     remaining_cap -= 1
             
-            # RONDA 3: Mínimo del Excel (Priorizar cumplir el requerimiento formal)
+            # RONDA 3: Mínimo Excel
             for t in normal_teams:
                 if remaining_cap > 0 and t['asig'] < t['min_excel'] and t['asig'] < t['per']:
                     needed = t['min_excel'] - t['asig']
@@ -211,7 +196,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                     t['asig'] += give
                     remaining_cap -= give
 
-            # RONDA 4: Crecimiento Proporcional (Llenar con lo que sobra)
+            # RONDA 4: Proporcional
             if remaining_cap > 0:
                 pool = [t for t in normal_teams if t['asig'] < t['per']]
                 if pool:
@@ -227,7 +212,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                         
                     remaining_cap -= dist_round
                     
-                    # Saldo final (repartir cupos sueltos por redondeo)
+                    # Saldo final
                     pool = [t for t in normal_teams if t['asig'] < t['per']]
                     if len(pool) > 0:
                         shift_pool = dia_idx % len(pool)
@@ -238,7 +223,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                                 t['asig'] += 1
                                 remaining_cap -= 1
 
-            # 4. Cálculo de Déficit y Reporte
+            # 4. Déficit
             for t in normal_teams:
                 goal = t['target_min']
                 if t['asig'] < goal:
@@ -274,220 +259,150 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
 
     return rows, deficit_report
 
-# --- NUEVAS FUNCIONES DE DISTRIBUCIÓN IDEAL ---
+# --- NUEVO ALGORITMO: DISTRIBUCIÓN IDEAL ---
 
-def get_ideal_distribution_proposal(df_equipos, strategy="perfect_equity", variant=0):
+def compute_ideal_distribution(equipos_df, variant=0, pisos_capacity=None):
     """
-    Genera distribuciones ideales ignorando parámetros de capacidad
+    Genera una distribución ideal ignorando la hoja de parámetros.
+    Reglas:
+    1. Mínimo 2 cupos por equipo.
+    2. Equidad proporcional.
+    3. Máximo 3 cupos libres (Relleno agresivo).
+    4. Variación aleatoria controlada por 'variant' (seed).
     """
-    df_eq_proc = df_equipos.copy()
+    if pisos_capacity is None:
+        # Default o estimado si no se pasa config
+        pisos_capacity = {"Piso 1": 50, "Piso 2": 50, "Piso 3": 50}
     
-    # Identificar columnas automáticamente
-    dotacion_col = None
-    for col in df_eq_proc.columns:
-        if col.lower() in ['dotacion', 'dotación', 'total', 'empleados']:
-            dotacion_col = col
-            break
+    # 1. Identificar columnas (tolerante a nombres)
+    equipos_df.columns = [str(c).strip().lower() for c in equipos_df.columns]
     
-    if dotacion_col is None:
-        numeric_cols = df_eq_proc.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            dotacion_col = numeric_cols[0]
-        else:
-            dotacion_col = df_eq_proc.columns[1] if len(df_eq_proc.columns) > 1 else df_eq_proc.columns[0]
+    col_equipo = next((c for c in equipos_df.columns if 'equipo' in normalize_text(c)), equipos_df.columns[0])
+    col_dotacion = next((c for c in equipos_df.columns if 'dotacion' in normalize_text(c) or 'total' in normalize_text(c)), None)
     
-    equipo_col = None
-    for col in df_eq_proc.columns:
-        if col.lower() in ['equipo', 'team', 'departamento', 'área']:
-            equipo_col = col
-            break
-    if equipo_col is None:
-        equipo_col = df_eq_proc.columns[0]
-    
-    equipos = df_eq_proc[equipo_col].tolist()
-    dotaciones = df_eq_proc[dotacion_col].tolist()
-    
-    if strategy == "perfect_equity":
-        return perfect_equity_distribution(equipos, dotaciones, variant)
-    elif strategy == "balanced_flex":
-        return balanced_flex_distribution(equipos, dotaciones, variant)
-    elif strategy == "controlled_random":
-        return controlled_random_distribution(equipos, dotaciones, variant)
-    else:
-        return perfect_equity_distribution(equipos, dotaciones, variant)
+    if not col_dotacion:
+        # Fallback: buscar primera numérica
+        nums = equipos_df.select_dtypes(include=[np.number]).columns
+        if len(nums) > 0: col_dotacion = nums[0]
+        else: return [], [{"causa": "No se encontró columna de dotación"}]
 
-def perfect_equity_distribution(equipos, dotaciones, variant=0):
-    """
-    Distribución perfectamente equitativa garantizando mínimo 2 cupos por equipo por día
-    """
+    # 2. Preparar datos
+    equipos = []
+    for _, row in equipos_df.iterrows():
+        dot = int(row[col_dotacion]) if pd.notna(row[col_dotacion]) else 0
+        if dot > 0:
+            equipos.append({
+                "nombre": str(row[col_equipo]).strip(),
+                "dotacion": dot,
+                "asignado": 0
+            })
+    
+    # Semilla para variación determinista pero distinta por opción
+    rng = np.random.default_rng(seed=42 + variant)
+    
     rows = []
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     deficit_report = []
-    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-    pisos = ["Piso 1", "Piso 2", "Piso 3"]
+
+    # Lista de pisos disponibles
+    pisos_list = list(pisos_capacity.keys())
     
-    # Calcular cupos mínimos garantizados (2 por equipo por día)
-    for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
-        # Garantizar mínimo 2 cupos por día (10 cupos semanales mínimos)
-        cupos_minimos_semanales = min(dotacion, 10)  # Máximo 2 por día * 5 días
-        base_cupos = cupos_minimos_semanales // 5
-        resto = cupos_minimos_semanales % 5
+    # PROCESO INDEPENDIENTE POR DÍA
+    for dia_idx, dia in enumerate(dias):
+        # Reiniciar capacidades diarias
+        cap_pisos_dia = pisos_capacity.copy()
+        total_cap_dia = sum(cap_pisos_dia.values())
         
-        for j, dia in enumerate(dias_semana):
-            piso = pisos[(i + variant) % len(pisos)]
-            cupos_dia = base_cupos + (1 if j < resto else 0)
-            # Asegurar mínimo 2 cupos por equipo por día si la dotación lo permite
-            if dotacion >= 2:
-                cupos_dia = max(cupos_dia, 2)
+        # Mezclar equipos aleatoriamente para este día (afecta prioridad de llenado final)
+        equipos_dia = [e.copy() for e in equipos]
+        rng.shuffle(equipos_dia) 
+        
+        # A. ASIGNACIÓN MÍNIMA (Regla: Al menos 2 o la dotación si es < 2)
+        for eq in equipos_dia:
+            min_req = 2 if eq["dotacion"] >= 2 else eq["dotacion"]
+            eq["asignado"] = min_req
+            total_cap_dia -= min_req
+        
+        if total_cap_dia < 0:
+            deficit_report.append({"piso": "General", "equipo": "Sistema", "dia": dia, "deficit": abs(total_cap_dia), "causa": "Capacidad insuficiente para mínimos (2)"})
+            # Aquí se podría implementar lógica de recorte si fuera necesario, pero la regla dice asegurar 2.
+
+        # B. REPARTO PROPORCIONAL DEL REMANENTE
+        # Objetivo: Llenar hasta que queden máx 3 libres
+        pendientes = [e for e in equipos_dia if e["asignado"] < e["dotacion"]]
+        
+        # Mientras sobre espacio y haya demanda
+        while total_cap_dia > 3 and pendientes: 
+            # Selección ponderada o aleatoria simple del pool
+            eq = rng.choice(pendientes)
+            if eq["asignado"] < eq["dotacion"]:
+                eq["asignado"] += 1
+                total_cap_dia -= 1
             else:
-                cupos_dia = dotacion
-                
-            rows.append({
-                'piso': piso, 
-                'equipo': equipo, 
-                'dia': dia, 
-                'cupos': cupos_dia
-            })
-    
-    # Cupos libres - máximo 2 por día
-    cupos_libres = 2
-    for piso in pisos:
-        for dia in dias_semana:
-            rows.append({
-                'piso': piso, 
-                'equipo': "Cupos libres", 
-                'dia': dia, 
-                'cupos': cupos_libres
-            })
-    
-    return rows, deficit_report
-
-def balanced_flex_distribution(equipos, dotaciones, variant=0):
-    """
-    Distribución balanceada con flexibilidad controlada
-    """
-    rows = []
-    deficit_report = []
-    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-    pisos = ["Piso 1", "Piso 2", "Piso 3"]
-    
-    for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
-        # 80% de cupos fijos distribuidos equitativamente
-        cupos_fijos = int(dotacion * 0.8)
-        # Garantizar mínimo 2 cupos por día
-        cupos_minimos = min(cupos_fijos, 10)  # 2 por día * 5 días
-        base_cupos = cupos_minimos // 5
-        resto = cupos_minimos % 5
-        
-        for j, dia in enumerate(dias_semana):
-            piso = pisos[(i + variant) % len(pisos)]
-            cupos_dia = base_cupos + (1 if j < resto else 0)
-            # Asegurar mínimo 2
-            cupos_dia = max(cupos_dia, 2) if dotacion >= 2 else dotacion
-                
-            rows.append({
-                'piso': piso, 
-                'equipo': equipo, 
-                'dia': dia, 
-                'cupos': cupos_dia
-            })
-    
-    # Cupos libres - máximo 2 por día
-    cupos_libres = 2
-    for piso in pisos:
-        for dia in dias_semana:
-            rows.append({
-                'piso': piso, 
-                'equipo': "Cupos libres", 
-                'dia': dia, 
-                'cupos': cupos_libres
-            })
-    
-    return rows, deficit_report
-
-def controlled_random_distribution(equipos, dotaciones, variant=0):
-    """
-    Distribución aleatoria controlada garantizando mínimos
-    """
-    rows = []
-    deficit_report = []
-    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-    pisos = ["Piso 1", "Piso 2", "Piso 3"]
-    np.random.seed(variant * 1000)  # Diferente semilla para cada variante
-    
-    for i, (equipo, dotacion) in enumerate(zip(equipos, dotaciones)):
-        # Primero asignar mínimo 2 cupos por día
-        cupos_minimos = min(dotacion, 10)  # 2 por día * 5 días máximo
-        cupos_restantes = dotacion - cupos_minimos
-        
-        # Distribuir mínimos
-        dist = [2] * 5  # Mínimo 2 por día
-        
-        # Distribuir el resto aleatoriamente pero balanceado
-        if cupos_restantes > 0:
-            for _ in range(cupos_restantes):
-                dia_idx = np.random.randint(0, 5)
-                dist[dia_idx] += 1
-        
-        for j, dia in enumerate(dias_semana):
-            piso = pisos[np.random.randint(0, len(pisos))]
-            rows.append({
-                'piso': piso, 
-                'equipo': equipo, 
-                'dia': dia, 
-                'cupos': dist[j]
-            })
-    
-    # Cupos libres - máximo 2 por día
-    cupos_libres = 2
-    for piso in pisos:
-        for dia in dias_semana:
-            rows.append({
-                'piso': piso, 
-                'equipo': "Cupos libres", 
-                'dia': dia, 
-                'cupos': cupos_libres
-            })
-    
-    return rows, deficit_report
-
-def calculate_distribution_stats(rows, df_equipos):
-    """
-    Calcula métricas de calidad de la distribución
-    """
-    df = pd.DataFrame(rows)
-    dotacion_map = {}
-    
-    # Mapear dotaciones
-    equipo_col = None
-    dotacion_col = None
-    for col in df_equipos.columns:
-        if col.lower() in ['equipo', 'team', 'departamento']:
-            equipo_col = col
-        elif col.lower() in ['dotacion', 'dotación', 'total']:
-            dotacion_col = col
-    
-    if equipo_col and dotacion_col:
-        for _, row in df_equipos.iterrows():
-            dotacion_map[row[equipo_col]] = row[dotacion_col]
+                pendientes.remove(eq)
             
-    stats = {
-        'total_cupos_asignados': df['cupos'].sum(),
-        'cupos_libres': df[df['equipo'] == 'Cupos libres']['cupos'].sum(),
-        'equipos_con_deficit': 0,
-        'distribucion_promedio': 0,
-        'uniformidad': 0
-    }
-    
-    # Calcular déficits
-    for eq in df['equipo'].unique():
-        if eq == 'Cupos libres':
-            continue
-        cupos_totales = df[df['equipo'] == eq]['cupos'].sum()
-        dotacion = dotacion_map.get(eq, cupos_totales)
-        if cupos_totales < dotacion:
-            stats['equipos_con_deficit'] += 1
-    
-    # Calcular uniformidad (desviación estándar de cupos por día)
-    stats['uniformidad'] = df.groupby('dia')['cupos'].sum().std()
-    
-    return stats
+            # Chequeo de seguridad para salir si todos están llenos
+            if not pendientes and total_cap_dia > 3:
+                break
+
+        # C. ASIGNACIÓN A PISOS (Bin Packing)
+        # Intentamos agrupar equipos enteros en pisos para no fragmentar demasiado
+        mapa_pisos = {p: [] for p in pisos_list}
+        
+        # Ordenamos equipos por tamaño asignado (Best Fit Decreasing ayuda a empaquetar)
+        equipos_dia.sort(key=lambda x: x["asignado"], reverse=True)
+        
+        for eq in equipos_dia:
+            assigned_piso = None
+            # Rotar el piso de inicio según día y variante para que no siempre se llene el Piso 1 primero
+            start_piso_idx = (dia_idx + variant) % len(pisos_list)
+            
+            for i in range(len(pisos_list)):
+                idx = (start_piso_idx + i) % len(pisos_list)
+                piso_name = pisos_list[idx]
+                if cap_pisos_dia[piso_name] >= eq["asignado"]:
+                    cap_pisos_dia[piso_name] -= eq["asignado"]
+                    mapa_pisos[piso_name].append(eq)
+                    assigned_piso = piso_name
+                    break
+            
+            if not assigned_piso:
+                # Caso Split: El equipo no cabe entero, lo dividimos
+                rem = eq["asignado"]
+                for p_name in pisos_list:
+                    if rem <= 0: break
+                    available = cap_pisos_dia[p_name]
+                    if available > 0:
+                        take = min(available, rem)
+                        cap_pisos_dia[p_name] -= take
+                        rem -= take
+                        # Crear entrada parcial
+                        mapa_pisos[p_name].append({"nombre": eq["nombre"], "asignado": take, "dotacion": eq["dotacion"]})
+
+        # D. GENERAR FILAS DE SALIDA
+        for p_name, lista_eqs in mapa_pisos.items():
+            for item in lista_eqs:
+                if item["asignado"] > 0:
+                    pct = round((item["asignado"] / item["dotacion"]) * 100, 1)
+                    rows.append({
+                        "piso": p_name,
+                        "equipo": item["nombre"],
+                        "dia": dia,
+                        "cupos": int(item["asignado"]),
+                        "pct": pct,
+                        "dotacion_total": item["dotacion"] # Metadata útil para reportes
+                    })
+            
+            # Cupos libres restantes en el piso
+            libres = cap_pisos_dia[p_name]
+            if libres > 0:
+                 rows.append({
+                        "piso": p_name,
+                        "equipo": "Cupos libres",
+                        "dia": dia,
+                        "cupos": int(libres),
+                        "pct": 0.0,
+                        "dotacion_total": 0
+                    })
+
+    return rows, deficit_report
