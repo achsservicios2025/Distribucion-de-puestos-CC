@@ -62,7 +62,7 @@ def parse_days_from_text(text):
 
 # --- ALGORITMO PRINCIPAL DE DISTRIBUCIÓN ---
 
-def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
+def compute_distribution_from_excel(equipos_df, parametros_df, strategy="random"):
     rows = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     deficit_report = [] 
@@ -108,6 +108,11 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
     for piso_raw in pisos_unicos:
         piso_str = str(int(piso_raw)) if isinstance(piso_raw, (int, float)) else str(piso_raw)
         cap_total_piso = capacidad_pisos.get(piso_str, 50) 
+        
+        # APLICAR REGLA DE 2 CUPOS LIBRES: Reducir capacidad disponible
+        cap_disponible_equipos = cap_total_piso - 2  # Reservar 2 cupos libres
+        cap_disponible_equipos = max(0, cap_disponible_equipos)  # No negativo
+        
         df_piso = equipos_df[equipos_df[col_piso] == piso_raw].copy()
 
         # --- Lógica de Flexibles (Pre-asignación de día óptimo) ---
@@ -132,7 +137,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                 base_demand = max(2, min_req) if per >= 2 else per
                 for dia in dias_semana: capacidad_fija_por_dia[dia] += base_demand
 
-        capacidad_libre_pre = {d: max(0, cap_total_piso - capacidad_fija_por_dia[d]) for d in dias_semana}
+        capacidad_libre_pre = {d: max(0, cap_disponible_equipos - capacidad_fija_por_dia[d]) for d in dias_semana}
         for item_flex in equipos_flexibles:
             best_day = None; max_libre = -float('inf')
             for dia_opt in item_flex['dias_opt']:
@@ -177,7 +182,7 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                 else: normal_teams.append(t)
 
             # 2. Prioridad 0: Full Day (Entran completos sí o sí)
-            current_cap = cap_total_piso
+            current_cap = cap_disponible_equipos
             for t in fd_teams:
                 t['asig'] = t['per']
                 current_cap -= t['asig']
@@ -255,12 +260,8 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                     })
 
             # 5. Cupos Libres
-            final_libres = 0
-            alguien_falta = any(t['asig'] < t['per'] for t in normal_teams)
+            final_libres = 2  # Siempre 2 cupos libres por piso por día
             
-            if not alguien_falta and remaining_cap > 0:
-                final_libres = min(remaining_cap, cap_reserva_fija) if cap_reserva_fija > 0 else remaining_cap
-
             # Guardar resultados
             all_teams = fd_teams + normal_teams
             for t in all_teams:
@@ -268,9 +269,9 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
                     pct = round((t['asig'] / t['per']) * 100, 1) if t['per'] > 0 else 0.0
                     rows.append({"piso": f"Piso {piso_str}", "equipo": t['eq'], "dia": dia, "cupos": int(t['asig']), "pct": pct})
             
-            if final_libres > 0:
-                pct = round((final_libres / cap_total_piso) * 100, 1) if cap_total_piso > 0 else 0.0
-                rows.append({"piso": f"Piso {piso_str}", "equipo": "Cupos libres", "dia": dia, "cupos": int(final_libres), "pct": pct})
+            # Siempre agregar 2 cupos libres
+            pct_libres = round((final_libres / cap_total_piso) * 100, 1) if cap_total_piso > 0 else 0.0
+            rows.append({"piso": f"Piso {piso_str}", "equipo": "Cupos libres", "dia": dia, "cupos": int(final_libres), "pct": pct_libres})
 
     return rows, deficit_report
 
@@ -313,10 +314,6 @@ def get_ideal_distribution_proposal(df_equipos, strategy="perfect_equity", varia
         if dotacion < 2:
             equipos_problema.append(f"{equipo} ({dotacion} integrante)")
     
-    if equipos_problema:
-        # Esta verificación se hará en app.py para mostrar el diálogo
-        pass
-    
     if strategy == "perfect_equity":
         return perfect_equity_distribution(equipos, dotaciones, variant), equipos_problema
     elif strategy == "balanced_flex":
@@ -331,7 +328,6 @@ def perfect_equity_distribution(equipos, dotaciones, variant=0):
     Distribución perfectamente equitativa garantizando mínimo 2 cupos por equipo por día
     """
     rows = []
-    deficit_report = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
     
@@ -351,14 +347,16 @@ def perfect_equity_distribution(equipos, dotaciones, variant=0):
             else:
                 cupos_dia = dotacion
                 
+            pct = round((cupos_dia / dotacion) * 100, 1) if dotacion > 0 else 0.0
             rows.append({
                 'piso': piso, 
                 'equipo': equipo, 
                 'dia': dia, 
-                'cupos': cupos_dia
+                'cupos': cupos_dia,
+                'pct': pct
             })
     
-    # Cupos libres - máximo 2 por día
+    # Cupos libres - máximo 2 por día por piso
     cupos_libres = 2
     for piso in pisos:
         for dia in dias_semana:
@@ -366,17 +364,17 @@ def perfect_equity_distribution(equipos, dotaciones, variant=0):
                 'piso': piso, 
                 'equipo': "Cupos libres", 
                 'dia': dia, 
-                'cupos': cupos_libres
+                'cupos': cupos_libres,
+                'pct': 0.0
             })
     
-    return rows, deficit_report
+    return rows
 
 def balanced_flex_distribution(equipos, dotaciones, variant=0):
     """
     Distribución balanceada con flexibilidad controlada
     """
     rows = []
-    deficit_report = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
     
@@ -393,15 +391,17 @@ def balanced_flex_distribution(equipos, dotaciones, variant=0):
             cupos_dia = base_cupos + (1 if j < resto else 0)
             # Asegurar mínimo 2
             cupos_dia = max(cupos_dia, 2) if dotacion >= 2 else dotacion
-                
+            
+            pct = round((cupos_dia / dotacion) * 100, 1) if dotacion > 0 else 0.0
             rows.append({
                 'piso': piso, 
                 'equipo': equipo, 
                 'dia': dia, 
-                'cupos': cupos_dia
+                'cupos': cupos_dia,
+                'pct': pct
             })
     
-    # Cupos libres - máximo 2 por día
+    # Cupos libres - 2 por día por piso
     cupos_libres = 2
     for piso in pisos:
         for dia in dias_semana:
@@ -409,17 +409,17 @@ def balanced_flex_distribution(equipos, dotaciones, variant=0):
                 'piso': piso, 
                 'equipo': "Cupos libres", 
                 'dia': dia, 
-                'cupos': cupos_libres
+                'cupos': cupos_libres,
+                'pct': 0.0
             })
     
-    return rows, deficit_report
+    return rows
 
 def controlled_random_distribution(equipos, dotaciones, variant=0):
     """
     Distribución aleatoria controlada garantizando mínimos
     """
     rows = []
-    deficit_report = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     pisos = ["Piso 1", "Piso 2", "Piso 3"]
     np.random.seed(variant * 1000)  # Diferente semilla para cada variante
@@ -440,14 +440,16 @@ def controlled_random_distribution(equipos, dotaciones, variant=0):
         
         for j, dia in enumerate(dias_semana):
             piso = pisos[np.random.randint(0, len(pisos))]
+            pct = round((dist[j] / dotacion) * 100, 1) if dotacion > 0 else 0.0
             rows.append({
                 'piso': piso, 
                 'equipo': equipo, 
                 'dia': dia, 
-                'cupos': dist[j]
+                'cupos': dist[j],
+                'pct': pct
             })
     
-    # Cupos libres - máximo 2 por día
+    # Cupos libres - 2 por día por piso
     cupos_libres = 2
     for piso in pisos:
         for dia in dias_semana:
@@ -455,10 +457,11 @@ def controlled_random_distribution(equipos, dotaciones, variant=0):
                 'piso': piso, 
                 'equipo': "Cupos libres", 
                 'dia': dia, 
-                'cupos': cupos_libres
+                'cupos': cupos_libres,
+                'pct': 0.0
             })
     
-    return rows, deficit_report
+    return rows
 
 def calculate_distribution_stats(rows, df_equipos):
     """
