@@ -69,10 +69,11 @@ from modules.database import (
 )
 from modules.auth import get_admin_credentials
 from modules.layout import admin_appearance_ui, apply_appearance_styles
-from modules.seats import compute_distribution_from_excel, get_ideal_distribution_proposal, calculate_distribution_stats
+from modules.seats import compute_distribution_from_excel, compute_ideal_distribution
 from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
+from modules.pdfgen import generate_full_pdf, create_merged_pdf
 
 # ---------------------------------------------------------
 # 4. CONFIGURACIÓN GENERAL
@@ -116,14 +117,8 @@ PLANOS_DIR.mkdir(exist_ok=True)
 COLORED_DIR.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------
-# 5. FUNCIONES HELPER & LÓGICA
+# 5. FUNCIONES HELPER LOCALES (VISUALIZACIÓN APP)
 # ---------------------------------------------------------
-def clean_pdf_text(text: str) -> str:
-    if not isinstance(text, str): return str(text)
-    replacements = {"•": "-", "—": "-", "–": "-", "⚠": "ATENCION:", "⚠️": "ATENCION:", "…": "...", "º": "o", "°": ""}
-    for bad, good in replacements.items():
-        text = text.replace(bad, good)
-    return text.encode('latin-1', 'replace').decode('latin-1')
 
 def sort_floors(floor_list):
     def extract_num(text):
@@ -156,55 +151,15 @@ def apply_sorting_to_df(df):
         df = df.sort_values(sort_cols)
     return df
 
-def get_distribution_proposal(df_equipos, df_parametros, strategy="random"):
-    eq_proc = df_equipos.copy()
-    pa_proc = df_parametros.copy()
-    col_sort = None
-    for c in eq_proc.columns:
-        if c.lower().strip() == "dotacion":
-            col_sort = c
-            break
-    if not col_sort and strategy != "random": strategy = "random"
-
-    if strategy == "random": eq_proc = eq_proc.sample(frac=1).reset_index(drop=True)
-    elif strategy == "size_desc" and col_sort: eq_proc = eq_proc.sort_values(by=col_sort, ascending=False).reset_index(drop=True)
-    elif strategy == "size_asc" and col_sort: eq_proc = eq_proc.sort_values(by=col_sort, ascending=True).reset_index(drop=True)
-
-    rows, deficit_report = compute_distribution_from_excel(eq_proc, pa_proc, 2)
-    return rows, deficit_report
-
-def show_distribution_insights(rows, deficit_data):
-    df = pd.DataFrame(rows)
-    st.subheader("📊 Métricas de la Distribución")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("Total Cupos Asignados", df['cupos'].sum())
-    with c2: st.metric("Cupos Libres", df[df['equipo'] == 'Cupos libres']['cupos'].sum())
-    with c3: st.metric("Equipos Asignados", df[df['equipo'] != 'Cupos libres']['equipo'].nunique())
-    with c4: st.metric("Uniformidad (σ)", f"{df.groupby('dia')['cupos'].sum().std():.1f}")
-    
-    st.subheader("📈 Distribución por Día")
-    cupos_por_dia = df.groupby('dia')['cupos'].sum().reindex(ORDER_DIAS)
-    fig, ax = plt.subplots(figsize=(10, 4))
-    cupos_por_dia.plot(kind='bar', ax=ax, color='skyblue')
-    ax.set_ylabel('Total Cupos')
-    ax.set_title('Distribución de Cupos por Día de la Semana')
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
-
-# --- CORRECCIÓN CLAVE PARA RESUMEN SEMANAL ---
 def calculate_weekly_usage_summary(distrib_df):
     if distrib_df.empty: return pd.DataFrame()
     
-    equipo_col = None; cupos_col = None; dia_col = None
-    for col in distrib_df.columns:
-        cl = col.lower()
-        if 'equipo' in cl: equipo_col = col
-        elif 'cupos' in cl: cupos_col = col
-        elif 'dia' in cl or 'día' in cl: dia_col = col
+    # Buscar columnas dinamicamente
+    def norm(c): return str(c).lower()
+    equipo_col = next((c for c in distrib_df.columns if 'equipo' in norm(c)), None)
+    cupos_col = next((c for c in distrib_df.columns if 'cupos' in norm(c)), None)
     
-    if not all([equipo_col, cupos_col, dia_col]):
-        st.error("No se pudieron encontrar las columnas necesarias para el cálculo del resumen semanal")
-        return pd.DataFrame()
+    if not equipo_col or not cupos_col: return pd.DataFrame()
     
     equipos_df = distrib_df[distrib_df[equipo_col] != "Cupos libres"]
     if equipos_df.empty: return pd.DataFrame()
@@ -212,11 +167,29 @@ def calculate_weekly_usage_summary(distrib_df):
     weekly = equipos_df.groupby(equipo_col).agg({cupos_col: 'sum'}).reset_index()
     weekly.columns = ['Equipo', 'Total Cupos Semanales']
     
-    # Calcular porcentaje de distribución semanal
-    total_semanal = weekly['Total Cupos Semanales'].sum()
-    weekly['% Distribución Semanal'] = (weekly['Total Cupos Semanales'] / total_semanal * 100).round(1)
+    weekly['Promedio Diario'] = weekly['Total Cupos Semanales'] / 5
     
-    return weekly.sort_values('Total Cupos Semanales', ascending=False)
+    # Integrar % semanal si existe info de dotación
+    if 'dotacion_total' in distrib_df.columns:
+        dot_df = distrib_df[[equipo_col, 'dotacion_total']].drop_duplicates()
+        dot_df[equipo_col] = dot_df[equipo_col].astype(str)
+        weekly['Equipo'] = weekly['Equipo'].astype(str)
+        
+        weekly = weekly.merge(dot_df, left_on='Equipo', right_on=equipo_col, how='left')
+        
+        def calc_pct(row):
+            dot = row['dotacion_total']
+            if pd.isna(dot) or dot == 0: return 0
+            return round((row['Total Cupos Semanales'] / (dot * 5)) * 100, 1)
+            
+        weekly['% Distr Semanal'] = weekly.apply(calc_pct, axis=1)
+        
+        # Limpiar
+        cols_to_drop = ['dotacion_total']
+        if equipo_col != 'Equipo': cols_to_drop.append(equipo_col)
+        weekly = weekly.drop(columns=[c for c in cols_to_drop if c in weekly.columns], errors='ignore')
+
+    return weekly
 
 def clean_reservation_df(df, tipo="puesto"):
     if df.empty: return df
@@ -238,195 +211,27 @@ def clean_reservation_df(df, tipo="puesto"):
         return df[existing_cols]
     return df
 
-# --- GENERADORES DE PDF ---
-def create_merged_pdf(piso_sel, conn, global_logo_path):
-    p_num = piso_sel.replace("Piso ", "").strip()
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, 15)
-    found_any = False
-    df = read_distribution_df(conn)
-    base_config = st.session_state.get('last_style_config', {})
-
-    for dia in ORDER_DIAS:
-        subset = df[(df['piso'] == piso_sel) & (df['dia'] == dia)]
-        current_seats = dict(zip(subset['equipo'], subset['cupos']))
-        day_config = base_config.copy()
-        if not day_config.get("subtitle_text"): day_config["subtitle_text"] = f"Día: {dia}"
-        
-        img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
-        if img_path and Path(img_path).exists():
-            found_any = True
-            pdf.add_page()
-            try: pdf.image(str(img_path), x=10, y=10, w=190)
-            except: pass
-    if not found_any: return None
-    # CORRECCIÓN PDF
-    try: return pdf.output(dest='S').encode('latin-1', 'replace')
-    except: return pdf.output(dest='S')
-
-def generate_full_pdf(distrib_df, logo_path, deficit_data=None):
-    """
-    Genera el reporte PDF de distribución con tablas diaria, semanal y déficit.
-    """
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, 15)
+def show_distribution_insights(rows, deficit_data):
+    df = pd.DataFrame(rows)
+    st.subheader("📊 Métricas de la Distribución")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.metric("Total Cupos Asignados", df['cupos'].sum())
+    with c2: st.metric("Cupos Libres", df[df['equipo'] == 'Cupos libres']['cupos'].sum())
+    with c3: st.metric("Equipos Asignados", df[df['equipo'] != 'Cupos libres']['equipo'].nunique())
     
-    # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    if Path(logo_path).exists():
-        try: pdf.image(str(logo_path), x=10, y=8, w=30)
-        except: pass
-    pdf.ln(25)
-    pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
-    pdf.ln(6)
-
-    # Título de sección
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
-
-    # Tabla Diaria
-    pdf.set_font("Arial", 'B', 9)
-    widths = [30, 60, 25, 25, 25]
-    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"]    
-    for w, h in zip(widths, headers): pdf.cell(w, 6, clean_pdf_text(h), 1)
-    pdf.ln()
-
-    pdf.set_font("Arial", '', 9)
-    def get_val(row, keys):
-        for k in keys:
-            if k in row: return str(row[k])
-            if k.lower() in row: return str(row[k.lower()])
-        return ""
-
-    distrib_df = apply_sorting_to_df(distrib_df)
+    uni = df.groupby('dia')['cupos'].sum().std() if not df.empty else 0
+    with c4: st.metric("Uniformidad (σ)", f"{uni:.1f}")
     
-    for _, r in distrib_df.iterrows():
-        pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["piso"])), 1)
-        pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["equipo"])[:40]), 1)
-        pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["dia"])), 1)
-        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["cupos"])), 1)
-        pct_val = get_val(r, ["pct"])
-        pdf.cell(widths[4], 6, clean_pdf_text(f"{pct_val}%"), 1)
-        pdf.ln()
-
-    # --- SECCIÓN 2: TABLA SEMANAL ---
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
-    
+    st.subheader("📈 Distribución por Día")
     try:
-        # Calcular resumen semanal mejorado
-        weekly_summary = calculate_weekly_usage_summary(distrib_df)
-        
-        if not weekly_summary.empty:
-            pdf.set_font("Arial", 'B', 9)
-            w_wk = [80, 40, 40]
-            h_wk = ["Equipo", "Total Semanal", "% Distrib Semanal"]
-            start_x = 25
-            pdf.set_x(start_x)
-            for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
-            pdf.ln()
-
-            pdf.set_font("Arial", '', 9)
-            for _, row in weekly_summary.iterrows():
-                pdf.set_x(start_x)
-                pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:30]), 1)
-                pdf.cell(w_wk[1], 6, clean_pdf_text(str(int(row["Total Cupos Semanales"]))), 1)
-                pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['% Distribución Semanal']}%"), 1)
-                pdf.ln()
-        else:
-            pdf.set_font("Arial", 'I', 9)
-            pdf.cell(0, 6, clean_pdf_text("No hay datos suficientes para calcular el resumen semanal"), ln=True)
-            
-    except Exception as e:
-        pdf.set_font("Arial", 'I', 9)
-        pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
-
-    # --- GLOSARIO Y DÉFICIT ---
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, clean_pdf_text("Glosario de Métricas y Cálculos:"), ln=True)
-    pdf.set_font("Arial", '', 9)
-    notas = [
-        "1. % Distribución Diario: Cupos asignados / Dotación total del equipo.",
-        "2. % Distribución Semanal: Porcentaje del total semanal asignado a cada equipo.",
-        "3. Cálculo de Déficit: Diferencia entre cupos mínimos requeridos y asignados."
-    ]
-    for nota in notas: pdf.multi_cell(185, 6, clean_pdf_text(nota))
-
-    # --- PÁGINA 3: DÉFICIT (Si existe) ---
-    if deficit_data and len(deficit_data) > 0:
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 14)
-        pdf.set_text_color(200, 0, 0)
-        pdf.cell(0, 10, clean_pdf_text("Reporte de Déficit de Cupos"), ln=True, align='C')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(5)
-        
-        pdf.set_font("Arial", 'B', 8)  
-        dw = [15, 45, 20, 15, 15, 15, 65]
-        dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
-        for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
-        pdf.ln()
-        pdf.set_font("Arial", '', 8)
-
-        for d in deficit_data:
-            piso = clean_pdf_text(d.get('piso',''))
-            equipo = clean_pdf_text(d.get('equipo',''))
-            dia = clean_pdf_text(d.get('dia',''))
-            dot = str(d.get('dotacion','-'))
-            mini = str(d.get('minimo','-'))
-            falt = str(d.get('deficit','-'))
-            causa = clean_pdf_text(d.get('causa',''))
-
-            line_height = 5
-            
-            current_x = pdf.get_x()
-            current_y = pdf.get_y()
-
-            lines_eq = pdf.multi_cell(dw[1], line_height, equipo, split_only=True)
-            lines_ca = pdf.multi_cell(dw[6], line_height, causa, split_only=True)
-            
-            max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
-            row_height = max_lines * line_height
-            
-            if pdf.get_y() + row_height > 270:
-                pdf.add_page()
-                pdf.set_font("Arial", 'B', 8)
-                for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
-                pdf.ln()
-                pdf.set_font("Arial", '', 8)
-                y_start = pdf.get_y()
-            else:
-                y_start = pdf.get_y()
-
-            x_start = pdf.get_x()
-
-            pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
-            
-            pdf.set_xy(x_start + dw[0], y_start)
-            pdf.multi_cell(dw[1], line_height, equipo, 1, 'L', fill=False)
-            
-            pdf.set_xy(x_start + dw[0] + dw[1], y_start)
-
-            pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
-            pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
-            pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
-
-            pdf.set_font("Arial", 'B', 8)
-            pdf.set_text_color(180, 0, 0)
-            pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_font("Arial", '', 8)
-
-            pdf.set_xy(x_start + dw[0] + dw[1] + dw[2] + dw[3] + dw[4] + dw[5], y_start)
-            pdf.multi_cell(dw[6], line_height, causa, 1, 'L', fill=False)
-            
-            pdf.set_xy(x_start, y_start + row_height)
-
-    try: return pdf.output(dest='S').encode('latin-1')
-    except: return None
+        if not df.empty:
+            cupos_por_dia = df.groupby('dia')['cupos'].sum().reindex(ORDER_DIAS).fillna(0)
+            fig, ax = plt.subplots(figsize=(10, 4))
+            cupos_por_dia.plot(kind='bar', ax=ax, color='skyblue')
+            ax.set_ylabel('Total Cupos')
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+    except: pass
 
 # --- MODALES ---
 @st.dialog("Confirmar Anulación de Puesto")
@@ -447,18 +252,16 @@ def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
 
 def generate_token(): return uuid.uuid4().hex[:8].upper()
 
-# --- EDITOR MANUAL ARREGLADO (TAMAÑO E IDENTIFICADORES) ---
-def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height):
-    """Editor manual con imagen ajustada y keys únicos"""
+# --- EDITOR MANUAL ARREGLADO (FEEDBACK INMEDIATO) ---
+def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height, alignment_config=None):
+    """Editor manual con imagen ajustada, keys únicos y feedback de cupos"""
     
     p_num = p_sel.replace("Piso ", "").strip()
 
     st.subheader("🎯 Modo de Dibujo Manual")
     
-    # 1. AJUSTAR TAMAÑO VISUAL DEL GRÁFICO (NO GIGANTE)
-    fig, ax = plt.subplots(figsize=(10, 6)) # Tamaño controlado
+    fig, ax = plt.subplots(figsize=(10, 6))
     ax.imshow(img)
-    # Quitar ejes para que se vea más limpio
     ax.axis('off')
     ax.set_title(f"Plano del {p_sel} (Referencia)", fontsize=10)
     
@@ -470,11 +273,10 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
             ax.text(zona['x'], zona['y'], zona['team'], fontsize=8, color='white', 
                     bbox=dict(facecolor='black', alpha=0.5))
     
-    st.pyplot(fig, use_container_width=False) # No expandir al 100%
+    st.pyplot(fig, use_container_width=False)
     
     st.subheader("🖊️ Agregar Nueva Zona")
     
-    # KEYS ÚNICOS BASADOS EN EL PISO Y DÍA
     with st.form(f"zona_form_advanced_{p_sel}_{d_sel}"):
         col1, col2 = st.columns(2)
         with col1:
@@ -491,22 +293,14 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
             elif "3" in p_sel: salas_piso = ["Sala Reuniones Piso 3"]
             eqs = eqs + salas_piso
             
-            # KEYS ÚNICOS
             equipo = st.selectbox("Equipo / Sala", eqs, key=f"team_sel_adv_{p_sel}")
-            
-            # MOSTRAR CUPOS INMEDIATAMENTE AL SELECCIONAR EQUIPO
-            if equipo and equipo in current_seats_dict:
-                st.info(f"📊 Cupos asignados para {equipo}: {current_seats_dict[equipo]} cupos")
-            elif equipo:
-                st.info("ℹ️ Este equipo no tiene cupos asignados para el día seleccionado")
-                
             color = st.color_picker("Color", "#00A04A", key=f"col_pick_adv_{p_sel}")
             
+            st.caption("ℹ️ Selecciona un equipo y haz click en guardar para ver la zona.")
         
         with col2:
             st.info("📍 Coordenadas")
             c_x, c_y = st.columns(2)
-            # KEYS ÚNICOS
             x = c_x.slider("X", 0, img_width, 100, key=f"x_man_{p_sel}")
             y = c_y.slider("Y", 0, img_height, 100, key=f"y_man_{p_sel}")
             
@@ -520,7 +314,7 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
                     "team": equipo, "x": x, "y": y, "w": w, "h": h, "color": color
                 })
                 save_zones(zonas)
-                st.success("Zona guardada")
+                st.success(f"Zona guardada para {equipo}")
                 st.rerun()
             else:
                 st.warning("Selecciona un equipo")
@@ -530,44 +324,30 @@ def fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, img_width, img_height
     with st.expander("Configuración"):
         col_style1, col_style2 = st.columns(2)
         with col_style1:
-            # KEYS ÚNICOS INPUTS
             tit = st.text_input("Título", f"Distribución {p_sel}", key=f"tit_final_{p_sel}")
             sub = st.text_input("Subtítulo", f"Día: {d_sel}", key=f"sub_final_{p_sel}")
-            
-            # NUEVAS OPCIONES DE LEYENDA
-            show_legend = st.checkbox("Mostrar leyenda", True, key=f"show_leg_{p_sel}")
-            legend_align = st.selectbox("Alineación leyenda", ["Izquierda", "Centro", "Derecha"], 
-                                      index=0, key=f"leg_align_{p_sel}")
         with col_style2:
-            # KEYS ÚNICOS COLOR PICKERS
             bg = st.color_picker("Fondo", "#FFFFFF", key=f"bg_final_{p_sel}")
             tx = st.color_picker("Texto", "#000000", key=f"tx_final_{p_sel}")
         
         lg = st.checkbox("Logo", True, key=f"lg_final_{p_sel}")
-        logo_align = st.selectbox("Alineación logo", ["Izquierda", "Centro", "Derecha"], 
-                                index=0, key=f"logo_align_{p_sel}")
         
-    # KEY ÚNICA BOTÓN GENERAR
     if st.button("Generar Vista Previa", key=f"btn_gen_{p_sel}"):
         conf = {
-            "title_text": tit, 
-            "subtitle_text": sub, 
-            "bg_color": bg, 
-            "title_color": tx, 
-            "use_logo": lg,
-            "logo_align": logo_align,
-            "show_legend": show_legend,
-            "legend_align": legend_align
+            "title_text": tit, "subtitle_text": sub, "bg_color": bg, "title_color": tx, "use_logo": lg
         }
+        if alignment_config:
+            conf.update(alignment_config)
+
         current_seats = current_seats_dict if 'current_seats_dict' in locals() else {}
         generate_colored_plan(p_sel, d_sel, current_seats, "PNG", conf, global_logo_path)
         
         ds = d_sel.lower().replace("é", "e").replace("á", "a")
         fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
         if fpng.exists():
-            st.image(str(fpng), caption="Vista Previa", width=700) # Ancho controlado
+            st.image(str(fpng), caption="Vista Previa Generada", width=700)
 
-def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
+def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path, alignment_config=None):
     p_num = p_sel.replace("Piso ", "").strip()
     file_base = f"piso{p_num}"
     pim = PLANOS_DIR / f"{file_base}.png"
@@ -575,22 +355,21 @@ def enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path):
     if not pim.exists(): pim = PLANOS_DIR / f"Piso{p_num}.png"
 
     if not pim.exists():
-        st.error(f"❌ No se encontró el plano para {p_sel}")
+        st.error(f"❌ No se encontró el plano base para {p_sel} en la carpeta 'planos/'.")
         return
 
     img = PILImage.open(pim)
     w, h = img.size
     
-    # Mostramos imagen de referencia con tamaño controlado
-    st.image(img, caption=f"Plano Base {p_sel}", width=700) 
-    
-    try:
-        from streamlit_image_annotation import image_annotation
-        # ... (Tu código de anotación avanzada iría aquí si funcionara la librería)
-        # Por seguridad y estabilidad, llamamos al manual mejorado directamente
-        fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, w, h)
-    except ImportError:
-        fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, w, h)
+    # 1. Feedback de Cupos ANTES del editor (Solicitud del cliente)
+    if not df_d.empty:
+        subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+        if not subset.empty:
+            with st.expander("📋 Ver listado de cupos asignados para este día (Referencia)", expanded=False):
+                st.dataframe(subset[['equipo', 'cupos']].sort_values('equipo'), hide_index=True, use_container_width=True)
+
+    # 2. Llamada al editor manual
+    fallback_manual_editor(p_sel, d_sel, zonas, df_d, img, w, h, alignment_config)
 
 # ---------------------------------------------------------
 # INICIO APP
@@ -622,7 +401,7 @@ else:
 menu = st.sidebar.selectbox("Menú", ["Vista pública", "Reservas", "Administrador"])
 
 # ==========================================
-# A. VISTA PÚBLICA
+# A. VISTA PÚBLICA (VISUAL RESTAURADA Y MEJORADA)
 # ==========================================
 if menu == "Vista pública":
     st.header("Cupos y Planos")
@@ -633,22 +412,49 @@ if menu == "Vista pública":
         df_view = df.drop(columns=cols_drop, errors='ignore')
         df_view = apply_sorting_to_df(df_view)
         pisos_disponibles = sort_floors(df["piso"].unique())
+        
+        # --- NUEVO: DASHBOARD DE MÉTRICAS (Para que no se vea vacío/feo) ---
+        st.markdown("### 📊 Estado General de Distribución")
+        km1, km2, km3 = st.columns(3)
+        total_asignados = df_view['cupos'].sum()
+        cupos_libres = df_view[df_view['equipo']=='Cupos libres']['cupos'].sum()
+        with km1: st.metric("Total Cupos Asignados", int(total_asignados))
+        with km2: st.metric("Total Cupos Libres (Semanal)", int(cupos_libres))
+        with km3: st.metric("Pisos Gestionados", len(pisos_disponibles))
+        st.markdown("---")
+        
     else:
         df_view = df
         pisos_disponibles = ["Piso 1"]
 
-    if df.empty: st.info("Sin datos.")
+    if df.empty: st.info("Sin datos cargados en el sistema.")
     else:
-        t1, t2, t3 = st.tabs(["Estadísticas", "Ver Planos", "Resumen Semanal"])
+        t1, t2, t3 = st.tabs(["Estadísticas Generales", "Ver Planos y Descargas", "Resumen Semanal"])
+        
+        # TAB 1: ESTADÍSTICAS Y TABLAS (VISUALIZACIÓN ENRIQUECIDA)
         with t1:
             st.markdown("""<style>[data-testid="stElementToolbar"] {display: none;}</style>""", unsafe_allow_html=True)
+            
+            c_chart, c_table = st.columns([1, 1])
+            
             lib = df_view[df_view["equipo"]=="Cupos libres"].groupby(["piso","dia"], as_index=True, observed=False).agg({"cupos":"sum"}).reset_index()
             lib = apply_sorting_to_df(lib)
-            st.subheader("Distribución completa")
+            
+            with c_chart:
+                st.subheader("📈 Ocupación por Piso")
+                # Gráfico simple de barras
+                if not df_view.empty:
+                    chart_data = df_view.groupby('piso')['cupos'].sum()
+                    st.bar_chart(chart_data)
+            
+            with c_table:
+                st.subheader("🟢 Disponibilidad Cupos Libres")
+                st.dataframe(lib, hide_index=True, use_container_width=True)
+
+            st.subheader("📋 Distribución Detallada")
             st.dataframe(df_view, hide_index=True, use_container_width=True)
-            st.subheader("Cupos libres por piso y día")
-            st.dataframe(lib, hide_index=True, use_container_width=True)
         
+        # TAB 2: PLANOS (FUNCIONALIDAD ORIGINAL MANTENIDA)
         with t2:
             st.subheader("Descarga de Planos")
             c1, c2 = st.columns(2)
@@ -658,11 +464,12 @@ if menu == "Vista pública":
             st.write("---")
             
             if ds == "Todos (Lunes a Viernes)":
-                m = create_merged_pdf(p_sel, conn, global_logo_path)
+                # Usar la función importada de pdfgen
+                m = create_merged_pdf(p_sel, ORDER_DIAS, conn, read_distribution_df, global_logo_path, st.session_state.get('last_style_config', {}))
                 if m: 
                     st.success("✅ Dossier disponible.")
                     st.download_button("📥 Descargar Semana (PDF)", m, f"Planos_{p_sel}_Semana.pdf", "application/pdf", use_container_width=True)
-                else: st.warning("Sin planos generados.")
+                else: st.warning("Sin planos generados para esta selección.")
             else:
                 subset = df[(df['piso'] == p_sel) & (df['dia'] == ds)]
                 current_seats = dict(zip(subset['equipo'], subset['cupos']))
@@ -689,13 +496,13 @@ if menu == "Vista pública":
                         with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
                     else: st.warning("No generado.")
 
+        # TAB 3: RESUMEN SEMANAL
         with t3:
             st.subheader("Resumen de Uso Semanal por Equipo")
             weekly_summary = calculate_weekly_usage_summary(df_view)
             if not weekly_summary.empty:
                 st.dataframe(weekly_summary, hide_index=True, use_container_width=True)
                 
-                # Mostrar métricas generales
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Total Equipos", len(weekly_summary))
@@ -703,8 +510,8 @@ if menu == "Vista pública":
                     total_cupos = weekly_summary['Total Cupos Semanales'].sum()
                     st.metric("Total Cupos Semanales", int(total_cupos))
                 with col3:
-                    avg_percent = weekly_summary['% Distribución Semanal'].mean()
-                    st.metric("Promedio % Distribución", f"{avg_percent:.1f}%")
+                    avg_daily = weekly_summary['Promedio Diario'].mean()
+                    st.metric("Promedio Diario General", f"{avg_daily:.1f}")
             else:
                 st.info("No hay datos suficientes para generar el resumen semanal")
 
@@ -779,7 +586,6 @@ elif menu == "Reservas":
         st.subheader("Agendar Sala")
         c_sala, c_fecha = st.columns(2)
         
-        # ACTUALIZADO: Nuevas opciones de salas
         salas_opciones = [
             "Sala Reuniones Pequeña Piso 1",
             "Sala Reuniones Grande Piso 1", 
@@ -789,15 +595,10 @@ elif menu == "Reservas":
         
         sl = c_sala.selectbox("Selecciona Sala", salas_opciones)
         
-        # Extraer piso basado en la sala seleccionada
-        if "Piso 1" in sl:
-            pi_s = "Piso 1"
-        elif "Piso 2" in sl:
-            pi_s = "Piso 2" 
-        elif "Piso 3" in sl:
-            pi_s = "Piso 3"
-        else:
-            pi_s = "Piso 1"  # Valor por defecto
+        if "Piso 1" in sl: pi_s = "Piso 1"
+        elif "Piso 2" in sl: pi_s = "Piso 2" 
+        elif "Piso 3" in sl: pi_s = "Piso 3"
+        else: pi_s = "Piso 1"
         
         fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs")
         tm = generate_time_slots("08:00", "20:00", 15)
@@ -828,9 +629,7 @@ elif menu == "Reservas":
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
         
         if q:
-            # CORRECCIÓN KEY ERROR: Limpiamos y normalizamos los DFs antes de filtrar
             dp = clean_reservation_df(list_reservations_df(conn), "puesto")
-            # Buscar en columnas normalizadas 'Nombre' o 'Correo'
             if not dp.empty and 'Nombre' in dp.columns and 'Correo' in dp.columns:
                 mp = dp[(dp['Nombre'].str.lower().str.contains(q.lower())) | (dp['Correo'].str.lower().str.contains(q.lower()))]
             else: mp = pd.DataFrame()
@@ -859,7 +658,6 @@ elif menu == "Reservas":
                             c1.markdown(f"**{r['Fecha']}** | {r['Sala']} | {r['Inicio']} - {r['Fin']}")
                             if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
                                 confirm_delete_room_dialog(conn, r['Nombre'], r['Fecha'], r['Sala'], r['Inicio'])
-
         st.markdown("---")
         with st.expander("Ver Listado General de Reservas", expanded=True):
             st.subheader("Reserva de puestos") 
@@ -877,214 +675,115 @@ elif menu == "Administrador":
     if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
     
     if not st.session_state["is_admin"]:
-        u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
+        u = st.text_input("Usuario")
+        p = st.text_input("Contraseña", type="password")
         if st.button("Ingresar"):
-            if u==admin_user and p==admin_pass: st.session_state["is_admin"]=True; st.rerun()
-            else: st.error("Credenciales incorrectas")
+            if u == admin_user and p == admin_pass: 
+                st.session_state["is_admin"] = True
+                st.rerun()
+            else: 
+                st.error("Credenciales incorrectas")
+        
         with st.expander("Recuperar Contraseña"):
             em_chk = st.text_input("Email Registrado")
             if st.button("Solicitar"):
                 re = settings.get("admin_email","")
-                if re and em_chk.lower()==re.lower():
+                if re and em_chk.lower() == re.lower():
                     t = generate_token()
                     save_reset_token(conn, t, (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).isoformat())
-                    send_reservation_email(re, "Token", f"Token: {t}"); st.success("Enviado.")
-                else: st.error("Email no coincide.")
-            tk = st.text_input("Token"); nu = st.text_input("Nuevo User"); np = st.text_input("Nueva Pass", type="password")
+                    send_reservation_email(re, "Token", f"Token: {t}")
+                    st.success("Enviado.")
+                else: 
+                    st.error("Email no coincide.")
+            
+            tk = st.text_input("Token")
+            nu = st.text_input("Nuevo User")
+            np = st.text_input("Nueva Pass", type="password")
             if st.button("Cambiar"):
                 ok, m = validate_and_consume_token(conn, tk)
-                if ok: save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); st.success("OK")
-                else: st.error(m)
+                if ok: 
+                    save_setting(conn, "admin_user", nu)
+                    save_setting(conn, "admin_pass", np)
+                    st.success("OK")
+                else: 
+                    st.error(m)
         st.stop()
 
-    if st.button("Cerrar Sesión"): st.session_state["is_admin"]=False; st.rerun()
+    if st.button("Cerrar Sesión"): 
+        st.session_state["is_admin"] = False
+        st.rerun()
 
+    # --- TABS DE ADMINISTRACIÓN (INDENTACIÓN CORREGIDA) ---
     t1, t2, t3, t4, t5, t6 = st.tabs(["Excel", "Editor Visual", "Informes", "Config", "Apariencia", "Mantenimiento"])
     
     with t1:
-        st.subheader("Generador de Distribución Inteligente")
-        c_up, c_strat = st.columns([2, 1])
-        up = c_up.file_uploader("Subir archivo Excel (Hojas: 'Equipos', 'Parámetros')", type=["xlsx"])
+        st.subheader("Generador de Distribución")
+        up = st.file_uploader("Subir Excel", type=["xlsx"])
         
-        # NUEVO: Checkbox para ignorar parámetros
-        ignore_params = st.checkbox("🎯 Ignorar hoja de parámetros y generar distribución ideal", 
-                                       help="Genera distribuciones optimizadas sin restricciones de capacidad")
+        # Opción para ignorar parámetros y usar lógica ideal
+        ignore_params = st.checkbox("🎯 Ignorar hoja de parámetros (Distribución Ideal)", value=True, help="Genera distribuciones aleatorias equilibradas")
         
-        if ignore_params:
-            estrategia = st.radio("Estrategia de Distribución Ideal:", 
-                                 ["⚖️ Equitativa Perfecta", "🔄 Balanceada con Flex", "🎲 Aleatoria Controlada"])
-            variant = st.slider("Variante", 0, 2, 0, help="Genera diferentes opciones de la misma estrategia")
-        else:
-            estrategia = c_strat.radio("Estrategia Base:", ["🎲 Aleatorio (Recomendado)", "🧩 Tetris", "🐜 Relleno"])
-            variant = 0
-        
-        strat_map = {
-            "🧩 Tetris": "size_desc", 
-            "🎲 Aleatorio (Recomendado)": "random", 
-            "🐜 Relleno": "size_asc",
-            "⚖️ Equitativa Perfecta": "perfect_equity",
-            "🔄 Balanceada con Flex": "balanced_flex",
-            "🎲 Aleatoria Controlada": "controlled_random"
-        }
-        sel_strat_code = strat_map.get(estrategia, "random")
-
-        if 'excel_equipos' not in st.session_state: st.session_state['excel_equipos'] = None
-        if 'excel_params' not in st.session_state: st.session_state['excel_params'] = None
-        if 'proposal_rows' not in st.session_state: st.session_state['proposal_rows'] = None
-        if 'proposal_deficit' not in st.session_state: st.session_state['proposal_deficit'] = None
-        if 'multiple_proposals' not in st.session_state: st.session_state['multiple_proposals'] = []
-
         if up:
-            try:
-                if st.button("📂 Procesar Inicial", type="primary"):
+            if st.button("Procesar"):
+                try:
                     df_eq = pd.read_excel(up, "Equipos")
                     
                     if ignore_params:
-                        # Generar múltiples propuestas ideales
-                        st.session_state['excel_equipos'] = df_eq
-                        st.session_state['excel_params'] = None
-                        
-                        # Generar 3 opciones diferentes
+                        # Generar 3 opciones ideales distintas
                         proposals = []
-                        for i in range(3):
-                            rows, deficit = get_ideal_distribution_proposal(df_eq, strategy=sel_strat_code, variant=i)
-                            stats = calculate_distribution_stats(rows, df_eq)
+                        # Capacidad referencial (el algoritmo de seats.py usa esto)
+                        cap_pisos = {"Piso 1": 50, "Piso 2": 50, "Piso 3": 50} 
+                        
+                        for i in range(1, 4):
+                            # compute_ideal_distribution debe estar importada o disponible
+                            rows, deficit = get_ideal_distribution_proposal(df_eq, variant=i*100)
+                            libres = sum([r['cupos'] for r in rows if r['equipo']=='Cupos libres'])
+                            
                             proposals.append({
+                                'name': f"Opción {i} (Libres aprox/dia: {int(libres/5)})",
                                 'rows': rows,
-                                'deficit': deficit,
-                                'name': f"Opción {i+1} - {estrategia}",
-                                'stats': stats
+                                'deficit': deficit
                             })
                         
                         st.session_state['multiple_proposals'] = proposals
-                        st.session_state['proposal_rows'] = proposals[0]['rows']
+                        st.session_state['proposal_rows'] = proposals[0]['rows'] 
                         st.session_state['proposal_deficit'] = proposals[0]['deficit']
-                        
                     else:
-                        # Comportamiento original
+                        # Lógica original
                         df_pa = pd.read_excel(up, "Parámetros")
-                        st.session_state['excel_equipos'] = df_eq
-                        st.session_state['excel_params'] = df_pa
-                        rows, deficit = get_distribution_proposal(df_eq, df_pa, strategy=sel_strat_code)
+                        rows, deficit = compute_distribution_from_excel(df_eq, df_pa)
                         st.session_state['proposal_rows'] = rows
                         st.session_state['proposal_deficit'] = deficit
-                        st.session_state['multiple_proposals'] = []  # Limpiar propuestas múltiples
-                        
-                    st.rerun()
-                    
-            except Exception as e: 
-                st.error(f"Error al leer el Excel: {e}")
+                        st.session_state['multiple_proposals'] = []
 
-        if st.session_state['proposal_rows'] is not None:
+                except Exception as e:
+                    st.error(f"Error procesando el archivo: {e}")
+        
+        # Selección de opciones (si existen múltiples)
+        if 'multiple_proposals' in st.session_state and st.session_state['multiple_proposals']:
+            st.write("---")
+            st.subheader("Selecciona una Opción:")
+            cols = st.columns(len(st.session_state['multiple_proposals']))
+            for idx, prop in enumerate(st.session_state['multiple_proposals']):
+                if cols[idx].button(prop['name'], key=f"sel_prop_{idx}", use_container_width=True):
+                    st.session_state['proposal_rows'] = prop['rows']
+                    st.session_state['proposal_deficit'] = prop['deficit']
+                    st.success(f"Seleccionada: {prop['name']}")
+
+        if 'proposal_rows' in st.session_state:
             st.divider()
+            st.subheader("Vista Previa")
+            st.dataframe(pd.DataFrame(st.session_state['proposal_rows']), use_container_width=True)
             
-            # MOSTRAR OPCIONES MÚLTIPLES SI EXISTEN
-            if st.session_state['multiple_proposals'] and len(st.session_state['multiple_proposals']) > 1:
-                st.subheader("🎯 Opciones de Distribución Generadas")
-                
-                # Mostrar estadísticas comparativas
-                cols = st.columns(len(st.session_state['multiple_proposals']))
-                
-                for idx, proposal in enumerate(st.session_state['multiple_proposals']):
-                    with cols[idx]:
-                        stats = proposal['stats']
-                        st.metric(
-                            label=proposal['name'],
-                            value=f"{stats['total_cupos_asignados']} cupos",
-                            delta=f"{stats['cupos_libres']} libres"
-                        )
-                        st.caption(f"Uniformidad: {stats['uniformidad']:.1f}")
-                        st.caption(f"Déficits: {stats['equipos_con_deficit']}")
-                        
-                        if st.button(f"Seleccionar Opción {idx+1}", key=f"select_{idx}", use_container_width=True):
-                            st.session_state['proposal_rows'] = proposal['rows']
-                            st.session_state['proposal_deficit'] = proposal['deficit']
-                            st.rerun()
-                
-                st.markdown("---")
-            
-            # CONTINUAR CON LA VISUALIZACIÓN NORMAL
-            n_def = len(st.session_state['proposal_deficit']) if st.session_state['proposal_deficit'] else 0
-            if n_def == 0: 
-                st.success("✅ **¡Distribución Perfecta!** 0 conflictos detectados.")
-            else: 
-                st.warning(f"⚠️ **Distribución Actual:** {n_def} cupos faltantes en total.")
+            show_distribution_insights(st.session_state['proposal_rows'], st.session_state.get('proposal_deficit'))
 
-            t_view, t_def = st.tabs(["📊 Distribución Visual", "🚨 Reporte de Conflictos"])
-            with t_view:
-                df_preview = pd.DataFrame(st.session_state['proposal_rows'])
-                if not df_preview.empty:
-                    st.dataframe(apply_sorting_to_df(df_preview), hide_index=True, use_container_width=True)
-                else: st.warning("No se generaron asignaciones.")
-                
-                # AGREGAR: Mostrar insights si es distribución ideal
-                if st.session_state.get('multiple_proposals'):
-                    show_distribution_insights(st.session_state['proposal_rows'], st.session_state['proposal_deficit'])
-                    
-            with t_def:
-                if st.session_state['proposal_deficit']:
-                    def_df = pd.DataFrame(st.session_state['proposal_deficit'])
-                    st.dataframe(def_df, use_container_width=True)
-                else: st.info("Sin conflictos.")
-
-            st.markdown("---")
-            c_actions = st.columns([1, 1, 1])
-            if c_actions[0].button("🔄 Probar otra suerte"):
-                with st.spinner("Generando..."):
-                    if st.session_state.get('multiple_proposals'):
-                        # En modo ideal, generar nuevas opciones
-                        proposals = []
-                        for i in range(3):
-                            rows, deficit = get_ideal_distribution_proposal(
-                                st.session_state['excel_equipos'], 
-                                strategy=sel_strat_code, 
-                                variant=i+3  # Cambiar variante para nuevas opciones
-                            )
-                            stats = calculate_distribution_stats(rows, st.session_state['excel_equipos'])
-                            proposals.append({
-                                'rows': rows,
-                                'deficit': deficit,
-                                'name': f"Opción {i+1} - {estrategia}",
-                                'stats': stats
-                            })
-                        st.session_state['multiple_proposals'] = proposals
-                        st.session_state['proposal_rows'] = proposals[0]['rows']
-                        st.session_state['proposal_deficit'] = proposals[0]['deficit']
-                    else:
-                        # Comportamiento original
-                        rows, deficit = get_distribution_proposal(
-                            st.session_state['excel_equipos'], 
-                            st.session_state['excel_params'], 
-                            strategy=sel_strat_code
-                        )
-                        st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                st.rerun()
-            
-            if c_actions[1].button("✨ Auto-Optimizar"):
-                if st.session_state.get('multiple_proposals'):
-                    # En modo ideal, no aplica la optimización por déficit
-                    st.info("En modo ideal, la distribución ya está optimizada.")
-                else:
-                    NUM_INTENTOS = 20; my_bar = st.progress(0, text="Optimizando...")
-                    best_rows = None; best_deficit = None; min_unfairness_score = 999999
-                    for i in range(NUM_INTENTOS):
-                        r, d = get_distribution_proposal(st.session_state['excel_equipos'], st.session_state['excel_params'], strategy="random")
-                        unfairness_score = sum([1 for x in d]) if d else 0
-                        if unfairness_score < min_unfairness_score:
-                            min_unfairness_score = unfairness_score; best_rows = r; best_deficit = d
-                        my_bar.progress(int((i + 1) / NUM_INTENTOS * 100))
-                    st.session_state['proposal_rows'] = best_rows; st.session_state['proposal_deficit'] = best_deficit
-                    my_bar.empty(); st.rerun()
-
-            if c_actions[2].button("💾 Guardar Definitivo", type="primary"):
-                clear_distribution(conn); insert_distribution(conn, st.session_state['proposal_rows'])
-                if st.session_state['proposal_deficit']: st.session_state['deficit_report'] = st.session_state['proposal_deficit']
-                elif 'deficit_report' in st.session_state: del st.session_state['deficit_report']
-                st.success("Guardado."); st.balloons(); st.rerun()
+            if st.button("💾 Guardar Distribución Definitiva", type="primary"):
+                 clear_distribution(conn)
+                 insert_distribution(conn, st.session_state['proposal_rows'])
+                 st.success("¡Guardado exitosamente en la base de datos!")
+                 st.balloons()
 
     with t2:
-        # REEMPLAZADO: Usamos el editor simplificado en lugar del canvas problemático
         zonas = load_zones()
         c1, c2 = st.columns(2)
         df_d = read_distribution_df(conn)
@@ -1092,150 +791,113 @@ elif menu == "Administrador":
         p_sel = c1.selectbox("Piso", pisos_list)
         d_sel = c2.selectbox("Día Ref.", ORDER_DIAS)
         
-        # Llamar al editor simplificado
-        enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path)
+        ce1, ce2 = st.columns(2)
+        pos_leyenda = ce1.selectbox("Posición Leyenda", ["Izquierda", "Centro", "Derecha", "Oculta"])
+        pos_logo = ce2.selectbox("Posición Logo", ["Izquierda", "Centro", "Derecha", "Oculto"])
+        
+        config_align = {"legend_align": pos_leyenda, "logo_align": pos_logo}
+        enhanced_zone_editor(p_sel, d_sel, zonas, df_d, global_logo_path, config_align)
 
     with t3:
-        st.subheader("Generar Reportes")
+        st.subheader("Descargas")
         
-        # NUEVOS INFORMES DE USO
-        with st.expander("📊 Informes de Uso y Reservas", expanded=True):
-            st.subheader("Resumen de Uso por Persona/Equipo")
-            
-            # Informe de reservas de puestos
-            reservas_puestos = clean_reservation_df(list_reservations_df(conn), "puesto")
-            if not reservas_puestos.empty:
-                st.markdown("#### 🪑 Uso de Cupos Libres por Persona")
-                uso_personas = reservas_puestos.groupby('Nombre').agg({
-                    'Fecha Reserva': 'count',
-                    'Correo': 'first'
-                }).reset_index()
-                uso_personas = uso_personas.rename(columns={'Fecha Reserva': 'Reservas Totales'})
-                uso_personas = uso_personas.sort_values('Reservas Totales', ascending=False)
-                st.dataframe(uso_personas, hide_index=True, use_container_width=True)
-            
-            # Informe de reservas de salas
-            reservas_salas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-            if not reservas_salas.empty:
-                st.markdown("#### 🏢 Uso de Salas por Persona")
-                uso_salas = reservas_salas.groupby('Nombre').agg({
-                    'Fecha': 'count',
-                    'Correo': 'first',
-                    'Sala': lambda x: ', '.join(x.unique())
-                }).reset_index()
-                uso_salas = uso_salas.rename(columns={'Fecha': 'Reservas Totales'})
-                uso_salas = uso_salas.sort_values('Reservas Totales', ascending=False)
-                st.dataframe(uso_salas, hide_index=True, use_container_width=True)
+        if st.button("📥 Descargar Datos Crudos (XLSX)"):
+            b = BytesIO()
+            try:
+                import xlsxwriter
+                with pd.ExcelWriter(b, engine='xlsxwriter') as w:
+                    read_distribution_df(conn).to_excel(w, sheet_name="Distribucion", index=False)
+                    list_reservations_df(conn).to_excel(w, sheet_name="Reservas", index=False)
+                st.download_button("Descargar Excel", b.getvalue(), "data_sistema.xlsx")
+            except ImportError:
+                 st.error("Falta librería xlsxwriter. Instálala en requirements.txt")
 
-        rf = st.selectbox("Formato", ["Excel", "PDF"])
-        if st.button("Generar Reporte de Distribución"):
-            df_raw = read_distribution_df(conn)
-            if "Excel" in rf:
-                # Usar xlsxwriter para formato .xlsx
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_raw.to_excel(writer, sheet_name='Distribución', index=False)
-                    
-                    # Agregar resumen semanal
-                    weekly_summary = calculate_weekly_usage_summary(df_raw)
-                    if not weekly_summary.empty:
-                        weekly_summary.to_excel(writer, sheet_name='Resumen Semanal', index=False)
-                    
-                    # Agregar informes de uso
-                    if not reservas_puestos.empty:
-                        uso_personas.to_excel(writer, sheet_name='Uso Cupos', index=False)
-                    if not reservas_salas.empty:
-                        uso_salas.to_excel(writer, sheet_name='Uso Salas', index=False)
-                        
-                st.download_button("📥 Descargar Excel", output.getvalue(), "reporte_completo.xlsx", 
-                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            else:
-                d_data = st.session_state.get('deficit_report', [])
-                pdf_bytes = generate_full_pdf(df_raw, global_logo_path, deficit_data=d_data)
-                st.download_button("📥 Descargar PDF", pdf_bytes, "reporte.pdf", "application/pdf", use_container_width=True)
-    
+        st.markdown("---")
+        st.write("Reportes PDF:")
+        # Nuevo generador completo con soporte admin
+        if st.button("📄 Informe Completo (Admin)"):
+            pdf_bytes = generate_full_pdf(
+                read_distribution_df(conn),
+                semanal_df=None,
+                listado_reservas_df=list_reservations_df(conn),
+                listado_salas_df=get_room_reservations_df(conn),
+                logo_path="static/logo.png",
+                is_admin=True 
+            )
+            st.download_button("Descargar PDF Admin", pdf_bytes, "reporte_admin.pdf", "application/pdf")
+
     with t4:
-        nu = st.text_input("User"); np = st.text_input("Pass", type="password"); ne = st.text_input("Email")
+        nu = st.text_input("User Admin")
+        np = st.text_input("Pass Admin", type="password")
+        ne = st.text_input("Email Recuperación")
         if st.button("Guardar Credenciales"): 
-            save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne)
-            st.success("OK")
+            save_setting(conn, "admin_user", nu)
+            save_setting(conn, "admin_pass", np)
+            save_setting(conn, "admin_email", ne)
+            st.success("Credenciales actualizadas")
 
-    with t5: 
+    with t5:
         admin_appearance_ui(conn)
-        
-    with t6:
-        st.subheader("Opciones de Mantenimiento")
-        
-        # ELIMINACIÓN SELECTIVA DE RESERVAS
-        st.markdown("### 🗑️ Eliminación Selectiva de Reservas")
-        
-        tipo_eliminacion = st.selectbox(
-            "Tipo de reserva a eliminar:",
-            ["Puestos", "Salas", "Ambos"]
-        )
-        
-        if tipo_eliminacion in ["Puestos", "Ambos"]:
-            st.markdown("#### Reservas de Puestos")
-            reservas_puestos = clean_reservation_df(list_reservations_df(conn), "puesto")
-            if not reservas_puestos.empty:
-                # Crear interfaz para seleccionar múltiples reservas
-                reservas_seleccionadas = st.multiselect(
-                    "Selecciona reservas de puestos a eliminar:",
-                    options=reservas_puestos.to_dict('records'),
-                    format_func=lambda x: f"{x['Nombre']} - {x['Fecha Reserva']} - {x['Piso']} - {x['Ubicación']}"
-                )
-                
-                if reservas_seleccionadas and st.button("Eliminar Reservas de Puestos Seleccionadas", type="primary"):
-                    for reserva in reservas_seleccionadas:
-                        if delete_reservation_from_db(conn, reserva['Nombre'], reserva['Fecha Reserva'], reserva['Ubicación']):
-                            st.success(f"Reserva de {reserva['Nombre']} eliminada")
-                    st.rerun()
 
-        if tipo_eliminacion in ["Salas", "Ambos"]:
-            st.markdown("#### Reservas de Salas")
-            reservas_salas = clean_reservation_df(get_room_reservations_df(conn), "sala")
-            if not reservas_salas.empty:
-                reservas_salas_seleccionadas = st.multiselect(
-                    "Selecciona reservas de salas a eliminar:",
-                    options=reservas_salas.to_dict('records'),
-                    format_func=lambda x: f"{x['Nombre']} - {x['Fecha']} - {x['Sala']} ({x['Inicio']}-{x['Fin']})"
+    with t6:
+        st.subheader("Gestión de Reservas (Borrado Selectivo)")
+        
+        tab_puestos, tab_salas = st.tabs(["Puestos Flex", "Salas"])
+        
+        with tab_puestos:
+            df_res = list_reservations_df(conn)
+            if not df_res.empty:
+                # Añadir columna checkbox
+                df_res['Eliminar'] = False
+                edited_df = st.data_editor(
+                    df_res, 
+                    column_config={"Eliminar": st.column_config.CheckboxColumn(required=True)},
+                    disabled=[c for c in df_res.columns if c != "Eliminar"],
+                    key="editor_puestos"
                 )
                 
-                if reservas_salas_seleccionadas and st.button("Eliminar Reservas de Salas Seleccionadas", type="primary"):
-                    for reserva in reservas_salas_seleccionadas:
-                        if delete_room_reservation_from_db(conn, reserva['Nombre'], reserva['Fecha'], reserva['Sala'], reserva['Inicio']):
-                            st.success(f"Reserva de sala {reserva['Sala']} eliminada")
-                    st.rerun()
-        
-        st.markdown("---")
-        st.subheader("Opciones de Borrado Masivo")
-        
-        opcion_borrado = st.selectbox(
-            "Selecciona qué deseas borrar:",
-            ["Reservas", "Distribución", "Planos/Zonas", "TODO"]
-        )
-        
-        if st.button("Ejecutar Borrado Masivo", type="primary"):
-            if opcion_borrado == "TODO":
-                perform_granular_delete(conn, "TODO")
-                st.success("✅ Todo borrado exitosamente")
-            elif opcion_borrado == "Reservas":
-                perform_granular_delete(conn, "RESERVAS")
-                st.success("✅ Reservas borradas exitosamente")
-            elif opcion_borrado == "Distribución":
-                perform_granular_delete(conn, "DISTRIBUCION")
-                st.success("✅ Distribución borrada exitosamente")
-            elif opcion_borrado == "Planos/Zonas":
-                perform_granular_delete(conn, "ZONAS")
-                st.success("✅ Planos y zonas borrados exitosamente")
-            st.rerun()
-        
-        st.markdown("---")
-        st.subheader("Resumen de Uso Semanal")
-        df_distrib = read_distribution_df(conn)
-        if not df_distrib.empty:
-            weekly_summary = calculate_weekly_usage_summary(df_distrib)
-            if not weekly_summary.empty:
-                st.dataframe(weekly_summary, hide_index=True, use_container_width=True)
+                if st.button("🗑️ Eliminar Seleccionados (Puestos)", type="primary"):
+                    to_delete = edited_df[edited_df['Eliminar'] == True]
+                    if not to_delete.empty:
+                        count = 0
+                        for _, row in to_delete.iterrows():
+                            # Borrado seguro
+                            if delete_reservation_from_db(conn, row['user_name'], row['reservation_date'], row['team_area']):
+                                count += 1
+                        st.success(f"Eliminadas {count} reservas.")
+                        st.rerun()
+                    else:
+                        st.warning("No seleccionaste nada.")
             else:
-                st.info("No hay datos suficientes para el resumen semanal")
+                st.info("No hay reservas de puestos.")
+        
+        with tab_salas:
+            df_salas = get_room_reservations_df(conn)
+            if not df_salas.empty:
+                df_salas['Eliminar'] = False
+                edited_df_s = st.data_editor(
+                    df_salas, 
+                    column_config={"Eliminar": st.column_config.CheckboxColumn(required=True)},
+                    disabled=[c for c in df_salas.columns if c != "Eliminar"],
+                    key="editor_salas"
+                )
+                
+                if st.button("🗑️ Eliminar Seleccionados (Salas)", type="primary"):
+                    to_delete_s = edited_df_s[edited_df_s['Eliminar'] == True]
+                    if not to_delete_s.empty:
+                        count = 0
+                        for _, row in to_delete_s.iterrows():
+                             if delete_room_reservation_from_db(conn, row['user_name'], row['reservation_date'], row['room_name'], row['start_time']):
+                                count += 1
+                        st.success(f"Eliminadas {count} reservas de sala.")
+                        st.rerun()
+            else:
+                st.info("No hay reservas de salas.")
+
+        st.divider()
+        st.subheader("Borrado Masivo")
+        opcion_borrado = st.selectbox("Selecciona qué borrar TODO:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
+        if st.button("Ejecutar Borrado Masivo"):
+             perform_granular_delete(conn, opcion_borrado.upper())
+             st.success("Borrado ejecutado.")
+             st.rerun()
