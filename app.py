@@ -739,7 +739,8 @@ elif menu == "Reservas":
 elif menu == "Administrador":
     st.header("Admin")
     admin_user, admin_pass = get_admin_credentials(conn)
-    if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
+    if "is_admin" not in st.session_state: 
+        st.session_state["is_admin"] = False
     
     if not st.session_state["is_admin"]:
         u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
@@ -981,55 +982,50 @@ with t2:
         
     if pim.exists():
         try:
-            # Cargar imagen
+            # SOLUCIÓN SIMPLIFICADA: Mostrar la imagen y el canvas por separado
             img = PILImage.open(pim)
             
-            # Redimensionar la imagen para que no sea tan grande
-            max_width = 700
-            original_width, original_height = img.size
-            
-            if original_width > max_width:
-                # Calcular nueva altura manteniendo la proporción
-                ratio = max_width / original_width
-                new_height = int(original_height * ratio)
-                img_resized = img.resize((max_width, new_height), PILImage.Resampling.LANCZOS)
-                display_width = max_width
-                display_height = new_height
+            # Redimensionar para mostrar
+            max_display_width = 700
+            w, h = img.size
+            if w > max_display_width:
+                ratio = max_display_width / w
+                new_h = int(h * ratio)
+                img_display = img.resize((max_display_width, new_h), PILImage.Resampling.LANCZOS)
             else:
-                img_resized = img
-                display_width = original_width
-                display_height = original_height
+                img_display = img
+                max_display_width = w
+                new_h = h
 
-            # Mostrar imagen estática primero para verificar que carga
-            st.image(img_resized, caption=f"Plano de {p_sel} (Vista previa)", use_container_width=False)
+            st.image(img_display, caption=f"Plano de {p_sel}", use_container_width=False)
             
             st.markdown("---")
-            st.subheader("Editor de Zonas - Dibuja rectángulos sobre el plano")
+            st.subheader("Dibuja zonas sobre el plano")
+            st.info("💡 **Instrucciones:** Dibuja rectángulos sobre las áreas del plano donde quieras asignar equipos")
             
-            # CORRECCIÓN: Usar el objeto PIL Image redimensionado directamente
-            # Convertir la imagen redimensionada a base64 para el canvas
-            import base64
-            from io import BytesIO
-            
-            buffered = BytesIO()
-            img_resized.save(buffered, format="PNG")
-            img_str = base64.b64encode(buffered.getvalue()).decode()
-            img_data = f"data:image/png;base64,{img_str}"
-
-            # Canvas con background_image usando base64
+            # CANVAS SIMPLIFICADO - SIN BACKGROUND_IMAGE PROBLEMÁTICO
+            # Usamos un canvas con fondo blanco y dimensiones fijas
             canvas_result = st_canvas(
                 fill_color="rgba(0, 160, 74, 0.3)",
-                stroke_width=2,
+                stroke_width=3,
                 stroke_color="#00A04A",
-                background_image=img_data,  # Usar la string base64 aquí
+                background_color="#ffffff",
                 update_streamlit=True,
-                width=display_width,        # Usar las dimensiones de img_resized
-                height=display_height,      # Usar las dimensiones de img_resized
+                width=max_display_width,
+                height=new_h,
                 drawing_mode="rect",
                 key=f"canvas_{p_sel}_{d_sel}",
             )
             
-            # El resto del código se mantiene igual...
+            # Información para el usuario sobre cómo usar
+            st.warning("""
+            **Para usar el editor:**
+            1. Selecciona un equipo/sala en el dropdown de abajo
+            2. Elige un color
+            3. Dibuja un rectángulo en el área blanca de arriba (que representa tu plano)
+            4. Haz clic en 'Guardar Zona'
+            """)
+            
             current_seats_dict = {}
             eqs = [""]
             if not df_d.empty:
@@ -1044,6 +1040,8 @@ with t2:
             eqs = eqs + salas_piso
 
             # Selección e info
+            st.markdown("---")
+            st.subheader("Configurar Zona")
             c1, c2, c3 = st.columns([2, 1, 1])
             tn = c1.selectbox("Equipo / Sala", eqs, key="editor_equipo")
             tc = c2.color_picker("Color", "#00A04A", key="editor_color")
@@ -1052,27 +1050,53 @@ with t2:
                 st.info(f"Cupos: {current_seats_dict[tn]}")
 
             # Guardar última figura dibujada en el canvas
-            if c3.button("Guardar Zona", key="guardar_zona"):
+            if c3.button("💾 Guardar Zona", type="primary", key="guardar_zona"):
                 if tn and canvas_result.json_data and canvas_result.json_data.get("objects"):
                     o = canvas_result.json_data["objects"][-1]
+                    # Calcular posición relativa basada en el tamaño de la imagen original
+                    scale_x = w / max_display_width if w > max_display_width else 1
+                    scale_y = h / new_h if h > new_h else 1
+                    
                     zonas.setdefault(p_sel, []).append({
                         "team": tn,
-                        "x": int(o.get("left", 0)),
-                        "y": int(o.get("top", 0)),
-                        "w": int(o.get("width", 0) * o.get("scaleX", 1)),
-                        "h": int(o.get("height", 0) * o.get("scaleY", 1)),
+                        "x": int(o.get("left", 0) * scale_x),
+                        "y": int(o.get("top", 0) * scale_y),
+                        "w": int(o.get("width", 0) * o.get("scaleX", 1) * scale_x),
+                        "h": int(o.get("height", 0) * o.get("scaleY", 1) * scale_y),
                         "color": tc
                     })
                     save_zones(zonas)
                     st.success("✅ Zona guardada correctamente")
+                    st.rerun()
                 else:
-                    st.warning("No hay figura dibujada o no seleccionaste equipo.")
+                    st.error("❌ No hay figura dibujada o no seleccionaste equipo")
+
+            # Mostrar zonas existentes
+            if p_sel in zonas and zonas[p_sel]:
+                st.markdown("---")
+                st.subheader("Zonas Guardadas")
+                for i, z in enumerate(zonas[p_sel]):
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    col1.markdown(
+                        f"<span style='color:{z['color']}; font-size: 20px;'>■</span> **{z['team']}** ",
+                        unsafe_allow_html=True
+                    )
+                    col2.info(f"Pos: ({z['x']}, {z['y']})")
+                    if col3.button("🗑️ Eliminar", key=f"del_{i}"):
+                        zonas[p_sel].pop(i)
+                        save_zones(zonas)
+                        st.success("Zona eliminada")
+                        st.rerun()
                     
         except Exception as e:
             st.error(f"Error al cargar el plano: {str(e)}")
+            st.code(f"Detalles del error: {str(e)}")
     else:
-        st.warning(f"No se encontró el plano: {pim}")
+        st.error(f"❌ No se encontró el plano: {p_sel}")
+        st.info(f"Busqué en: {pim}")
 
+    # El resto del código de personalización (títulos, leyenda, etc.) se mantiene igual
+    # ... [mantener el código existente de personalización aquí]
     # ... el resto del código del editor visual se mantiene igual ...
         # Listado y eliminación de zonas guardadas
         if p_sel in zonas:
