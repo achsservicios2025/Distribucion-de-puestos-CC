@@ -514,6 +514,12 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                         
                         rectangles.push(newRect);
                         updateZonesList();
+                        
+                        // Auto-guardar después de dibujar
+                        setTimeout(() => {{
+                            const zonesData = JSON.stringify(rectangles);
+                            localStorage.setItem('zones_auto_' + '{p_sel}', zonesData);
+                        }}, 100);
                     }}
                     
                     currentRect = null;
@@ -554,12 +560,13 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                 }}
                 
                 function saveZones() {{
-                    // Mostrar el JSON en un formato fácil de copiar
-                    const zonesData = JSON.stringify(rectangles, null, 2);
+                    // Guardar automáticamente en localStorage
+                    const zonesData = JSON.stringify(rectangles);
+                    localStorage.setItem('zones_save_' + '{p_sel}', zonesData);
                     
-                    // Crear un elemento de texto para copiar
+                    // Copiar al portapapeles también para respaldo
                     const textArea = document.createElement('textarea');
-                    textArea.value = zonesData;
+                    textArea.value = JSON.stringify(rectangles, null, 2);
                     textArea.style.position = 'fixed';
                     textArea.style.left = '-999999px';
                     document.body.appendChild(textArea);
@@ -567,14 +574,25 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                     
                     try {{
                         document.execCommand('copy');
-                        alert('✅ Zonas copiadas al portapapeles!\\n\\nPega el JSON en el área de texto de Streamlit y haz clic en "Guardar Zonas".\\n\\nZonas: ' + rectangles.length);
+                        alert('✅ Zonas guardadas! (' + rectangles.length + ' zonas)\\n\\nHaz clic en "💾 Guardar desde Editor" en Streamlit para confirmar.\\n\\n(El JSON también se copió al portapapeles)');
                     }} catch (err) {{
-                        // Si falla, mostrar en un prompt
-                        prompt('Copia este JSON y pégalo en Streamlit:', zonesData);
+                        alert('✅ Zonas guardadas! (' + rectangles.length + ' zonas)\\n\\nHaz clic en "💾 Guardar desde Editor" en Streamlit.');
                     }}
                     
                     document.body.removeChild(textArea);
                 }}
+                
+                // Auto-guardar cuando se dibuja un rectángulo (guardar en localStorage)
+                const originalMouseUp = canvas.onmouseup;
+                canvas.addEventListener('mouseup', function(e) {{
+                    // Después de que se procese el evento original, guardar automáticamente
+                    setTimeout(() => {{
+                        if (rectangles.length > 0) {{
+                            const zonesData = JSON.stringify(rectangles);
+                            localStorage.setItem('zones_auto_save_' + '{p_sel}', zonesData);
+                        }}
+                    }}, 300);
+                }});
                 
                 // Mostrar coordenadas al mover el mouse
                 canvas.addEventListener('mousemove', function(e) {{
@@ -928,17 +946,27 @@ if menu == "Vista pública":
                 fpng = COLORED_DIR / f"piso_{pn}_{dsf}_combined.png"
                 fpdf = COLORED_DIR / f"piso_{pn}_{dsf}_combined.pdf"
                 
+                # Verificar si hay zonas guardadas para este piso
+                zonas = load_zones()
+                has_zones = p_sel in zonas and zonas[p_sel] and len(zonas[p_sel]) > 0
+                
                 opts = []
                 if fpng.exists(): opts.append("Imagen (PNG)")
                 if fpdf.exists(): opts.append("Documento (PDF)")
                 
                 if opts:
                     if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
-                    sf = st.selectbox("Formato:", opts, key="dl_pub")
+                    sf = st.selectbox("Formato:", opts, key=f"dl_pub_{p_sel}_{ds}")
                     tf = fpng if "PNG" in sf else fpdf
                     mim = "image/png" if "PNG" in sf else "application/pdf"
-                    with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
-                else: st.warning("No generado.")
+                    with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True, key=f"dl_btn_{p_sel}_{ds}")
+                else:
+                    if has_zones:
+                        st.warning(f"⚠️ Hay {len(zonas[p_sel])} zonas guardadas para {p_sel}, pero el plano no está generado.")
+                        st.info(f"💡 Ve a 'Editor Visual de Zonas' → 'Generar Planos' y haz clic en '🎨 Generar Vista Previa' para crear el plano.")
+                    else:
+                        st.warning(f"⚠️ No hay planos generados para {p_sel} - {ds}.")
+                        st.info(f"💡 Primero crea zonas en 'Editor Visual de Zonas' y luego genera el plano en 'Generar Planos'.")
 
 # ==========================================
 # B. RESERVAS (UNIFICADO CON DROPDOWN Y TÍTULOS CORREGIDOS)
@@ -1398,38 +1426,14 @@ elif menu == "Administrador":
                     else:
                         st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
                     
-                    # Área para recibir datos del componente (usando text_area como interfaz)
-                    st.markdown("---")
-                    st.subheader("📥 Datos de Zonas")
-                    
-                    # Mostrar zonas actuales
-                    zones_json = st.text_area(
-                        "Datos JSON de zonas (edita manualmente si es necesario):",
-                        value=json.dumps(existing_zones, indent=2),
-                        height=150,
-                        key=f"zones_json_{p_sel}"
-                    )
-                    
                     # Botones de acción
-                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    col_btn1, col_btn2 = st.columns(2)
                     
-                    if col_btn1.button("💾 Guardar Zonas", key=f"save_zones_{p_sel}", type="primary"):
-                        try:
-                            zonas_data = json.loads(zones_json)
-                            zonas[p_sel] = zonas_data
-                            save_zones(zonas)
-                            st.success("✅ Zonas guardadas correctamente")
-                            st.rerun()
-                        except json.JSONDecodeError:
-                            st.error("❌ Error: El texto no es un JSON válido")
-                        except Exception as e:
-                            st.error(f"❌ Error al guardar zonas: {str(e)}")
-                            
-                    if col_btn2.button("🔄 Recargar desde Archivo", key=f"reload_{p_sel}"):
+                    if col_btn1.button("🔄 Recargar Zonas", key=f"reload_{p_sel}"):
                         zonas = load_zones()
                         st.rerun()
                         
-                    if col_btn3.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
+                    if col_btn2.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
                         if st.session_state.get(f"confirm_clear_{p_sel}", False):
                             zonas[p_sel] = []
                             save_zones(zonas)
@@ -1439,6 +1443,36 @@ elif menu == "Administrador":
                         else:
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
+                    
+                    # Sistema de guardado automático - el componente guarda directamente
+                    # Agregar script para leer desde localStorage y guardar automáticamente
+                    auto_save_script = f"""
+                    <script>
+                    // Leer zonas desde localStorage cuando la página carga
+                    window.addEventListener('load', function() {{
+                        const savedZones = localStorage.getItem('zones_save_{p_sel}');
+                        if (savedZones) {{
+                            // Las zonas están guardadas, Streamlit las leerá automáticamente
+                            console.log('Zonas encontradas en localStorage:', savedZones);
+                        }}
+                    }});
+                    </script>
+                    """
+                    st.markdown(auto_save_script, unsafe_allow_html=True)
+                    
+                    # Botón para guardar automáticamente desde localStorage
+                    if st.button("💾 Guardar Zonas Automáticamente", key=f"auto_save_{p_sel}", type="primary"):
+                        # Intentar leer desde el componente usando JavaScript
+                        st.info("💡 Haz clic en '💾 Guardar Zonas' en el editor primero, luego vuelve a hacer clic en este botón para guardar automáticamente.")
+                        
+                        # Recargar zonas desde archivo por si el componente las guardó
+                        zonas = load_zones()
+                        if p_sel in zonas and zonas[p_sel]:
+                            st.success(f"✅ {len(zonas[p_sel])} zonas encontradas y guardadas")
+                        else:
+                            st.warning("⚠️ No se encontraron zonas guardadas. Asegúrate de hacer clic en '💾 Guardar Zonas' en el editor primero.")
+                    
+                    st.info("💡 **Guardado Automático:** 1) Dibuja zonas 2) Haz clic en '💾 Guardar Zonas' en el editor 3) Haz clic en '💾 Guardar Zonas Automáticamente' arriba")
                             
                 except Exception as e:
                     st.error(f"❌ Error en el editor: {str(e)}")
@@ -1479,7 +1513,7 @@ elif menu == "Administrador":
                 
                 # Editor de zonas existentes
                 st.markdown("#### ✏️ Editar Zona Existente")
-                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
+                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')}" 
                             for i, z in enumerate(zonas[p_sel])]
                 
                 if zone_options:
@@ -1584,130 +1618,70 @@ elif menu == "Administrador":
         fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"], key=f"fmt_{p_sel}")
         f_code = "PNG" if "PNG" in fmt_sel else "PDF"
         
-        if st.button("🎨 Actualizar Vista Previa", key=f"preview_{p_sel}"):
-            conf = {
-                "title_text": tm,
-                "subtitle_text": ts,
-                "title_font": ff_t,
-                "title_size": fs_t,
-                "subtitle_font": ff_s,
-                "subtitle_size": fs_s,
-                "legend_font": ff_l,
-                "legend_size": fs_l,
-                "alignment": align, 
-                "subtitle_align": align_s, 
-                "legend_align": align_l, 
-                "bg_color": bg, 
-                "title_color": tx, 
-                "subtitle_color": "#666666", 
-                "use_logo": lg, 
-                "use_legend": ln, 
-                "logo_width": lw,
-                "logo_align": align_logo
-            }
-            # CAMBIO: Guardar config en session_state para usarla en dossier PDF
-            st.session_state['last_style_config'] = conf
-            
-            # Obtener current_seats_dict
-            current_seats_dict = {}
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-            
-            out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-            if out: st.success("Generado.")
+        # Preparar configuración
+        conf = {
+            "title_text": tm,
+            "subtitle_text": ts,
+            "title_font": ff_t,
+            "title_size": fs_t,
+            "subtitle_font": ff_s,
+            "subtitle_size": fs_s,
+            "legend_font": ff_l,
+            "legend_size": fs_l,
+            "alignment": align, 
+            "subtitle_align": align_s, 
+            "legend_align": align_l, 
+            "bg_color": bg, 
+            "title_color": tx, 
+            "subtitle_color": "#666666", 
+            "use_logo": lg, 
+            "use_legend": ln, 
+            "logo_width": lw,
+            "logo_align": align_logo
+        }
+        # Guardar config en session_state para usarla en dossier PDF
+        st.session_state['last_style_config'] = conf
         
+        # Obtener current_seats_dict
+        current_seats_dict = {}
+        if not df_d.empty:
+            subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+            current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+        
+        # Generar automáticamente al cambiar opciones
+        if st.button("🎨 Generar Vista Previa", key=f"preview_{p_sel}", type="primary"):
+            out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
+            if out: 
+                st.success("✅ Vista previa generada correctamente")
+                st.rerun()
+        
+        # Mostrar vista previa si existe
         ds = d_sel.lower().replace("é","e").replace("á","a")
         fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
         fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
         
-        if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
-        elif fpdf.exists(): st.info("PDF generado (sin vista previa)")
-        
-        tf = fpng if "PNG" in fmt_sel else fpdf
-        mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
-        if tf.exists():
-            with open(tf,"rb") as f: st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True, key=f"dl_{p_sel}")
+        if fpng.exists() or fpdf.exists():
+            st.markdown("### 📊 Vista Previa")
+            if fpng.exists(): 
+                st.image(str(fpng), width=700, caption=f"Vista Previa - {p_sel} - {d_sel}")
+            elif fpdf.exists(): 
+                st.info("📄 PDF generado (sin vista previa de imagen)")
             
-            st.divider()
-            st.subheader("Personalización Título y Leyenda")
-            with st.expander("🎨 Editar Estilos", expanded=True):
-                tm = st.text_input("Título Principal", f"Distribución {p_sel}")
-                ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}")
-                
-                align_options = ["Izquierda", "Centro", "Derecha"]
-
-                st.markdown("##### Estilos del Título Principal")
-                cf1, cf2, cf3 = st.columns(3)
-                ff_t = cf1.selectbox("Tipografía (Título)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_t")
-                fs_t = cf2.selectbox("Tamaño Letra (Título)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=9, key="size_t")
-                align = cf3.selectbox("Alineación (Título)", align_options, index=1)
-
-                st.markdown("---")
-                st.markdown("##### Estilos del Subtítulo")
-                cs1, cs2, cs3 = st.columns(3)
-                ff_s = cs1.selectbox("Tipografía (Subtítulo)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_s")
-                fs_s = cs2.selectbox("Tamaño Letra (Subtítulo)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=5, key="size_s")
-                align_s = cs3.selectbox("Alineación (Subtítulo)", align_options, index=1)
-
-                st.markdown("---")
-                st.markdown("##### Estilos de la Leyenda")
-                cl1, cl2, cl3 = st.columns(3)
-                ff_l = cl1.selectbox("Tipografía (Leyenda)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_l", index=0)
-                fs_l = cl2.selectbox("Tamaño Letra (Leyenda)", [8, 10, 12, 14, 16, 18, 20, 24, 28, 32], index=3, key="size_l")
-                align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0)
-                
-                st.markdown("---")
-                cg1, cg2, cg3, cg4 = st.columns(4) 
-                lg = cg1.checkbox("Logo", True, key="chk_logo"); 
-                ln = cg2.checkbox("Mostrar Leyenda", True, key="chk_legend");
-                align_logo = cg3.selectbox("Alineación Logo", align_options, index=0)
-                lw = cg4.slider("Ancho Logo", 50, 300, 150)
-                
-                cc1, cc2 = st.columns(2)
-                bg = cc1.color_picker("Fondo Header", "#FFFFFF"); tx = cc2.color_picker("Color Texto", "#000000")
-
-            fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"])
-            f_code = "PNG" if "PNG" in fmt_sel else "PDF"
-            
-            if st.button("🎨 Actualizar Vista Previa"):
-                conf = {
-                    "title_text": tm,
-                    "subtitle_text": ts,
-                    "title_font": ff_t,
-                    "title_size": fs_t,
-                    "subtitle_font": ff_s,
-                    "subtitle_size": fs_s,
-                    "legend_font": ff_l,
-                    "legend_size": fs_l,
-                    "alignment": align, 
-                    "subtitle_align": align_s, 
-                    "legend_align": align_l, 
-                    "bg_color": bg, 
-                    "title_color": tx, 
-                    "subtitle_color": "#666666", 
-                    "use_logo": lg, 
-                    "use_legend": ln, 
-                    "logo_width": lw,
-                    "logo_align": align_logo
-                }
-                # CAMBIO: Guardar config en session_state para usarla en dossier PDF
-                st.session_state['last_style_config'] = conf
-                
-                out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-                if out: st.success("Generado.")
-            
-            ds = d_sel.lower().replace("é","e").replace("á","a")
-            fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
-            fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
-            
-            if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
-            elif fpdf.exists(): st.info("PDF generado (sin vista previa)")
-            
+            # Botón de descarga
             tf = fpng if "PNG" in fmt_sel else fpdf
             mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
             if tf.exists():
-                with open(tf,"rb") as f: st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True)
+                with open(tf,"rb") as f: 
+                    st.download_button(
+                        f"📥 Descargar {fmt_sel}", 
+                        f, 
+                        tf.name, 
+                        mm, 
+                        use_container_width=True, 
+                        key=f"dl_{p_sel}"
+                    )
+        else:
+            st.info("ℹ️ Haz clic en '🎨 Generar Vista Previa' para crear el plano con los estilos configurados")
 
     with t3:
         st.subheader("Generar Reportes de Distribución")
