@@ -14,8 +14,6 @@ from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
 import base64
-import streamlit.components.v1 as components
-
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
@@ -31,11 +29,34 @@ if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
         width: int
 
     def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
+        # Si es un string (URL base64), devolverlo directamente
+        if isinstance(image_data, str):
+            return image_data
+        # Si width es int, convertirlo a WidthConfig
         if isinstance(width, int):
             width = WidthConfig(width=width)
         return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
 
     streamlit.elements.lib.image_utils.image_to_url = _patched_image_to_url
+
+# Parche adicional para st_image (usado por st_canvas internamente)
+try:
+    import streamlit.elements.image as st_image_module
+    if hasattr(st_image_module, "image_to_url"):
+        _orig_st_image_to_url = st_image_module.image_to_url
+        
+        def _patched_st_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
+            # Si es un string (URL base64), devolverlo directamente
+            if isinstance(image_data, str):
+                return image_data
+            # Si width es int, convertirlo a WidthConfig
+            if isinstance(width, int):
+                width = WidthConfig(width=width)
+            return _orig_st_image_to_url(image_data, width, clamp, channels, output_format, image_id)
+        
+        st_image_module.image_to_url = _patched_st_image_to_url
+except:
+    pass  # Si no existe el módulo, continuar sin parche
 
 # ---------------------------------------------------------
 # 2. IMPORTACIONES DE MÓDULOS
@@ -56,6 +77,7 @@ from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
 from streamlit_drawable_canvas import st_canvas
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
@@ -147,36 +169,6 @@ def apply_sorting_to_df(df):
         
     return df
 
-def safe_convert_df(df):
-    """Convierte seguramente un DataFrame para evitar errores de serialización"""
-    if df.empty:
-        return df
-        
-    df_clean = df.copy()
-    for col in df_clean.columns:
-        try:
-            # Si la columna es de tipo categoría, convertir a string primero
-            if hasattr(df_clean[col], 'cat'):
-                df_clean[col] = df_clean[col].astype(str)
-            
-            # Para columnas de objeto, convertir a string y llenar NaN
-            if df_clean[col].dtype == 'object':
-                df_clean[col] = df_clean[col].astype(str)
-                df_clean[col] = df_clean[col].fillna('')
-            # Para otros tipos, solo llenar NaN si es necesario
-            elif df_clean[col].isna().any():
-                # Para numéricos, llenar con 0 en lugar de string vacío
-                if pd.api.types.is_numeric_dtype(df_clean[col]):
-                    df_clean[col] = df_clean[col].fillna(0)
-                else:
-                    df_clean[col] = df_clean[col].fillna('')
-        except Exception as e:
-            # Si falla, simplemente saltar la columna
-            print(f"Advertencia: No se pudo procesar la columna {col}: {e}")
-            continue
-            
-    return df_clean
-
 # --- NUEVA FUNCIÓN CON ESTRATEGIAS DE ORDENAMIENTO ---
 def get_distribution_proposal(df_equipos, df_parametros, strategy="random"):
     """
@@ -225,290 +217,18 @@ def clean_reservation_df(df, tipo="puesto"):
         return df[[c for c in cols if c in df.columns]]
     return df
 
-# --- NUEVAS FUNCIONES PARA RANKINGS ---
-def generate_room_usage_ranking(conn):
-    """Genera ranking de uso de salas de reuniones"""
-    df = get_room_reservations_df(conn)
-    if df.empty:
-        return pd.DataFrame()
-    
-    # Contar uso por sala
-    room_usage = df.groupby('room_name').size().reset_index(name='Reservas')
-    room_usage = room_usage.sort_values('Reservas', ascending=False)
-    return room_usage
+def hex_to_rgba(hex_color, alpha=0.3):
+    """Convierte color hex a formato rgba para el canvas."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(0, 160, 74, {alpha})"
 
-def generate_flex_usage_ranking(conn):
-    """Genera ranking de uso de cupos flexibles"""
-    df = list_reservations_df(conn)
-    if df.empty:
-        return pd.DataFrame()
-    
-    # Contar uso por equipo (usuario)
-    flex_usage = df.groupby('user_name').size().reset_index(name='Reservas')
-    flex_usage = flex_usage.sort_values('Reservas', ascending=False)
-    return flex_usage
-
-# --- GENERADORES DE PDF ---
-def create_merged_pdf(piso_sel, conn, global_logo_path):
-    p_num = piso_sel.replace("Piso ", "").strip()
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, 15)
-    found_any = False
-
-    df = read_distribution_df(conn)
-    base_config = st.session_state.get('last_style_config', {})
-
-    for dia in ORDER_DIAS:
-        subset = df[(df['piso'] == piso_sel) & (df['dia'] == dia)]
-        current_seats = dict(zip(subset['equipo'], subset['cupos']))
-        
-        day_config = base_config.copy()
-        if not day_config.get("subtitle_text"):
-            day_config["subtitle_text"] = f"Día: {dia}"
-        else:
-            if "Día:" not in str(day_config.get("subtitle_text","")):
-                day_config["subtitle_text"] = f"Día: {dia}"
-
-        img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
-        
-        if img_path and Path(img_path).exists():
-            found_any = True
-            pdf.add_page()
-            try: pdf.image(str(img_path), x=10, y=10, w=190)
-            except: pass
-            
-    if not found_any: return None
-    return pdf.output(dest='S').encode('latin-1')
-
-def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
-    """
-    Genera el reporte PDF de distribución con tablas diaria y semanal.
-    """
-    pdf = FPDF()
-    pdf.set_auto_page_break(True, 15)
-    
-    # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    if logo_path.exists():
-        try: pdf.image(str(logo_path), x=10, y=8, w=30)
-        except: pass
-    pdf.ln(25)
-    pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
-    pdf.ln(6)
-
-    # Título de sección
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
-
-    # Tabla Diaria
-    pdf.set_font("Arial", 'B', 9)
-    widths = [30, 60, 25, 25, 25]
-    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"] 
-    for w, h in zip(widths, headers): pdf.cell(w, 6, clean_pdf_text(h), 1)
-    pdf.ln()
-
-    pdf.set_font("Arial", '', 9)
-    def get_val(row, keys):
-        for k in keys:
-            if k in row: return str(row[k])
-            if k.lower() in row: return str(row[k.lower()])
-        return ""
-
-    distrib_df = apply_sorting_to_df(distrib_df)
-    for _, r in distrib_df.iterrows():
-        pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["Piso", "piso"])), 1)
-        pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
-        pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
-        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
-        pct_val = get_val(r, ["%Distrib", "pct"])
-        pdf.cell(widths[4], 6, clean_pdf_text(f"{pct_val}%"), 1)
-        pdf.ln()
-
-    # --- SECCIÓN NUEVA: TABLA SEMANAL MEJORADA ---
-    pdf.add_page() # Nueva página para el resumen semanal
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
-    
-    # Cálculo del promedio semanal MEJORADO
-    try:
-        # Asegurar que trabajamos con números
-        if "%Distrib" in distrib_df.columns:
-            col_pct = "%Distrib"
-        elif "pct" in distrib_df.columns:
-            col_pct = "pct"
-        else:
-            col_pct = None
-
-        if col_pct:
-            # Convertir a numérico para evitar error groupby
-            distrib_df[col_pct] = pd.to_numeric(distrib_df[col_pct], errors='coerce').fillna(0)
-            
-            # Agrupar por Equipo y calcular estadísticas semanales
-            weekly_stats = distrib_df.groupby("Equipo").agg({
-                col_pct: ['sum', 'mean', 'count']
-            }).reset_index()
-            
-            # Aplanar columnas
-            weekly_stats.columns = ['Equipo', 'Tot_Semanal', 'Prom_Diario', 'Dias_Asignados']
-            
-            # Calcular % Semanal (promedio de los días asignados)
-            weekly_stats['%_Semanal'] = weekly_stats['Prom_Diario']
-            
-            # Ordenar alfabéticamente
-            weekly_stats = weekly_stats.sort_values("Equipo")
-            
-            # Dibujar Tabla Semanal MEJORADA
-            pdf.set_font("Arial", 'B', 9)
-            w_wk = [50, 25, 25, 25, 25]
-            h_wk = ["Equipo", "Tot. Semanal", "Prom. Diario", "Días Asig.", "% Semanal"]
-            
-            # Centrar un poco la tabla
-            start_x = 10
-            pdf.set_x(start_x)
-            for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
-            pdf.ln()
-
-            pdf.set_font("Arial", '', 8)
-            for _, row in weekly_stats.iterrows():
-                pdf.set_x(start_x)
-                pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:30]), 1)
-                pdf.cell(w_wk[1], 6, clean_pdf_text(f"{row['Tot_Semanal']:.1f}"), 1)
-                pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['Prom_Diario']:.1f}%"), 1)
-                pdf.cell(w_wk[3], 6, clean_pdf_text(f"{int(row['Dias_Asignados'])}"), 1)
-                pdf.cell(w_wk[4], 6, clean_pdf_text(f"{row['%_Semanal']:.1f}%"), 1)
-                pdf.ln()
-                
-    except Exception as e:
-        pdf.set_font("Arial", 'I', 9)
-        pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
-
-    # --- GLOSARIO DE CÁLCULOS MEJORADO ---
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, clean_pdf_text("Glosario de Métricas y Cálculos:"), ln=True)
-    
-    pdf.set_font("Arial", '', 9)
-    notas = [
-        "1. % Distribución Diario: Se calcula dividiendo los cupos asignados en un día específico por la dotación total del equipo.",
-        "2. Tot. Semanal: Suma de los porcentajes de distribución de los 5 días hábiles.",
-        "3. Prom. Diario: Promedio simple de los porcentajes de ocupación de los días asignados.",
-        "4. % Semanal: Equivale al Promedio Diario (representa el uso semanal promedio).",
-        "5. Días Asig.: Número de días en la semana que el equipo tiene cupos asignados.",
-        "6. Cálculo de Déficit: Diferencia entre los cupos mínimos requeridos (según reglas de presencialidad) y los asignados."
-    ]
-    
-    for nota in notas:
-        pdf.set_x(10)
-        pdf.multi_cell(185, 6, clean_pdf_text(nota))
-
-    # --- PÁGINA 3: DÉFICIT (Si existe) ---
-    if deficit_data and len(deficit_data) > 0:
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 14)
-        pdf.set_text_color(200, 0, 0)
-        pdf.cell(0, 10, clean_pdf_text("Reporte de Déficit de Cupos"), ln=True, align='C')
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(5)
-        
-        pdf.set_font("Arial", 'B', 8) 
-        dw = [15, 45, 20, 15, 15, 15, 65]
-        dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
-        
-        for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
-        pdf.ln()
-        
-        pdf.set_font("Arial", '', 8)
-        for d in deficit_data:
-            piso = clean_pdf_text(d.get('piso',''))
-            equipo = clean_pdf_text(d.get('equipo',''))
-            dia = clean_pdf_text(d.get('dia',''))
-            dot = str(d.get('dotacion','-'))
-            mini = str(d.get('minimo','-'))
-            falt = str(d.get('deficit','-'))
-            causa = clean_pdf_text(d.get('causa',''))
-
-            line_height = 5
-            lines_eq = pdf.multi_cell(dw[1], line_height, equipo, split_only=True)
-            lines_ca = pdf.multi_cell(dw[6], line_height, causa, split_only=True)
-            max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
-            row_height = max_lines * line_height
-
-            if pdf.get_y() + row_height > 270:
-                pdf.add_page()
-                pdf.set_font("Arial", 'B', 8)
-                for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
-                pdf.ln()
-                pdf.set_font("Arial", '', 8)
-
-            y_start = pdf.get_y()
-            x_start = pdf.get_x()
-
-            pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
-            
-            x_curr = pdf.get_x()
-            pdf.multi_cell(dw[1], line_height, equipo, 1, 'L')
-            pdf.set_xy(x_curr + dw[1], y_start)
-
-            pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
-            pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
-            pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
-
-            pdf.set_font("Arial", 'B', 8)
-            pdf.set_text_color(180, 0, 0)
-            pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_font("Arial", '', 8)
-
-            x_curr = pdf.get_x()
-            pdf.multi_cell(dw[6], line_height, causa, 1, 'L')
-            pdf.set_xy(x_start, y_start + row_height)
-
-    return pdf.output(dest='S').encode('latin-1')
-
-# --- DIALOGOS MODALES MEJORADOS ---
-@st.dialog("Confirmar Reserva de Puesto")
-def confirm_reservation_dialog(nombre, email, fecha, piso, tipo):
-    st.success(f"¿Confirmar reserva?\n\n👤 {nombre}\n📧 {email}\n📅 {fecha}\n📍 {piso}\n🪑 {tipo}")
-    c1, c2 = st.columns(2)
-    if c1.button("✅ Sí, confirmar", type="primary", width="stretch", key="yes_reserve"):
-        return True
-    if c2.button("Cancelar", width="stretch", key="no_reserve"): 
-        return False
-    return False
-
-@st.dialog("Confirmar Reserva de Sala")
-def confirm_room_reservation_dialog(nombre, email, fecha, sala, inicio, fin):
-    st.success(f"¿Confirmar reserva de sala?\n\n👤 {nombre}\n📧 {email}\n📅 {fecha}\n🏢 {sala}\n⏰ {inicio} - {fin}")
-    c1, c2 = st.columns(2)
-    if c1.button("✅ Sí, confirmar", type="primary", width="stretch", key="yes_room"):
-        return True
-    if c2.button("Cancelar", width="stretch", key="no_room"): 
-        return False
-    return False
-
-@st.dialog("Confirmar Anulación de Puesto")
-def confirm_delete_dialog(conn, usuario, fecha_str, area, piso):
-    st.warning(f"¿Anular reserva de puesto?\n\n👤 {usuario} | 📅 {fecha_str}\n📍 {piso} - {area}")
-    c1, c2 = st.columns(2)
-    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_p"):
-        if delete_reservation_from_db(conn, usuario, fecha_str, area): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_p"): st.rerun()
-
-@st.dialog("Confirmar Anulación de Sala")
-def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
-    st.warning(f"¿Anular reserva de sala?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
-    c1, c2 = st.columns(2)
-    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_s"):
-        if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
-
-# --- UTILS TOKENS ---
-def generate_token(): return uuid.uuid4().hex[:8].upper()
-
-# --- NUEVA FUNCIÓN: EDITOR DE ZONAS MEJORADO ---
-def create_enhanced_drawing_component(img_path, existing_zones, width=700):
-    """Componente profesional de dibujo - VERSIÓN MEJORADA CON GUARDADO FUNCIONAL"""
+def create_enhanced_drawing_component(img_path, existing_zones, selected_team="", selected_color="#00A04A", width=700):
+    """Componente profesional de dibujo mejorado con selección de equipo y color"""
     
     try:
         # Convertir imagen a base64
@@ -531,7 +251,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
         existing_zones_json = json.dumps(safe_zones)
         
         canvas_width = width
-        html_height = 600  # Reducido para dar espacio a controles
+        html_height = 650
         
         # HTML/JS Componente de dibujo profesional MEJORADO
         html_code = f'''
@@ -649,11 +369,9 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     <button class="control-btn delete" onclick="clearAll()">🗑️ Borrar Todo</button>
                     <button class="control-btn save" onclick="saveZones()">💾 Guardar Zonas</button>
                 </div>
-
                 <div class="canvas-container">
                     <canvas id="drawingCanvas"></canvas>
                 </div>
-
                 <div class="status-panel">
                     <div class="coordinates">
                         <strong>Coordenadas:</strong><br>
@@ -665,7 +383,6 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     </div>
                 </div>
             </div>
-
             <img id="sourceImage" src="data:image/png;base64,{img_data}" style="display:none">
             
             <script>
@@ -679,7 +396,9 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                 let currentRect = null;
                 let canvasWidth = {canvas_width};
                 let canvasHeight = 0;
-
+                let selectedTeam = "{selected_team}";
+                let selectedColor = "{selected_color}";
+                
                 // Inicializar cuando la imagen cargue
                 img.onload = function() {{
                     const aspectRatio = img.naturalHeight / img.naturalWidth;
@@ -691,7 +410,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     drawImageAndZones();
                     updateZonesList();
                 }};
-
+                
                 function drawImageAndZones() {{
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -714,30 +433,24 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                         }};
                         
                         drawRectangle(canvasRect);
-                        
-                        // Dibujar etiqueta
-                        if (rect.team && rect.team !== 'Nueva Zona') {{
-                            ctx.fillStyle = '#000';
-                            ctx.font = 'bold 12px Arial';
-                            ctx.fillText(rect.team, canvasRect.x + 5, canvasRect.y + 15);
-                        }}
                     }});
                 }}
-
+                
                 function drawRectangle(rect) {{
-                    ctx.strokeStyle = rect.color || '#00A04A';
+                    ctx.strokeStyle = rect.color || selectedColor;
                     ctx.lineWidth = 3;
                     ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
                     
-                    ctx.fillStyle = (rect.color || '#00A04A') + '40';
+                    // Relleno semitransparente
+                    ctx.fillStyle = (rect.color || selectedColor) + '40';
                     ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
                 }}
-
+                
                 function startDrawing() {{
                     isDrawing = true;
                     canvas.style.cursor = 'crosshair';
                 }}
-
+                
                 function getCanvasCoordinates(e) {{
                     const rect = canvas.getBoundingClientRect();
                     const x = (e.pageX - rect.left - window.pageXOffset);
@@ -751,7 +464,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                         y: y * scaleY
                     }};
                 }}
-
+                
                 canvas.addEventListener('mousedown', function(e) {{
                     if (!isDrawing) return;
                     
@@ -761,11 +474,11 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     
                     currentRect = {{
                         x: startX, y: startY, w: 0, h: 0,
-                        color: '#00A04A',
-                        team: 'Nueva Zona'
+                        color: selectedColor,
+                        team: selectedTeam || 'Nueva Zona'
                     }};
                 }});
-
+                
                 canvas.addEventListener('mousemove', function(e) {{
                     if (!isDrawing || !currentRect) return;
                     
@@ -782,7 +495,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     
                     drawImageAndZones();
                 }});
-
+                
                 canvas.addEventListener('mouseup', function(e) {{
                     if (!isDrawing || !currentRect) return;
                     
@@ -795,8 +508,8 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                             y: Math.round(currentRect.y * scaleY),
                             w: Math.round(currentRect.w * scaleX),
                             h: Math.round(currentRect.h * scaleY),
-                            color: '#00A04A',
-                            team: 'Nueva Zona'
+                            color: selectedColor,
+                            team: selectedTeam || 'Nueva Zona'
                         }};
                         
                         rectangles.push(newRect);
@@ -808,7 +521,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                     canvas.style.cursor = 'default';
                     drawImageAndZones();
                 }});
-
+                
                 function clearLast() {{
                     if (rectangles.length > 0) {{
                         rectangles.pop();
@@ -816,7 +529,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                         updateZonesList();
                     }}
                 }}
-
+                
                 function clearAll() {{
                     if (rectangles.length > 0) {{
                         if (confirm('¿Estás seguro de que quieres eliminar TODAS las zonas?')) {{
@@ -826,7 +539,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                         }}
                     }}
                 }}
-
+                
                 function updateZonesList() {{
                     const container = document.getElementById('zonesContainer');
                     container.innerHTML = '';
@@ -839,19 +552,30 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                         container.appendChild(zoneDiv);
                     }});
                 }}
-
-                // FUNCIÓN MEJORADA DE GUARDADO
+                
                 function saveZones() {{
-                    // Enviar zonas a Streamlit
-                    window.parent.postMessage({{
-                        type: 'streamlit:setComponentValue',
-                        data: JSON.stringify(rectangles)
-                    }}, '*');
+                    // Mostrar el JSON en un formato fácil de copiar
+                    const zonesData = JSON.stringify(rectangles, null, 2);
                     
-                    // Mostrar mensaje de confirmación
-                    alert('Zonas guardadas correctamente. Cierra este mensaje y continúa en la aplicación.');
+                    // Crear un elemento de texto para copiar
+                    const textArea = document.createElement('textarea');
+                    textArea.value = zonesData;
+                    textArea.style.position = 'fixed';
+                    textArea.style.left = '-999999px';
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    
+                    try {{
+                        document.execCommand('copy');
+                        alert('✅ Zonas copiadas al portapapeles!\\n\\nPega el JSON en el área de texto de Streamlit y haz clic en "Guardar Zonas".\\n\\nZonas: ' + rectangles.length);
+                    }} catch (err) {{
+                        // Si falla, mostrar en un prompt
+                        prompt('Copia este JSON y pégalo en Streamlit:', zonesData);
+                    }}
+                    
+                    document.body.removeChild(textArea);
                 }}
-
+                
                 // Mostrar coordenadas al mover el mouse
                 canvas.addEventListener('mousemove', function(e) {{
                     const coords = getCanvasCoordinates(e);
@@ -861,7 +585,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
                             `X: ${{Math.round(coords.x)}}, Y: ${{Math.round(coords.y)}}`;
                     }}
                 }});
-
+                
                 // Inicializar cuando el DOM esté listo
                 document.addEventListener('DOMContentLoaded', function() {{
                     if (img.complete) {{
@@ -879,6 +603,230 @@ def create_enhanced_drawing_component(img_path, existing_zones, width=700):
     except Exception as e:
         st.error(f"Error al crear el componente de dibujo: {str(e)}")
         return None
+
+# --- GENERADORES DE PDF ---
+def create_merged_pdf(piso_sel, conn, global_logo_path):
+    p_num = piso_sel.replace("Piso ", "").strip()
+    pdf = FPDF()
+    pdf.set_auto_page_break(True, 15)
+    found_any = False
+
+    df = read_distribution_df(conn)
+    base_config = st.session_state.get('last_style_config', {})
+
+    for dia in ORDER_DIAS:
+        subset = df[(df['piso'] == piso_sel) & (df['dia'] == dia)]
+        current_seats = dict(zip(subset['equipo'], subset['cupos']))
+        
+        day_config = base_config.copy()
+        if not day_config.get("subtitle_text"):
+            day_config["subtitle_text"] = f"Día: {dia}"
+        else:
+             if "Día:" not in str(day_config.get("subtitle_text","")):
+                  day_config["subtitle_text"] = f"Día: {dia}"
+
+        img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
+        
+        if img_path and Path(img_path).exists():
+            found_any = True
+            pdf.add_page()
+            try: pdf.image(str(img_path), x=10, y=10, w=190)
+            except: pass
+            
+    if not found_any: return None
+    return pdf.output(dest='S').encode('latin-1')
+
+def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
+    """
+    Genera el reporte PDF de distribución con tablas diaria y semanal.
+    """
+    pdf = FPDF()
+    pdf.set_auto_page_break(True, 15)
+    
+    # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    if logo_path.exists():
+        try: pdf.image(str(logo_path), x=10, y=8, w=30)
+        except: pass
+    pdf.ln(25)
+    pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
+    pdf.ln(6)
+
+    # Título de sección
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
+
+    # Tabla Diaria
+    pdf.set_font("Arial", 'B', 9)
+    widths = [30, 60, 25, 25, 25]
+    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"] 
+    for w, h in zip(widths, headers): pdf.cell(w, 6, clean_pdf_text(h), 1)
+    pdf.ln()
+
+    pdf.set_font("Arial", '', 9)
+    def get_val(row, keys):
+        for k in keys:
+            if k in row: return str(row[k])
+            if k.lower() in row: return str(row[k.lower()])
+        return ""
+
+    distrib_df = apply_sorting_to_df(distrib_df)
+    for _, r in distrib_df.iterrows():
+        pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["Piso", "piso"])), 1)
+        pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
+        pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
+        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
+        pct_val = get_val(r, ["%Distrib", "pct"])
+        pdf.cell(widths[4], 6, clean_pdf_text(f"{pct_val}%"), 1)
+        pdf.ln()
+
+    # --- SECCIÓN NUEVA: TABLA SEMANAL ---
+    pdf.add_page() # Nueva página para el resumen semanal
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
+    
+    # Cálculo del promedio semanal
+    try:
+        # Asegurar que trabajamos con números
+        if "%Distrib" in distrib_df.columns:
+            col_pct = "%Distrib"
+        elif "pct" in distrib_df.columns:
+            col_pct = "pct"
+        else:
+            col_pct = None
+
+        if col_pct:
+            # MODIFICADO: Convertir a numérico para evitar error groupby
+            distrib_df[col_pct] = pd.to_numeric(distrib_df[col_pct], errors='coerce').fillna(0)
+            
+            # Agrupar por Equipo y calcular promedio
+            weekly_stats = distrib_df.groupby("Equipo")[col_pct].mean().reset_index()
+            weekly_stats.columns = ["Equipo", "Promedio Semanal"]
+            # Ordenar alfabéticamente
+            weekly_stats = weekly_stats.sort_values("Equipo")
+            
+            # Dibujar Tabla Semanal
+            pdf.set_font("Arial", 'B', 9)
+            w_wk = [100, 40]
+            h_wk = ["Equipo", "% Promedio Semanal"]
+            
+            # Centrar un poco la tabla
+            start_x = 35
+            pdf.set_x(start_x)
+            for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
+            pdf.ln()
+
+            pdf.set_font("Arial", '', 9)
+            for _, row in weekly_stats.iterrows():
+                pdf.set_x(start_x)
+                pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:50]), 1)
+                val = row["Promedio Semanal"]
+                pdf.cell(w_wk[1], 6, clean_pdf_text(f"{val:.1f}%"), 1)
+                pdf.ln()
+    except Exception as e:
+        pdf.set_font("Arial", 'I', 9)
+        pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
+
+    # --- GLOSARIO DE CÁLCULOS ---
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 8, clean_pdf_text("Glosario de Métricas y Cálculos:"), ln=True)
+    
+    pdf.set_font("Arial", '', 9)
+    notas = [
+        "1. % Distribución Diario: Se calcula dividiendo los cupos asignados en un día específico por la dotación total del equipo.",
+        "2. % Uso Semanal: Promedio simple de los porcentajes de ocupación de los 5 días hábiles (Lunes a Viernes).",
+        "3. Cálculo de Déficit: Diferencia entre los cupos mínimos requeridos (según reglas de presencialidad) y los asignados."
+    ]
+    
+    for nota in notas:
+        pdf.set_x(10)
+        pdf.multi_cell(185, 6, clean_pdf_text(nota))
+
+    # --- PÁGINA 3: DÉFICIT (Si existe) ---
+    if deficit_data and len(deficit_data) > 0:
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 14)
+        pdf.set_text_color(200, 0, 0)
+        pdf.cell(0, 10, clean_pdf_text("Reporte de Déficit de Cupos"), ln=True, align='C')
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", 'B', 8) 
+        dw = [15, 45, 20, 15, 15, 15, 65]
+        dh = ["Piso", "Equipo", "Día", "Dot.", "Mín.", "Falt.", "Causa Detallada"]
+        
+        for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
+        pdf.ln()
+        
+        pdf.set_font("Arial", '', 8)
+        for d in deficit_data:
+            piso = clean_pdf_text(d.get('piso',''))
+            equipo = clean_pdf_text(d.get('equipo',''))
+            dia = clean_pdf_text(d.get('dia',''))
+            dot = str(d.get('dotacion','-'))
+            mini = str(d.get('minimo','-'))
+            falt = str(d.get('deficit','-'))
+            causa = clean_pdf_text(d.get('causa',''))
+
+            line_height = 5
+            lines_eq = pdf.multi_cell(dw[1], line_height, equipo, split_only=True)
+            lines_ca = pdf.multi_cell(dw[6], line_height, causa, split_only=True)
+            max_lines = max(len(lines_eq) if lines_eq else 1, len(lines_ca) if lines_ca else 1)
+            row_height = max_lines * line_height
+
+            if pdf.get_y() + row_height > 270:
+                pdf.add_page()
+                pdf.set_font("Arial", 'B', 8)
+                for w, h in zip(dw, dh): pdf.cell(w, 8, clean_pdf_text(h), 1, 0, 'C')
+                pdf.ln()
+                pdf.set_font("Arial", '', 8)
+
+            y_start = pdf.get_y()
+            x_start = pdf.get_x()
+
+            pdf.cell(dw[0], row_height, piso, 1, 0, 'C')
+            
+            x_curr = pdf.get_x()
+            pdf.multi_cell(dw[1], line_height, equipo, 1, 'L')
+            pdf.set_xy(x_curr + dw[1], y_start)
+
+            pdf.cell(dw[2], row_height, dia, 1, 0, 'C')
+            pdf.cell(dw[3], row_height, dot, 1, 0, 'C')
+            pdf.cell(dw[4], row_height, mini, 1, 0, 'C')
+
+            pdf.set_font("Arial", 'B', 8)
+            pdf.set_text_color(180, 0, 0)
+            pdf.cell(dw[5], row_height, falt, 1, 0, 'C')
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Arial", '', 8)
+
+            x_curr = pdf.get_x()
+            pdf.multi_cell(dw[6], line_height, causa, 1, 'L')
+            pdf.set_xy(x_start, y_start + row_height)
+
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- DIALOGOS MODALES ---
+@st.dialog("Confirmar Anulación de Puesto")
+def confirm_delete_dialog(conn, usuario, fecha_str, area, piso):
+    st.warning(f"¿Anular reserva de puesto?\n\n👤 {usuario} | 📅 {fecha_str}\n📍 {piso} - {area}")
+    c1, c2 = st.columns(2)
+    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_p"):
+        if delete_reservation_from_db(conn, usuario, fecha_str, area): st.success("Eliminada"); st.rerun()
+    if c2.button("Cancelar", width="stretch", key="no_p"): st.rerun()
+
+@st.dialog("Confirmar Anulación de Sala")
+def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
+    st.warning(f"¿Anular reserva de sala?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
+    c1, c2 = st.columns(2)
+    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_s"):
+        if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
+    if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
+
+# --- UTILS TOKENS ---
+def generate_token(): return uuid.uuid4().hex[:8].upper()
 
 # ---------------------------------------------------------
 # INICIO APP
@@ -910,790 +858,913 @@ if os.path.exists(global_logo_path):
 else:
     st.title(site_title)
 
+# ---------------------------------------------------------
+# MENÚ PRINCIPAL
+# ---------------------------------------------------------
+menu = st.sidebar.selectbox("Menú", ["Vista pública", "Reservas", "Administrador"])
 
-def main():
-    menu = st.sidebar.selectbox("Menú", ["Vista pública", "Reservas", "Administrador"])
+# ==========================================
+# A. VISTA PÚBLICA
+# ==========================================
+if menu == "Vista pública":
+    st.header("Cupos y Planos")
+    
+    # MODIFICADO: Leemos solo una vez para evitar Error 429
+    df = read_distribution_df(conn)
+    
+    if not df.empty:
+        cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at']]
+        df_view = df.drop(columns=cols_drop, errors='ignore')
+        df_view = apply_sorting_to_df(df_view)
+        # MODIFICADO: Usamos df local en vez de leer de nuevo
+        pisos_disponibles = sort_floors(df["piso"].unique())
+    else:
+        df_view = df
+        pisos_disponibles = ["Piso 1"]
 
-    # ==========================================
-    # A. VISTA PÚBLICA
-    # ==========================================
-    if menu == "Vista pública":
-        st.header("Cupos y Planos")
+    if df.empty: st.info("Sin datos.")
+    else:
+        t1, t2 = st.tabs(["Estadísticas", "Ver Planos"])
+        with t1:
+            st.markdown("""
+                <style>
+                [data-testid="stElementToolbar"] {
+                    display: none;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+            
+            lib = df_view[df_view["equipo"]=="Cupos libres"].groupby(["piso","dia"], as_index=True, observed=False).agg({"cupos":"sum"}).reset_index()
+            lib = apply_sorting_to_df(lib)
+            
+            st.subheader("Distribución completa")
+            # MODIFICADO: Fix use_container_width
+            st.dataframe(df_view, hide_index=True, width=None, use_container_width=True)
+            
+            st.subheader("Cupos libres por piso y día")
+            st.dataframe(lib, hide_index=True, width=None, use_container_width=True)
         
-        # MODIFICADO: Leemos solo una vez para evitar Error 429
+        with t2:
+            st.subheader("Descarga de Planos")
+            c1, c2 = st.columns(2)
+            p_sel = c1.selectbox("Selecciona Piso", pisos_disponibles)
+            ds = c2.selectbox("Selecciona Día", ["Todos (Lunes a Viernes)"] + ORDER_DIAS)
+            pn = p_sel.replace("Piso ", "").strip()
+            st.write("---")
+            
+            if ds == "Todos (Lunes a Viernes)":
+                m = create_merged_pdf(p_sel, conn, global_logo_path)
+                if m: 
+                    st.success("✅ Dossier disponible.")
+                    st.download_button("📥 Descargar Semana (PDF)", m, f"Planos_{p_sel}_Semana.pdf", "application/pdf", use_container_width=True)
+                else: st.warning("Sin planos generados.")
+            else:
+                dsf = ds.lower().replace("é","e").replace("á","a")
+                fpng = COLORED_DIR / f"piso_{pn}_{dsf}_combined.png"
+                fpdf = COLORED_DIR / f"piso_{pn}_{dsf}_combined.pdf"
+                
+                opts = []
+                if fpng.exists(): opts.append("Imagen (PNG)")
+                if fpdf.exists(): opts.append("Documento (PDF)")
+                
+                if opts:
+                    if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
+                    sf = st.selectbox("Formato:", opts, key="dl_pub")
+                    tf = fpng if "PNG" in sf else fpdf
+                    mim = "image/png" if "PNG" in sf else "application/pdf"
+                    with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
+                else: st.warning("No generado.")
+
+# ==========================================
+# B. RESERVAS (UNIFICADO CON DROPDOWN Y TÍTULOS CORREGIDOS)
+# ==========================================
+elif menu == "Reservas":
+    
+    st.header("Gestión de Reservas")
+    
+    # --- MENÚ DESPLEGABLE UNIFICADO ---
+    opcion_reserva = st.selectbox(
+        "¿Qué deseas gestionar hoy?",
+        ["🪑 Reservar Puesto Flex", "🏢 Reservar Sala de Reuniones", "📋 Mis Reservas y Listados"],
+        index=0
+    )
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # OPCIÓN 1: RESERVAR PUESTO (Con lógica de disponibilidad real)
+    # ---------------------------------------------------------
+    if opcion_reserva == "🪑 Reservar Puesto Flex":
+        st.subheader("Disponibilidad de Puestos")
+        st.info("Reserva de 'Cupos libres' (Máximo 2 días por mes).")
+        
         df = read_distribution_df(conn)
         
-        if not df.empty:
-            cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at']]
-            df_view = df.drop(columns=cols_drop, errors='ignore')
-            df_view = apply_sorting_to_df(df_view)
-            # MODIFICADO: Usamos df local en vez de leer de nuevo
-            pisos_disponibles = sort_floors(df["piso"].unique())
+        if df.empty:
+            st.warning("⚠️ No hay configuración de distribución cargada en el sistema.")
         else:
-            df_view = df
-            pisos_disponibles = ["Piso 1"]
-
-        if df.empty: st.info("Sin datos.")
-        else:
-            t1, t2 = st.tabs(["Estadísticas", "Ver Planos"])
-            with t1:
-                st.markdown("""
-                    <style>
-                    [data-testid="stElementToolbar"] {
-                        display: none;
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
-                
-                lib = df_view[df_view["equipo"]=="Cupos libres"].groupby(["piso","dia"], as_index=True, observed=False).agg({"cupos":"sum"}).reset_index()
-                lib = apply_sorting_to_df(lib)
-                
-                st.subheader("Distribución completa")
-                # MODIFICADO: Fix use_container_width
-                st.dataframe(safe_convert_df(df_view), hide_index=True, use_container_width=True)
-                
-                st.subheader("Cupos libres por piso y día")
-                st.dataframe(safe_convert_df(lib), hide_index=True, use_container_width=True)
+            c1, c2 = st.columns(2)
+            fe = c1.date_input("Selecciona Fecha", min_value=datetime.date.today(), key="fp")
+            pisos_disp = sort_floors(df["piso"].unique())
+            pi = c2.selectbox("Selecciona Piso", pisos_disp, key="pp")
             
-            with t2:
-                st.subheader("Descarga de Planos")
-                c1, c2 = st.columns(2)
-                p_sel = c1.selectbox("Selecciona Piso", pisos_disponibles)
-                ds = c2.selectbox("Selecciona Día", ["Todos (Lunes a Viernes)"] + ORDER_DIAS)
-                pn = p_sel.replace("Piso ", "").strip()
-                st.write("---")
+            dn = ORDER_DIAS[fe.weekday()] if fe.weekday() < 5 else "FinDeSemana"
+            
+            if dn == "FinDeSemana":
+                st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
+            else:
+                rg = df[(df["piso"] == pi) & (df["dia"] == dn) & (df["equipo"] == "Cupos libres")]
                 
-                if ds == "Todos (Lunes a Viernes)":
-                    m = create_merged_pdf(p_sel, conn, global_logo_path)
-                    if m: 
-                        st.success("✅ Dossier disponible.")
-                        st.download_button("📥 Descargar Semana (PDF)", m, f"Planos_{p_sel}_Semana.pdf", "application/pdf", use_container_width=True)
-                    else: st.warning("Sin planos generados.")
+                hay_config = False
+                total_cupos = 0
+                disponibles = 0
+                
+                if not rg.empty:
+                    hay_config = True
+                    total_cupos = int(rg.iloc[0]["cupos"])
+                    
+                    all_res = list_reservations_df(conn)
+                    ocupados = 0
+                    if not all_res.empty:
+                        mask = (all_res["reservation_date"].astype(str) == str(fe)) & \
+                               (all_res["piso"] == pi) & \
+                               (all_res["team_area"] == "Cupos libres")
+                        ocupados = len(all_res[mask])
+                    
+                    disponibles = total_cupos - ocupados
+                
+                if not hay_config:
+                    st.warning(f"⚠️ El {pi} no tiene habilitados 'Cupos libres' para los días {dn}.")
                 else:
-                    dsf = ds.lower().replace("é","e").replace("á","a")
-                    fpng = COLORED_DIR / f"piso_{pn}_{dsf}_combined.png"
-                    fpdf = COLORED_DIR / f"piso_{pn}_{dsf}_combined.pdf"
+                    if disponibles > 0:
+                        st.success(f"✅ **HAY CUPO: Quedan {disponibles} puestos disponibles** (Total: {total_cupos}).")
+                    else:
+                        st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
                     
-                    opts = []
-                    if fpng.exists(): opts.append("Imagen (PNG)")
-                    if fpdf.exists(): opts.append("Documento (PDF)")
+                    st.markdown("### Datos del Solicitante")
                     
-                    if opts:
-                        if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
-                        sf = st.selectbox("Formato:", opts, key="dl_pub")
-                        tf = fpng if "PNG" in sf else fpdf
-                        mim = "image/png" if "PNG" in sf else "application/pdf"
-                        with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True)
-                    else: st.warning("No generado.")
+                    with st.form("form_puesto"):
+                        cf1, cf2 = st.columns(2)
+                        nm = cf1.text_input("Nombre Completo")
+                        em = cf2.text_input("Correo Electrónico")
+                        
+                        submitted = st.form_submit_button("Confirmar Reserva", type="primary", disabled=(disponibles <= 0))
+                        
+                        if submitted:
+                            if not nm or not em:
+                                st.error("Por favor completa nombre y correo.")
+                            elif user_has_reservation(conn, em, str(fe)):
+                                st.error("Ya tienes una reserva registrada para esta fecha.")
+                            elif count_monthly_free_spots(conn, em, fe) >= 2:
+                                st.error("Has alcanzado tu límite de 2 reservas mensuales.")
+                            elif disponibles <= 0:
+                                st.error("Lo sentimos, el cupo se acaba de agotar.")
+                            else:
+                                add_reservation(conn, nm, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
+                                msg = f"✅ Reserva Confirmada:\n\n- Usuario: {nm}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
+                                st.success(msg)
+                                send_reservation_email(em, "Confirmación Puesto", msg.replace("\n","<br>"))
+                                st.rerun()
 
-    # ==========================================
-    # B. RESERVAS (UNIFICADO CON DROPDOWN Y TÍTULOS CORREGIDOS)
-    # ==========================================
-    elif menu == "Reservas":
+    # ---------------------------------------------------------
+    # OPCIÓN 2: RESERVAR SALA
+    # ---------------------------------------------------------
+    elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
+        st.subheader("Agendar Sala")
         
-        st.header("Gestión de Reservas")
+        c_sala, c_fecha = st.columns(2)
+        sl = c_sala.selectbox("Selecciona Sala", ["Sala 1 (Piso 1)", "Sala 2 (Piso 2)", "Sala 3 (Piso 3)"])
+        pi_s = "Piso " + sl.split("Piso ")[1].replace(")", "")
+        fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs")
         
-        # --- MENÚ DESPLEGABLE UNIFICADO ---
-        opcion_reserva = st.selectbox(
-            "¿Qué deseas gestionar hoy?",
-            ["🪑 Reservar Puesto Flex", "🏢 Reservar Sala de Reuniones", "📋 Mis Reservas y Listados"],
-            index=0
-        )
+        tm = generate_time_slots("08:00", "20:00", 15)
+        
+        st.write("Horario:")
+        ch1, ch2 = st.columns(2)
+        i = ch1.selectbox("Inicio", tm)
+        f = ch2.selectbox("Fin", tm, index=min(4, len(tm)-1))
+        
+        st.markdown("### Datos del Responsable")
+        with st.form("form_sala"):
+            cf1, cf2 = st.columns(2)
+            n_s = cf1.text_input("Nombre Solicitante")
+            e_s = cf2.text_input("Correo Solicitante")
+            
+            sub_sala = st.form_submit_button("Confirmar Sala", type="primary")
+            
+            if sub_sala:
+                if not n_s:
+                    st.error("Falta el nombre.")
+                elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, i, f):
+                    st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
+                else:
+                    add_room_reservation(conn, n_s, e_s, pi_s, sl, str(fe_s), i, f, datetime.datetime.now(datetime.timezone.utc).isoformat())
+                    msg = f"✅ Sala Confirmada:\n\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {i} - {f}"
+                    st.success(msg)
+                    if e_s: send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
+
+    # ---------------------------------------------------------
+    # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
+    # ---------------------------------------------------------
+    elif opcion_reserva == "📋 Mis Reservas y Listados":
+        
+        # --- SECCION 1: BUSCADOR PARA ANULAR ---
+        st.subheader("Buscar y Cancelar mis reservas")
+        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
+        
+        if q:
+            dp = list_reservations_df(conn)
+            mp = dp[(dp['user_name'].str.lower().str.contains(q.lower())) | (dp['user_email'].str.lower().str.contains(q.lower()))]
+            
+            ds = get_room_reservations_df(conn)
+            ms = ds[(ds['user_name'].str.lower().str.contains(q.lower())) | (ds['user_email'].str.lower().str.contains(q.lower()))]
+            
+            if mp.empty and ms.empty:
+                st.warning("No encontré reservas con esos datos.")
+            else:
+                if not mp.empty:
+                    st.markdown("#### 🪑 Tus Puestos")
+                    for idx, r in mp.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
+                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                                confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+
+                if not ms.empty:
+                    st.markdown("#### 🏢 Tus Salas")
+                    for idx, r in ms.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
+                            if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                                confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+
         st.markdown("---")
+        
+        # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
+        with st.expander("Ver Listado General de Reservas", expanded=True):
+            
+            # TÍTULO CORREGIDO 1
+            st.subheader("Reserva de puestos") 
+            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
 
-        # ---------------------------------------------------------
-        # OPCIÓN 1: RESERVAR PUESTO (Con lógica de disponibilidad real)
-        # ---------------------------------------------------------
-        if opcion_reserva == "🪑 Reservar Puesto Flex":
-            st.subheader("Disponibilidad de Puestos")
-            st.info("Reserva de 'Cupos libres' (Máximo 2 días por mes POR EQUIPO).")
+            st.markdown("<br>", unsafe_allow_html=True) 
+
+            # TÍTULO CORREGIDO 2
+            st.subheader("Reserva de salas") 
+            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
+
+# ==========================================
+# E. ADMINISTRADOR
+# ==========================================
+elif menu == "Administrador":
+    st.header("Admin")
+    admin_user, admin_pass = get_admin_credentials(conn)
+    if "is_admin" not in st.session_state: st.session_state["is_admin"] = False
+    
+    if not st.session_state["is_admin"]:
+        u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
+        if st.button("Ingresar"):
+            if u==admin_user and p==admin_pass: st.session_state["is_admin"]=True; st.rerun()
+            else: st.error("Credenciales incorrectas")
+        with st.expander("Recuperar Contraseña"):
+            em_chk = st.text_input("Email Registrado")
+            if st.button("Solicitar"):
+                re = settings.get("admin_email","")
+                if re and em_chk.lower()==re.lower():
+                    t = generate_token()
+                    # Ya no usamos ensure_reset_table porque la DB está lista
+                    save_reset_token(conn, t, (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).isoformat())
+                    send_reservation_email(re, "Token", f"Token: {t}"); st.success("Enviado.")
+                else: st.error("Email no coincide.")
+            tk = st.text_input("Token"); nu = st.text_input("Nuevo User"); np = st.text_input("Nueva Pass", type="password")
+            if st.button("Cambiar"):
+                ok, m = validate_and_consume_token(conn, tk)
+                if ok: save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); st.success("OK")
+                else: st.error(m)
+        st.stop()
+
+    if st.button("Cerrar Sesión"): st.session_state["is_admin"]=False; st.rerun()
+
+    t1, t2, t3, t4, t5, t6 = st.tabs(["Excel", "Editor Visual", "Informes", "Config", "Apariencia", "Mantenimiento"])
+    
+    # -----------------------------------------------------------
+    # T1: GENERADOR DE DISTRIBUCIÓN (CON AUTO-OPTIMIZACIÓN JUSTA)
+    # -----------------------------------------------------------
+    with t1:
+        st.subheader("Generador de Distribución Inteligente")
+        st.markdown("Sube el archivo Excel y elige una estrategia. Usa **Auto-Optimizar** para buscar la distribución más equitativa.")
+        
+        c_up, c_strat = st.columns([2, 1])
+        up = c_up.file_uploader("Subir archivo Excel (Hojas: 'Equipos', 'Parámetros')", type=["xlsx"])
+        
+        # SELECTOR DE ESTRATEGIA
+        estrategia = c_strat.radio(
+            "Estrategia Base:",
+            ["🎲 Aleatorio (Recomendado para Optimizar)", "🧩 Tetris (Grandes primero)", "🐜 Relleno (Pequeños primero)"],
+            help="Aleatorio da mejores resultados al usar Auto-Optimizar porque prueba más combinaciones distintas."
+        )
+        
+        strat_map = {
+            "🧩 Tetris (Grandes primero)": "size_desc",
+            "🎲 Aleatorio (Recomendado para Optimizar)": "random",
+            "🐜 Relleno (Pequeños primero)": "size_asc"
+        }
+        sel_strat_code = strat_map[estrategia]
+
+        # Inicializar variables de sesión
+        if 'excel_equipos' not in st.session_state: st.session_state['excel_equipos'] = None
+        if 'excel_params' not in st.session_state: st.session_state['excel_params'] = None
+        if 'proposal_rows' not in st.session_state: st.session_state['proposal_rows'] = None
+        if 'proposal_deficit' not in st.session_state: st.session_state['proposal_deficit'] = None
+        if 'last_optimization_stats' not in st.session_state: st.session_state['last_optimization_stats'] = None
+
+        # 1. CARGA DEL ARCHIVO
+        if up:
+            try:
+                # Botón inicial para procesar
+                if st.button("📂 Procesar Inicial", type="primary"):
+                    df_eq = pd.read_excel(up, "Equipos")
+                    df_pa = pd.read_excel(up, "Parámetros")
+                    
+                    st.session_state['excel_equipos'] = df_eq
+                    st.session_state['excel_params'] = df_pa
+                    
+                    # Generar propuesta inicial
+                    rows, deficit = get_distribution_proposal(df_eq, df_pa, strategy=sel_strat_code)
+                    st.session_state['proposal_rows'] = rows
+                    st.session_state['proposal_deficit'] = deficit
+                    st.session_state['last_optimization_stats'] = None
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error al leer el Excel: {e}")
+
+        # 2. VISUALIZACIÓN Y ACCIONES
+        if st.session_state['proposal_rows'] is not None:
+            st.divider()
             
-            df = read_distribution_df(conn)
+            # --- SECCIÓN DE RESULTADOS ---
+            n_def = len(st.session_state['proposal_deficit']) if st.session_state['proposal_deficit'] else 0
             
-            if df.empty:
-                st.warning("⚠️ No hay configuración de distribución cargada en el sistema.")
+            # Mostrar estadísticas de la optimización si existen
+            if st.session_state['last_optimization_stats']:
+                stats = st.session_state['last_optimization_stats']
+                st.info(f"✨ **Resultado Optimizado:** Se probaron {stats['iterations']} combinaciones. Se eligió la que menos castiga repetidamente al mismo equipo.")
+
+            if n_def == 0:
+                st.success("✅ **¡Distribución Perfecta!** 0 conflictos detectados.")
             else:
-                c1, c2 = st.columns(2)
-                fe = c1.date_input("Selecciona Fecha", min_value=datetime.date.today(), key="fp")
-                pisos_disp = sort_floors(df["piso"].unique())
-                pi = c2.selectbox("Selecciona Piso", pisos_disp, key="pp")
-                
-                dn = ORDER_DIAS[fe.weekday()] if fe.weekday() < 5 else "FinDeSemana"
-                
-                if dn == "FinDeSemana":
-                    st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
+                st.warning(f"⚠️ **Distribución Actual:** {n_def} cupos faltantes en total.")
+
+            t_view, t_def = st.tabs(["📊 Distribución Visual", "🚨 Reporte de Conflictos"])
+            
+            with t_view:
+                df_preview = pd.DataFrame(st.session_state['proposal_rows'])
+                if not df_preview.empty:
+                    # CAMBIO: Mostrar tabla completa ocupando todo el ancho
+                    df_sorted = apply_sorting_to_df(df_preview)
+                    st.dataframe(df_sorted, hide_index=True, width=None, use_container_width=True)
                 else:
-                    rg = df[(df["piso"] == pi) & (df["dia"] == dn) & (df["equipo"] == "Cupos libres")]
+                    st.warning("No se generaron asignaciones.")
+            
+            with t_def:
+                if st.session_state['proposal_deficit']:
+                    # Análisis de "Injusticia"
+                    def_df = pd.DataFrame(st.session_state['proposal_deficit'])
                     
-                    hay_config = False
-                    total_cupos = 0
-                    disponibles = 0
+                    # Contamos cuántas veces aparece cada equipo en el reporte de déficit
+                    conteo_injusticia = def_df['equipo'].value_counts().reset_index()
+                    conteo_injusticia.columns = ['Equipo', 'Veces Perjudicado']
                     
-                    if not rg.empty:
-                        hay_config = True
-                        total_cupos = int(rg.iloc[0]["cupos"])
-                        
-                        all_res = list_reservations_df(conn)
-                        ocupados = 0
-                        if not all_res.empty:
-                            mask = (all_res["reservation_date"].astype(str) == str(fe)) & \
-                                    (all_res["piso"] == pi) & \
-                                    (all_res["team_area"] == "Cupos libres")
-                            ocupados = len(all_res[mask])
-                        
-                        disponibles = total_cupos - ocupados
+                    c1, c2 = st.columns(2)
+                    c1.markdown("**Detalle de Conflictos:**")
+                    c1.dataframe(def_df, use_container_width=True)
                     
-                    if not hay_config:
-                        st.warning(f"⚠️ El {pi} no tiene habilitados 'Cupos libres' para los días {dn}.")
-                    else:
-                        if disponibles > 0:
-                            st.success(f"✅ **HAY CUPO: Quedan {disponibles} puestos disponibles** (Total: {total_cupos}).")
-                        else:
-                            st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
-                        
-                        st.markdown("### Datos del Solicitante")
-                        
-                        with st.form("form_puesto"):
-                            cf1, cf2 = st.columns(2)
-                            # NUEVO: Selector de equipos en lugar de texto libre
-                            equipos_disponibles = ["Selecciona tu equipo"] + sorted(df[df["equipo"] != "Cupos libres"]["equipo"].unique().tolist())
-                            equipo_sel = cf1.selectbox("Equipo", equipos_disponibles)
-                            em = cf2.text_input("Correo Electrónico")
-                            
-                            submitted = st.form_submit_button("Verificar Disponibilidad", type="primary", disabled=(disponibles <= 0))
-                            
-                            if submitted:
-                                if equipo_sel == "Selecciona tu equipo":
-                                    st.error("Por favor selecciona tu equipo.")
-                                elif not em:
-                                    st.error("Por favor ingresa tu correo electrónico.")
-                                elif user_has_reservation(conn, em, str(fe)):
-                                    st.error("Ya tienes una reserva registrada para esta fecha.")
-                                elif count_monthly_free_spots(conn, equipo_sel, fe) >= 2:
-                                    st.error(f"El equipo {equipo_sel} ha alcanzado el límite de 2 reservas mensuales.")
-                                elif disponibles <= 0:
-                                    st.error("Lo sentimos, el cupo se acaba de agotar.")
-                                else:
-                                    # MOSTRAR POPUP DE CONFIRMACIÓN
-                                    if confirm_reservation_dialog(equipo_sel, em, str(fe), pi, "Puesto Flex"):
-                                        add_reservation(conn, equipo_sel, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
-                                        msg = f"✅ Reserva Confirmada:\n\n- Equipo: {equipo_sel}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
-                                        st.success(msg)
-                                        send_reservation_email(em, "Confirmación Puesto", msg.replace("\n","<br>"))
-                                        st.rerun()
-
-        # ---------------------------------------------------------
-        # OPCIÓN 2: RESERVAR SALA (CON HORARIOS DISPONIBLES)
-        # ---------------------------------------------------------
-        elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
-            st.subheader("Agendar Sala")
-            
-            c_sala, c_fecha = st.columns(2)
-            sl = c_sala.selectbox("Selecciona Sala", ["Sala 1 (Piso 1)", "Sala 2 (Piso 2)", "Sala 3 (Piso 3)"])
-            pi_s = "Piso " + sl.split("Piso ")[1].replace(")", "")
-            fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs")
-            
-            # Obtener reservas existentes para esta sala y fecha
-            existing_reservations = get_room_reservations_df(conn)
-            existing_today = existing_reservations[existing_reservations['reservation_date'] == str(fe_s)]
-            existing_this_room = existing_today[existing_today['room_name'] == sl]
-            
-            # Generar todos los horarios posibles
-            all_slots = generate_time_slots("08:00", "20:00", 15)
-            
-            # Filtrar horarios ocupados
-            occupied_slots = []
-            for _, res in existing_this_room.iterrows():
-                start = res['start_time']
-                end = res['end_time']
-                # Marcar como ocupado todos los slots entre inicio y fin
-                start_idx = all_slots.index(start) if start in all_slots else -1
-                end_idx = all_slots.index(end) if end in all_slots else -1
-                if start_idx != -1 and end_idx != -1:
-                    occupied_slots.extend(all_slots[start_idx:end_idx])
-            
-            available_slots = [slot for slot in all_slots if slot not in occupied_slots]
-            
-            st.write("Horario Disponible:")
-            ch1, ch2 = st.columns(2)
-            
-            if available_slots:
-                i = ch1.selectbox("Inicio", available_slots)
-                # Encontrar slots disponibles después del inicio seleccionado
-                start_idx = available_slots.index(i)
-                available_ends = [slot for slot in available_slots if slot > i]
-                f = ch2.selectbox("Fin", available_ends, index=min(1, len(available_ends)-1) if available_ends else 0)
-            else:
-                st.error("❌ No hay horarios disponibles para esta sala en la fecha seleccionada.")
-                i, f = "08:00", "09:00"
-            
-            st.markdown("### Datos del Responsable")
-            with st.form("form_sala"):
-                cf1, cf2 = st.columns(2)
-                # NUEVO: Selector de equipos para salas también
-                df_equipos = read_distribution_df(conn)
-                equipos_disponibles = ["Selecciona tu equipo"] + sorted(df_equipos[df_equipos["equipo"] != "Cupos libres"]["equipo"].unique().tolist())
-                n_s = cf1.selectbox("Equipo Solicitante", equipos_disponibles)
-                e_s = cf2.text_input("Correo Solicitante")
-                
-                sub_sala = st.form_submit_button("Verificar Disponibilidad", type="primary")
-                
-                if sub_sala:
-                    if n_s == "Selecciona tu equipo":
-                        st.error("Falta seleccionar el equipo.")
-                    elif not e_s:
-                        st.error("Falta el correo.")
-                    elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, i, f):
-                        st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
-                    else:
-                        # MOSTRAR POPUP DE CONFIRMACIÓN
-                        if confirm_room_reservation_dialog(n_s, e_s, str(fe_s), sl, i, f):
-                            add_room_reservation(conn, n_s, e_s, pi_s, sl, str(fe_s), i, f, datetime.datetime.now(datetime.timezone.utc).isoformat())
-                            msg = f"✅ Sala Confirmada:\n\n- Equipo: {n_s}\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {i} - {f}"
-                            st.success(msg)
-                            if e_s: send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
-
-        # ---------------------------------------------------------
-        # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
-        # ---------------------------------------------------------
-        elif opcion_reserva == "📋 Mis Reservas y Listados":
-            
-            # --- SECCION 1: BUSCADOR PARA ANULAR ---
-            st.subheader("Buscar y Cancelar mis reservas")
-            q = st.text_input("Ingresa tu Correo o Nombre de equipo para buscar:")
-            
-            if q:
-                dp = list_reservations_df(conn)
-                mp = dp[(dp['user_name'].str.lower().str.contains(q.lower())) | (dp['user_email'].str.lower().str.contains(q.lower()))]
-                
-                ds = get_room_reservations_df(conn)
-                ms = ds[(ds['user_name'].str.lower().str.contains(q.lower())) | (ds['user_email'].str.lower().str.contains(q.lower()))]
-                
-                if mp.empty and ms.empty:
-                    st.warning("No encontré reservas con esos datos.")
+                    c2.markdown("**⚠️ Equipos más afectados (Repetición):**")
+                    c2.dataframe(conteo_injusticia, use_container_width=True)
+                    
+                    if conteo_injusticia['Veces Perjudicado'].max() > 1:
+                        c2.error("Hay equipos sufriendo déficit múltiples días. Se recomienda usar 'Auto-Optimizar'.")
                 else:
-                    if not mp.empty:
-                        st.markdown("#### 🪑 Tus Puestos")
-                        for idx, r in mp.iterrows():
-                            with st.container(border=True):
-                                c1, c2 = st.columns([5, 1])
-                                c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre) - {r['user_name']}")
-                                if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                    confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
-
-                    if not ms.empty:
-                        st.markdown("#### 🏢 Tus Salas")
-                        for idx, r in ms.iterrows():
-                            with st.container(border=True):
-                                c1, c2 = st.columns([5, 1])
-                                c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']} - {r['user_name']}")
-                                if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                    confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+                    st.info("Sin conflictos. Todos los equipos caben perfectamente.")
 
             st.markdown("---")
+            st.markdown("### 🔧 Herramientas de Justicia")
             
-            # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
-            with st.expander("Ver Listado General de Reservas", expanded=True):
-                
-                # TÍTULO CORREGIDO 1
-                st.subheader("Reserva de puestos") 
-                st.dataframe(safe_convert_df(clean_reservation_df(list_reservations_df(conn))), hide_index=True, use_container_width=True)
-
-                st.markdown("<br>", unsafe_allow_html=True) 
-
-                # TÍTULO CORREGIDO 2
-                st.subheader("Reserva de salas") 
-                st.dataframe(safe_convert_df(clean_reservation_df(get_room_reservations_df(conn), "sala")), hide_index=True, use_container_width=True)
-
-    # ==========================================
-    # E. ADMINISTRADOR
-    # ==========================================
-    elif menu == "Administrador":
-        st.header("Admin")
-        admin_user, admin_pass = get_admin_credentials(conn)
-        if "is_admin" not in st.session_state: 
-            st.session_state["is_admin"] = False
-        
-        if not st.session_state["is_admin"]:
-            u = st.text_input("Usuario"); p = st.text_input("Contraseña", type="password")
-            if st.button("Ingresar"):
-                if u==admin_user and p==admin_pass: st.session_state["is_admin"]=True; st.rerun()
-                else: st.error("Credenciales incorrectas")
-            with st.expander("Recuperar Contraseña"):
-                em_chk = st.text_input("Email Registrado")
-                if st.button("Solicitar"):
-                    re = settings.get("admin_email","")
-                    if re and em_chk.lower()==re.lower():
-                        t = generate_token()
-                        save_reset_token(conn, t, (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).isoformat())
-                        send_reservation_email(re, "Token", f"Token: {t}"); st.success("Enviado.")
-                    else: st.error("Email no coincide.")
-                tk = st.text_input("Token"); nu = st.text_input("Nuevo User"); np = st.text_input("Nueva Pass", type="password")
-                if st.button("Cambiar"):
-                    ok, m = validate_and_consume_token(conn, tk)
-                    if ok: save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); st.success("OK")
-                    else: st.error(m)
-            st.stop()
-
-        # ¡IMPORTANTE! Las pestañas deben definirse INMEDIATAMENTE después del st.stop()
-        t1, t2, t3, t4, t5, t6, t7 = st.tabs(["Excel", "Editor Visual", "Informes", "Rankings", "Config", "Apariencia", "Mantenimiento"])
-
-        if st.button("Cerrar Sesión"): st.session_state["is_admin"]=False; st.rerun()
-
-        # -----------------------------------------------------------
-        # T1: GENERADOR DE DISTRIBUCIÓN (CON AUTO-OPTIMIZACIÓN JUSTA)
-        # -----------------------------------------------------------
-        with t1:
-            st.subheader("Generador de Distribución Inteligente")
-            st.markdown("Sube el archivo Excel y elige una estrategia. Usa **Auto-Optimizar** para buscar la distribución más equitativa.")
+            c_actions = st.columns([1, 1, 1])
             
-            c_up, c_strat = st.columns([2, 1])
-            up = c_up.file_uploader("Subir archivo Excel (Hojas: 'Equipos', 'Parámetros')", type=["xlsx"])
-            
-            # SELECTOR DE ESTRATEGIA
-            estrategia = c_strat.radio(
-                "Estrategia Base:",
-                ["🎲 Aleatorio (Recomendado para Optimizar)", "🧩 Tetris (Grandes primero)", "🐜 Relleno (Pequeños primero)"],
-                help="Aleatorio da mejores resultados al usar Auto-Optimizar porque prueba más combinaciones distintas."
-            )
-            
-            strat_map = {
-                "🧩 Tetris (Grandes primero)": "size_desc",
-                "🎲 Aleatorio (Recomendado para Optimizar)": "random",
-                "🐜 Relleno (Pequeños primero)": "size_asc"
-            }
-            sel_strat_code = strat_map[estrategia]
+            # Botón 1: Regenerar simple
+            if c_actions[0].button("🔄 Probar otra suerte"):
+                with st.spinner("Generando nueva variación..."):
+                    rows, deficit = get_distribution_proposal(
+                        st.session_state['excel_equipos'], 
+                        st.session_state['excel_params'], 
+                        strategy=sel_strat_code
+                    )
+                    st.session_state['proposal_rows'] = rows
+                    st.session_state['proposal_deficit'] = deficit
+                    st.session_state['last_optimization_stats'] = None
+                st.rerun()
 
-            # Inicializar variables de sesión
-            if 'excel_equipos' not in st.session_state: st.session_state['excel_equipos'] = None
-            if 'excel_params' not in st.session_state: st.session_state['excel_params'] = None
-            if 'proposal_rows' not in st.session_state: st.session_state['proposal_rows'] = None
-            if 'proposal_deficit' not in st.session_state: st.session_state['proposal_deficit'] = None
-            if 'last_optimization_stats' not in st.session_state: st.session_state['last_optimization_stats'] = None
-
-            # 1. CARGA DEL ARCHIVO
-            if up:
-                try:
-                    # Botón inicial para procesar
-                    if st.button("📂 Procesar Inicial", type="primary"):
-                        df_eq = pd.read_excel(up, "Equipos")
-                        df_pa = pd.read_excel(up, "Parámetros")
-                        
-                        st.session_state['excel_equipos'] = df_eq
-                        st.session_state['excel_params'] = df_pa
-                        
-                        # Generar propuesta inicial
-                        rows, deficit = get_distribution_proposal(df_eq, df_pa, strategy=sel_strat_code)
-                        st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                        st.session_state['last_optimization_stats'] = None
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error al leer el Excel: {e}")
-
-            # 2. VISUALIZACIÓN Y ACCIONES
-            if st.session_state['proposal_rows'] is not None:
-                st.divider()
+            # Botón 2: AUTO-OPTIMIZAR JUSTICIA (LOGICA NUEVA)
+            if c_actions[1].button("✨ Auto-Optimizar (Buscar Equidad)"):
                 
-                # --- SECCIÓN DE RESULTADOS ---
-                n_def = len(st.session_state['proposal_deficit']) if st.session_state['proposal_deficit'] else 0
+                NUM_INTENTOS = 20 
                 
-                # Mostrar estadísticas de la optimización si existen
-                if st.session_state['last_optimization_stats']:
-                    stats = st.session_state['last_optimization_stats']
-                    st.info(f"✨ **Resultado Optimizado:** Se probaron {stats['iterations']} combinaciones. Se eligió la que menos castiga repetidamente al mismo equipo.")
-
-                if n_def == 0:
-                    st.success("✅ **¡Distribución Perfecta!** 0 conflictos detectados.")
-                else:
-                    st.warning(f"⚠️ **Distribución Actual:** {n_def} cupos faltantes en total.")
-
-                t_view, t_def = st.tabs(["📊 Distribución Visual", "🚨 Reporte de Conflictos"])
+                progress_text = "Analizando múltiples escenarios para repartir la carga..."
+                my_bar = st.progress(0, text=progress_text)
                 
-                with t_view:
-                    df_preview = pd.DataFrame(st.session_state['proposal_rows'])
-                    if not df_preview.empty:
-                        # CAMBIO: Mostrar tabla completa ocupando todo el ancho
-                        df_sorted = apply_sorting_to_df(df_preview)
-                        st.dataframe(df_sorted, hide_index=True, use_container_width=True)
+                best_rows = None
+                best_deficit = None
+                
+                # Puntuación inicial (mientras más baja mejor)
+                min_unfairness_score = 999999 
+                min_total_conflicts = 999999
+                
+                for i in range(NUM_INTENTOS):
+                    # Siempre usamos random para explorar, independiente de lo seleccionado arriba
+                    r, d = get_distribution_proposal(st.session_state['excel_equipos'], st.session_state['excel_params'], strategy="random")
+                    
+                    current_conflicts = len(d) if d else 0
+                    
+                    # Calcular Score de Injusticia
+                    if d:
+                        equipos_afectados = [x['equipo'] for x in d]
+                        freqs = {x:equipos_afectados.count(x) for x in set(equipos_afectados)}
+                        unfairness_score = sum([val**2 for val in freqs.values()])
                     else:
-                        st.warning("No se generaron asignaciones.")
-                
-                with t_def:
-                    if st.session_state['proposal_deficit']:
-                        # Análisis de "Injusticia"
-                        def_df = pd.DataFrame(st.session_state['proposal_deficit'])
-                        
-                        # Contamos cuántas veces aparece cada equipo en el reporte de déficit
-                        conteo_injusticia = def_df['equipo'].value_counts().reset_index()
-                        conteo_injusticia.columns = ['Equipo', 'Veces Perjudicado']
-                        
-                        c1, c2 = st.columns(2)
-                        c1.markdown("**Detalle de Conflictos:**")
-                        c1.dataframe(def_df, use_container_width=True)
-                        
-                        c2.markdown("**⚠️ Equipos más afectados (Repetición):**")
-                        c2.dataframe(conteo_injusticia, use_container_width=True)
-                        
-                        if conteo_injusticia['Veces Perjudicado'].max() > 1:
-                            c2.error("Hay equipos sufriendo déficit múltiples días. Se recomienda usar 'Auto-Optimizar'.")
-                    else:
-                        st.info("Sin conflictos. Todos los equipos caben perfectamente.")
-
-                st.markdown("---")
-                st.markdown("### 🔧 Herramientas de Justicia")
-                
-                c_actions = st.columns([1, 1, 1])
-                
-                # Botón 1: Regenerar simple
-                if c_actions[0].button("🔄 Probar otra suerte"):
-                    with st.spinner("Generando nueva variación..."):
-                        rows, deficit = get_distribution_proposal(
-                            st.session_state['excel_equipos'], 
-                            st.session_state['excel_params'], 
-                            strategy=sel_strat_code
-                        )
-                        st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                        st.session_state['last_optimization_stats'] = None
-                    st.rerun()
-
-                # Botón 2: AUTO-OPTIMIZAR JUSTICIA (LOGICA NUEVA)
-                if c_actions[1].button("✨ Auto-Optimizar (Buscar Equidad)"):
+                        unfairness_score = 0
                     
-                    NUM_INTENTOS = 20 
-                    
-                    progress_text = "Analizando múltiples escenarios para repartir la carga..."
-                    my_bar = st.progress(0, text=progress_text)
-                    
-                    best_rows = None
-                    best_deficit = None
-                    
-                    # Puntuación inicial (mientras más baja mejor)
-                    min_unfairness_score = 999999 
-                    min_total_conflicts = 999999
-                    
-                    for i in range(NUM_INTENTOS):
-                        # Siempre usamos random para explorar, independiente de lo seleccionado arriba
-                        r, d = get_distribution_proposal(st.session_state['excel_equipos'], st.session_state['excel_params'], strategy="random")
-                        
-                        current_conflicts = len(d) if d else 0
-                        
-                        # Calcular Score de Injusticia
-                        if d:
-                            equipos_afectados = [x['equipo'] for x in d]
-                            freqs = {x:equipos_afectados.count(x) for x in set(equipos_afectados)}
-                            unfairness_score = sum([val**2 for val in freqs.values()])
-                        else:
-                            unfairness_score = 0
-                        
-                        if unfairness_score < min_unfairness_score:
-                            min_unfairness_score = unfairness_score
+                    if unfairness_score < min_unfairness_score:
+                        min_unfairness_score = unfairness_score
+                        min_total_conflicts = current_conflicts
+                        best_rows = r
+                        best_deficit = d
+                    elif unfairness_score == min_unfairness_score:
+                        if current_conflicts < min_total_conflicts:
                             min_total_conflicts = current_conflicts
                             best_rows = r
                             best_deficit = d
-                        elif unfairness_score == min_unfairness_score:
-                            if current_conflicts < min_total_conflicts:
-                                min_total_conflicts = current_conflicts
-                                best_rows = r
-                                best_deficit = d
+                    
+                    my_bar.progress(int((i + 1) / NUM_INTENTOS * 100), text=f"Simulando escenario {i+1}/{NUM_INTENTOS}...")
+                
+                st.session_state['proposal_rows'] = best_rows
+                st.session_state['proposal_deficit'] = best_deficit
+                st.session_state['last_optimization_stats'] = {'iterations': NUM_INTENTOS, 'score': min_unfairness_score}
+                
+                my_bar.empty()
+                st.toast("¡Optimización finalizada! Se aplicó el criterio de equidad.", icon="⚖️")
+                st.rerun()
+
+            # Botón 3: Guardar
+            if c_actions[2].button("💾 Guardar Definitivo", type="primary"):
+                try:
+                    clear_distribution(conn)
+                    insert_distribution(conn, st.session_state['proposal_rows'])
+                    
+                    if st.session_state['proposal_deficit']:
+                        st.session_state['deficit_report'] = st.session_state['proposal_deficit']
+                    elif 'deficit_report' in st.session_state:
+                        del st.session_state['deficit_report']
                         
-                        my_bar.progress(int((i + 1) / NUM_INTENTOS * 100), text=f"Simulando escenario {i+1}/{NUM_INTENTOS}...")
-                    
-                    st.session_state['proposal_rows'] = best_rows
-                    st.session_state['proposal_deficit'] = best_deficit
-                    st.session_state['last_optimization_stats'] = {'iterations': NUM_INTENTOS, 'score': min_unfairness_score}
-                    
-                    my_bar.empty()
-                    st.toast("¡Optimización finalizada! Se aplicó el criterio de equidad.", icon="⚖️")
+                    st.success("✅ Distribución guardada exitosamente.")
+                    st.balloons()
+                    st.session_state['proposal_rows'] = None
+                    st.session_state['excel_equipos'] = None
+                    st.session_state['last_optimization_stats'] = None
                     st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
 
-                # Botón 3: Guardar
-                if c_actions[2].button("💾 Guardar Definitivo", type="primary"):
-                    try:
-                        clear_distribution(conn)
-                        insert_distribution(conn, st.session_state['proposal_rows'])
-                        
-                        if st.session_state['proposal_deficit']:
-                            st.session_state['deficit_report'] = st.session_state['proposal_deficit']
-                        elif 'deficit_report' in st.session_state:
-                            del st.session_state['deficit_report']
-                            
-                        st.success("✅ Distribución guardada exitosamente.")
-                        st.balloons()
-                        st.session_state['proposal_rows'] = None
-                        st.session_state['excel_equipos'] = None
-                        st.session_state['last_optimization_stats'] = None
+    with t2:
+        st.info("Editor de Zonas - Versión Profesional")
+        zonas = load_zones()
+        
+        # MODIFICADO: Leer con funcion importada
+        df_d = read_distribution_df(conn)
+        pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+        
+        # Layout en columnas: Editor a la izquierda, Configuración a la derecha
+        col_left, col_right = st.columns([2, 1])
+        
+        with col_left:
+            p_sel = st.selectbox("Piso", pisos_list, key="editor_piso")
+            p_num = p_sel.replace("Piso ", "").strip()
+            
+            # Búsqueda de Archivo
+            file_base = f"piso{p_num}"
+            pim = PLANOS_DIR / f"{file_base}.png"
+            if not pim.exists(): 
+                pim = PLANOS_DIR / f"{file_base}.jpg"
+            if not pim.exists():
+                pim = PLANOS_DIR / f"Piso{p_num}.png"
+                
+                try:
+                    # Cargar zonas existentes para este piso
+                    existing_zones = zonas.get(p_sel, [])
+                    
+                    st.success(f"✅ Plano cargado: {pim.name}")
+                    
+                    # Obtener equipo y color seleccionados
+                    selected_team = st.session_state.get(f"team_{p_sel}", "")
+                    selected_color = st.session_state.get(f"color_{p_sel}", "#00A04A")
+                    
+                    # Botón para actualizar el componente cuando cambien equipo/color
+                    if st.button("🔄 Actualizar Editor con Equipo/Color Seleccionado", key=f"update_editor_{p_sel}"):
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al guardar: {e}")
-
-        # -----------------------------------------------------------
-        # T2: EDITOR VISUAL MEJORADO
-        # -----------------------------------------------------------
-        with t2:
-            st.info("Editor de Zonas - Versión Profesional Mejorada")
-            
-            # Verificar permisos de administrador
-            if not st.session_state.get("is_admin", False):
-                st.error("🔒 Acceso denegado. Solo administradores pueden acceder al editor.")
-                st.stop()
-            
-            zonas = load_zones()
-            
-            # Diseño en columnas para tener controles al lado del mapa
-            col_left, col_right = st.columns([2, 1])
-            
-            with col_left:
-                df_d = read_distribution_df(conn)
-                pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
-                
-                p_sel = st.selectbox("Piso", pisos_list, key="editor_piso")
-                p_num = p_sel.replace("Piso ", "").strip()
-                
-                # Búsqueda de Archivo
-                file_base = f"piso{p_num}" 
-                pim = PLANOS_DIR / f"{file_base}.png"
-                if not pim.exists(): 
-                    pim = PLANOS_DIR / f"{file_base}.jpg"
-                if not pim.exists(): 
-                    pim = PLANOS_DIR / f"Piso{p_num}.png"
                     
-                if pim.exists():
-                    try:
-                        # Cargar zonas existentes para este piso
-                        existing_zones = zonas.get(p_sel, [])
-                        
-                        st.success(f"✅ Plano cargado: {pim.name}")
-                        
-                        # Mostrar componente de dibujo mejorado
-                        drawing_component = create_enhanced_drawing_component(str(pim), existing_zones, width=600)
-                        
-                        # Área para recibir datos del componente
-                        st.markdown("---")
-                        st.subheader("📥 Datos de Zonas")
-                        
-                        # Usar un text_area para mostrar/editar el JSON
-                        zones_json = st.text_area(
-                            "Datos JSON de zonas:",
-                            value=json.dumps(existing_zones, indent=2),
-                            height=200,
-                            key="zones_json_editor"
-                        )
-                        
-                        # Botones de acción
-                        col_btn1, col_btn2, col_btn3 = st.columns(3)
-                        
-                        if col_btn1.button("💾 Guardar Zonas", type="primary"):
-                            try:
-                                zonas_data = json.loads(zones_json)
-                                zonas[p_sel] = zonas_data
-                                save_zones(zonas)
-                                st.success("✅ Zonas guardadas correctamente")
-                                st.rerun()
-                            except json.JSONDecodeError:
-                                st.error("❌ Error: El texto no es un JSON válido")
-                            except Exception as e:
-                                st.error(f"❌ Error al guardar zonas: {str(e)}")
-                                
-                        if col_btn2.button("🔄 Cargar desde Componente"):
-                            st.info("Usa el botón 'Guardar Zonas' en el editor de arriba y luego actualiza esta página")
-                            
-                        if col_btn3.button("🗑️ Limpiar Todas"):
-                            if st.checkbox("¿Estás seguro de que quieres eliminar TODAS las zonas?"):
-                                zonas[p_sel] = []
-                                save_zones(zonas)
-                                st.success("✅ Todas las zonas eliminadas")
-                                st.rerun()
-                                
-                    except Exception as e:
-                        st.error(f"❌ Error en el editor: {str(e)}")
-                else:
-                    st.error(f"❌ No se encontró el plano: {p_sel}")
-                    st.info(f"💡 Busqué en: {pim}")
-
-            with col_right:
-                st.subheader("🎨 Configuración de Zonas")
-                
-                if p_sel in zonas and zonas[p_sel]:
-                    st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
+                    # Mostrar componente de dibujo mejorado
+                    drawing_component = create_enhanced_drawing_component(
+                        str(pim), 
+                        existing_zones, 
+                        selected_team=selected_team,
+                        selected_color=selected_color,
+                        width=600
+                    )
                     
-                    # Editor de zonas existentes
-                    st.markdown("#### ✏️ Editar Zona Existente")
-                    zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
-                                for i, z in enumerate(zonas[p_sel])]
+                    # Mostrar información actual
+                    if selected_team:
+                        st.info(f"🎨 **Equipo seleccionado:** {selected_team} | **Color:** {selected_color}")
+                    else:
+                        st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
                     
-                    if zone_options:
-                        selected_zone_idx = st.selectbox(
-                            "Selecciona una zona:",
-                            range(len(zone_options)),
-                            format_func=lambda x: zone_options[x],
-                            key="zone_selector"
-                        )
+                    # Área para recibir datos del componente (usando text_area como interfaz)
+                    st.markdown("---")
+                    st.subheader("📥 Datos de Zonas")
+                    
+                    # Mostrar zonas actuales
+                    zones_json = st.text_area(
+                        "Datos JSON de zonas (edita manualmente si es necesario):",
+                        value=json.dumps(existing_zones, indent=2),
+                        height=150,
+                        key=f"zones_json_{p_sel}"
+                    )
+                    
+                    # Botones de acción
+                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    
+                    if col_btn1.button("💾 Guardar Zonas", key=f"save_zones_{p_sel}", type="primary"):
+                        try:
+                            zonas_data = json.loads(zones_json)
+                            zonas[p_sel] = zonas_data
+                            save_zones(zonas)
+                            st.success("✅ Zonas guardadas correctamente")
+                            st.rerun()
+                        except json.JSONDecodeError:
+                            st.error("❌ Error: El texto no es un JSON válido")
+                        except Exception as e:
+                            st.error(f"❌ Error al guardar zonas: {str(e)}")
+                            
+                    if col_btn2.button("🔄 Recargar desde Archivo", key=f"reload_{p_sel}"):
+                        zonas = load_zones()
+                        st.rerun()
                         
-                        if selected_zone_idx is not None:
-                            zone = zonas[p_sel][selected_zone_idx]
+                    if col_btn3.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
+                        if st.session_state.get(f"confirm_clear_{p_sel}", False):
+                            zonas[p_sel] = []
+                            save_zones(zonas)
+                            st.success("✅ Todas las zonas eliminadas")
+                            st.session_state[f"confirm_clear_{p_sel}"] = False
+                            st.rerun()
+                        else:
+                            st.session_state[f"confirm_clear_{p_sel}"] = True
+                            st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                             
-                            # Controles de edición
-                            new_team = st.text_input("Nombre del equipo:", 
-                                                value=zone.get('team', 'Nueva Zona'),
-                                                key=f"team_{selected_zone_idx}")
-                            
-                            new_color = st.color_picker("Color:", 
-                                                    value=zone.get('color', '#00A04A'),
-                                                    key=f"color_{selected_zone_idx}")
-                            
-                            col_edit1, col_edit2 = st.columns(2)
-                            
-                            with col_edit1:
-                                if st.button("💾 Actualizar Zona", key=f"update_{selected_zone_idx}"):
-                                    zonas[p_sel][selected_zone_idx]['team'] = new_team
-                                    zonas[p_sel][selected_zone_idx]['color'] = new_color
-                                    save_zones(zonas)
-                                    st.success("✅ Zona actualizada")
-                                    st.rerun()
-                            
-                            with col_edit2:
-                                if st.button("🗑️ Eliminar Zona", key=f"delete_{selected_zone_idx}"):
-                                    zonas[p_sel].pop(selected_zone_idx)
-                                    save_zones(zonas)
-                                    st.success("✅ Zona eliminada")
-                                    st.rerun()
-                    
-                    # Leyenda de colores
-                    st.markdown("#### 🎨 Leyenda de Colores")
-                    for i, z in enumerate(zonas[p_sel]):
-                        col_leg1, col_leg2 = st.columns([1, 4])
-                        with col_leg1:
-                            st.color_picker("", z.get('color', '#00A04A'), key=f"legend_{i}", disabled=True)
-                        with col_leg2:
-                            st.write(f"**{z.get('team', 'Sin nombre')}**")
-                            
-                else:
-                    st.warning("ℹ️ No hay zonas guardadas para este piso. Usa el editor de la izquierda para crear zonas.")
-
-        # -----------------------------------------------------------
-        # T3: INFORMES
-        # -----------------------------------------------------------
-        with t3:
-            st.subheader("Generar Reportes de Distribución")
+                except Exception as e:
+                    st.error(f"❌ Error en el editor: {str(e)}")
+            else:
+                st.error(f"❌ No se encontró el plano: {p_sel}")
+                st.info(f"💡 Busqué en: {pim}")
+        
+        with col_right:
+            st.subheader("🎨 Configuración de Zonas")
             
-            if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
-                st.markdown("---")
-                st.error("🚨 INFORME DE DÉFICIT DE CUPOS")
-                
-                df_deficit = pd.DataFrame(st.session_state['deficit_report'])
-                df_deficit = df_deficit.rename(columns={
-                    'piso': 'Piso', 
-                    'dia': 'Día', 
-                    'equipo': 'Equipo', 
-                    'deficit': 'Cupos Faltantes',
-                    'causa': 'Observación'
-                })
-                st.dataframe(df_deficit, hide_index=True, use_container_width=True)
-                st.markdown("---")
-
-            rf = st.selectbox("Formato Reporte", ["Excel", "PDF"], key="formato_reporte")
-            if st.button("Generar Reporte", key="generar_reporte"):
-                df_raw = read_distribution_df(conn); df_raw = apply_sorting_to_df(df_raw)
-                if "Excel" in rf:
-                    b = BytesIO()
-                    with pd.ExcelWriter(b) as w: df_raw.to_excel(w, index=False)
-                    st.session_state['rd'] = b.getvalue(); st.session_state['rn'] = "d.xlsx"; st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                else:
-                    df = df_raw.rename(columns={"piso":"Piso","equipo":"Equipo","dia":"Día","cupos":"Cupos","pct":"%Distrib"})
-                    d_data = st.session_state.get('deficit_report', [])
-                    st.session_state['rd'] = generate_full_pdf(df, df, logo_path=Path(global_logo_path), deficit_data=d_data)
-                    st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
-                st.success("OK")
-            if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="descargar_reporte")
+            # Preparar lista de equipos
+            d_sel = st.selectbox("Día Ref.", ORDER_DIAS, key=f"dia_ref_{p_sel}")
+            current_seats_dict = {}
+            eqs = [""]
+            if not df_d.empty:
+                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+                eqs += sorted(subset['equipo'].unique().tolist())
+            
+            salas_piso = []
+            if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
+            elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
+            elif "3" in p_sel: salas_piso = ["Sala Reuniones - Piso 3"]
+            eqs = eqs + salas_piso
+            
+            # Selector de equipo y color
+            tn = st.selectbox("Equipo / Sala", eqs, key=f"team_{p_sel}")
+            tc = st.color_picker("Color", "#00A04A", key=f"color_{p_sel}")
+            
+            if tn and tn in current_seats_dict:
+                st.info(f"📊 Cupos: {current_seats_dict[tn]}")
             
             st.markdown("---")
-            cp, cd = st.columns(2)
-            pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
-            if di=="Todos":
-                if st.button("Generar Dossier", key="generar_dossier"):
-                    # CAMBIO: Pasar conn y logo para regenerar
-                    m = create_merged_pdf(pi, conn, global_logo_path)
-                    if m: st.session_state['dos'] = m; st.success("OK")
-                if 'dos' in st.session_state: st.download_button("Descargar Dossier", st.session_state['dos'], "S.pdf", "application/pdf", key="descargar_dossier")
+            
+            # Mostrar zonas guardadas
+            if p_sel in zonas and zonas[p_sel]:
+                st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
+                
+                # Editor de zonas existentes
+                st.markdown("#### ✏️ Editar Zona Existente")
+                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
+                            for i, z in enumerate(zonas[p_sel])]
+                
+                if zone_options:
+                    selected_zone_idx = st.selectbox(
+                        "Selecciona una zona:",
+                        range(len(zone_options)),
+                        format_func=lambda x: zone_options[x],
+                        key=f"zone_selector_{p_sel}"
+                    )
+                    
+                    if selected_zone_idx is not None:
+                        zone = zonas[p_sel][selected_zone_idx]
+                        
+                        # Controles de edición
+                        new_team = st.text_input("Nombre del equipo:", 
+                                            value=zone.get('team', 'Nueva Zona'),
+                                            key=f"team_edit_{selected_zone_idx}_{p_sel}")
+                        
+                        new_color = st.color_picker("Color:", 
+                                                value=zone.get('color', '#00A04A'),
+                                                key=f"color_edit_{selected_zone_idx}_{p_sel}")
+                        
+                        col_edit1, col_edit2 = st.columns(2)
+                        
+                        with col_edit1:
+                            if st.button("💾 Actualizar Zona", key=f"update_{selected_zone_idx}_{p_sel}"):
+                                zonas[p_sel][selected_zone_idx]['team'] = new_team
+                                zonas[p_sel][selected_zone_idx]['color'] = new_color
+                                save_zones(zonas)
+                                st.success("✅ Zona actualizada")
+                                st.rerun()
+                        
+                        with col_edit2:
+                            if st.button("🗑️ Eliminar Zona", key=f"delete_{selected_zone_idx}_{p_sel}"):
+                                zonas[p_sel].pop(selected_zone_idx)
+                                save_zones(zonas)
+                                st.success("✅ Zona eliminada")
+                                st.rerun()
+                
+                # Leyenda de colores
+                st.markdown("#### 🎨 Leyenda de Colores")
+                for i, z in enumerate(zonas[p_sel]):
+                    col_leg1, col_leg2 = st.columns([1, 4])
+                    with col_leg1:
+                        st.markdown(f'<div style="width:30px;height:30px;background-color:{z.get("color", "#00A04A")};border:1px solid #ccc;"></div>', unsafe_allow_html=True)
+                    with col_leg2:
+                        st.write(f"**{z.get('team', 'Sin nombre')}**")
+                        
             else:
-                ds = di.lower().replace("é","e").replace("á","a")
-                fp = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
-                fd = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.pdf"
-                ops = []
-                if fp.exists(): ops.append("Imagen (PNG)")
-                if fd.exists(): ops.append("Documento (PDF)")
-                if ops:
-                    if fp.exists(): st.image(str(fp), width=300)
-                    sf = st.selectbox("Fmt", ops, key="sf2")
-                    tf = fp if "PNG" in sf else fd
-                    mm = "image/png" if "PNG" in sf else "application/pdf"
-                    with open(tf,"rb") as f: st.download_button("Descargar", f, tf.name, mm, key="descargar_plano")
-                else: st.warning("No existe.")
-
-        # -----------------------------------------------------------
-        # T4: RANKINGS (NUEVA PESTAÑA)
-        # -----------------------------------------------------------
-        with t4:
-            st.subheader("Rankings de Uso")
+                st.warning("ℹ️ No hay zonas guardadas para este piso. Usa el editor de la izquierda para crear zonas.")
             
-            col_rank1, col_rank2 = st.columns(2)
-            
-            with col_rank1:
-                st.markdown("#### 🏢 Ranking de Uso: Salas de Reuniones")
-                room_ranking = generate_room_usage_ranking(conn)
-                if not room_ranking.empty:
-                    st.dataframe(room_ranking, hide_index=True, use_container_width=True)
-                    
-                    # Gráfico de ranking de salas
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    ax.barh(room_ranking['room_name'], room_ranking['Reservas'])
-                    ax.set_xlabel('Número de Reservas')
-                    ax.set_title('Ranking de Uso de Salas')
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.info("No hay datos de reservas de salas.")
-            
-            with col_rank2:
-                st.markdown("#### 🪑 Ranking de Uso: Cupos Flexibles")
-                flex_ranking = generate_flex_usage_ranking(conn)
-                if not flex_ranking.empty:
-                    st.dataframe(flex_ranking, hide_index=True, use_container_width=True)
-                    
-                    # Gráfico de ranking de cupos flexibles (top 10)
-                    top_flex = flex_ranking.head(10)
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    ax.barh(top_flex['user_name'], top_flex['Reservas'])
-                    ax.set_xlabel('Número de Reservas')
-                    ax.set_title('Top 10 - Uso de Cupos Flexibles')
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.info("No hay datos de reservas de cupos flexibles.")
-
-        # -----------------------------------------------------------
-        # T5: CONFIG
-        # -----------------------------------------------------------
-        with t5:
-            nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
-            if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
-
-        # -----------------------------------------------------------
-        # T6: APARIENCIA
-        # -----------------------------------------------------------
-        with t6: 
-            admin_appearance_ui(conn)
+            st.markdown("---")
+            st.markdown("### 📝 Instrucciones")
+            st.info("""
+            1. Selecciona un **Equipo** y un **Color** arriba
+            2. En el editor de la izquierda, haz clic en **✏️ Dibujar**
+            3. Dibuja un rectángulo en el mapa
+            4. Haz clic en **💾 Guardar Zonas** en el editor
+            5. Copia el JSON que aparece y pégalo en el área de texto de la izquierda
+            6. Haz clic en **💾 Guardar Zonas** en Streamlit para guardar definitivamente
+            """)
         
-        # -----------------------------------------------------------
-        # T7: MANTENIMIENTO
-        # -----------------------------------------------------------
-        with t7:
-            opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
-            if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
-                msg = perform_granular_delete(conn, opt); 
-                st.success(msg)
+        # Sección de personalización de título y leyenda (fuera de las columnas)
+        st.divider()
+        st.subheader("Personalización Título y Leyenda")
+        with st.expander("🎨 Editar Estilos", expanded=True):
+            tm = st.text_input("Título Principal", f"Distribución {p_sel}", key=f"title_{p_sel}")
+            ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}", key=f"subtitle_{p_sel}")
+            
+            align_options = ["Izquierda", "Centro", "Derecha"]
 
-if __name__ == "__main__":
-    main()
+            st.markdown("##### Estilos del Título Principal")
+            cf1, cf2, cf3 = st.columns(3)
+            ff_t = cf1.selectbox("Tipografía (Título)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key=f"font_t_{p_sel}")
+            fs_t = cf2.selectbox("Tamaño Letra (Título)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=9, key=f"size_t_{p_sel}")
+            align = cf3.selectbox("Alineación (Título)", align_options, index=1, key=f"align_{p_sel}")
+
+            st.markdown("---")
+            st.markdown("##### Estilos del Subtítulo")
+            cs1, cs2, cs3 = st.columns(3)
+            ff_s = cs1.selectbox("Tipografía (Subtítulo)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key=f"font_s_{p_sel}")
+            fs_s = cs2.selectbox("Tamaño Letra (Subtítulo)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=5, key=f"size_s_{p_sel}")
+            align_s = cs3.selectbox("Alineación (Subtítulo)", align_options, index=1, key=f"align_s_{p_sel}")
+
+            st.markdown("---")
+            st.markdown("##### Estilos de la Leyenda")
+            cl1, cl2, cl3 = st.columns(3)
+            ff_l = cl1.selectbox("Tipografía (Leyenda)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key=f"font_l_{p_sel}", index=0)
+            fs_l = cl2.selectbox("Tamaño Letra (Leyenda)", [8, 10, 12, 14, 16, 18, 20, 24, 28, 32], index=3, key=f"size_l_{p_sel}")
+            align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0, key=f"align_l_{p_sel}")
+            
+            st.markdown("---")
+            cg1, cg2, cg3, cg4 = st.columns(4) 
+            lg = cg1.checkbox("Logo", True, key=f"chk_logo_{p_sel}"); 
+            ln = cg2.checkbox("Mostrar Leyenda", True, key=f"chk_legend_{p_sel}");
+            align_logo = cg3.selectbox("Alineación Logo", align_options, index=0, key=f"logo_align_{p_sel}")
+            lw = cg4.slider("Ancho Logo", 50, 300, 150, key=f"logo_w_{p_sel}")
+            
+            cc1, cc2 = st.columns(2)
+            bg = cc1.color_picker("Fondo Header", "#FFFFFF", key=f"bg_{p_sel}"); tx = cc2.color_picker("Color Texto", "#000000", key=f"tx_{p_sel}")
+
+        fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"], key=f"fmt_{p_sel}")
+        f_code = "PNG" if "PNG" in fmt_sel else "PDF"
+        
+        if st.button("🎨 Actualizar Vista Previa", key=f"preview_{p_sel}"):
+            conf = {
+                "title_text": tm,
+                "subtitle_text": ts,
+                "title_font": ff_t,
+                "title_size": fs_t,
+                "subtitle_font": ff_s,
+                "subtitle_size": fs_s,
+                "legend_font": ff_l,
+                "legend_size": fs_l,
+                "alignment": align, 
+                "subtitle_align": align_s, 
+                "legend_align": align_l, 
+                "bg_color": bg, 
+                "title_color": tx, 
+                "subtitle_color": "#666666", 
+                "use_logo": lg, 
+                "use_legend": ln, 
+                "logo_width": lw,
+                "logo_align": align_logo
+            }
+            # CAMBIO: Guardar config en session_state para usarla en dossier PDF
+            st.session_state['last_style_config'] = conf
+            
+            # Obtener current_seats_dict
+            current_seats_dict = {}
+            if not df_d.empty:
+                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+            
+            out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
+            if out: st.success("Generado.")
+        
+        ds = d_sel.lower().replace("é","e").replace("á","a")
+        fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
+        fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
+        
+        if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
+        elif fpdf.exists(): st.info("PDF generado (sin vista previa)")
+        
+        tf = fpng if "PNG" in fmt_sel else fpdf
+        mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
+        if tf.exists():
+            with open(tf,"rb") as f: st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True, key=f"dl_{p_sel}")
+            
+            st.divider()
+            st.subheader("Personalización Título y Leyenda")
+            with st.expander("🎨 Editar Estilos", expanded=True):
+                tm = st.text_input("Título Principal", f"Distribución {p_sel}")
+                ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}")
+                
+                align_options = ["Izquierda", "Centro", "Derecha"]
+
+                st.markdown("##### Estilos del Título Principal")
+                cf1, cf2, cf3 = st.columns(3)
+                ff_t = cf1.selectbox("Tipografía (Título)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_t")
+                fs_t = cf2.selectbox("Tamaño Letra (Título)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=9, key="size_t")
+                align = cf3.selectbox("Alineación (Título)", align_options, index=1)
+
+                st.markdown("---")
+                st.markdown("##### Estilos del Subtítulo")
+                cs1, cs2, cs3 = st.columns(3)
+                ff_s = cs1.selectbox("Tipografía (Subtítulo)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_s")
+                fs_s = cs2.selectbox("Tamaño Letra (Subtítulo)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=5, key="size_s")
+                align_s = cs3.selectbox("Alineación (Subtítulo)", align_options, index=1)
+
+                st.markdown("---")
+                st.markdown("##### Estilos de la Leyenda")
+                cl1, cl2, cl3 = st.columns(3)
+                ff_l = cl1.selectbox("Tipografía (Leyenda)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_l", index=0)
+                fs_l = cl2.selectbox("Tamaño Letra (Leyenda)", [8, 10, 12, 14, 16, 18, 20, 24, 28, 32], index=3, key="size_l")
+                align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0)
+                
+                st.markdown("---")
+                cg1, cg2, cg3, cg4 = st.columns(4) 
+                lg = cg1.checkbox("Logo", True, key="chk_logo"); 
+                ln = cg2.checkbox("Mostrar Leyenda", True, key="chk_legend");
+                align_logo = cg3.selectbox("Alineación Logo", align_options, index=0)
+                lw = cg4.slider("Ancho Logo", 50, 300, 150)
+                
+                cc1, cc2 = st.columns(2)
+                bg = cc1.color_picker("Fondo Header", "#FFFFFF"); tx = cc2.color_picker("Color Texto", "#000000")
+
+            fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"])
+            f_code = "PNG" if "PNG" in fmt_sel else "PDF"
+            
+            if st.button("🎨 Actualizar Vista Previa"):
+                conf = {
+                    "title_text": tm,
+                    "subtitle_text": ts,
+                    "title_font": ff_t,
+                    "title_size": fs_t,
+                    "subtitle_font": ff_s,
+                    "subtitle_size": fs_s,
+                    "legend_font": ff_l,
+                    "legend_size": fs_l,
+                    "alignment": align, 
+                    "subtitle_align": align_s, 
+                    "legend_align": align_l, 
+                    "bg_color": bg, 
+                    "title_color": tx, 
+                    "subtitle_color": "#666666", 
+                    "use_logo": lg, 
+                    "use_legend": ln, 
+                    "logo_width": lw,
+                    "logo_align": align_logo
+                }
+                # CAMBIO: Guardar config en session_state para usarla en dossier PDF
+                st.session_state['last_style_config'] = conf
+                
+                out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
+                if out: st.success("Generado.")
+            
+            ds = d_sel.lower().replace("é","e").replace("á","a")
+            fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
+            fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
+            
+            if fpng.exists(): st.image(str(fpng), width=550, caption="Vista Previa")
+            elif fpdf.exists(): st.info("PDF generado (sin vista previa)")
+            
+            tf = fpng if "PNG" in fmt_sel else fpdf
+            mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
+            if tf.exists():
+                with open(tf,"rb") as f: st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True)
+
+    with t3:
+        st.subheader("Generar Reportes de Distribución")
+        
+        if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
+            st.markdown("---")
+            st.error("🚨 INFORME DE DÉFICIT DE CUPOS")
+            
+            df_deficit = pd.DataFrame(st.session_state['deficit_report'])
+            df_deficit = df_deficit.rename(columns={
+                'piso': 'Piso', 
+                'dia': 'Día', 
+                'equipo': 'Equipo', 
+                'deficit': 'Cupos Faltantes',
+                'causa': 'Observación'
+            })
+            st.dataframe(df_deficit, hide_index=True, width=None, use_container_width=True)
+            st.markdown("---")
+
+        rf = st.selectbox("Formato Reporte", ["Excel", "PDF"])
+        if st.button("Generar Reporte"):
+            df_raw = read_distribution_df(conn); df_raw = apply_sorting_to_df(df_raw)
+            if "Excel" in rf:
+                b = BytesIO()
+                with pd.ExcelWriter(b) as w: df_raw.to_excel(w, index=False)
+                st.session_state['rd'] = b.getvalue(); st.session_state['rn'] = "d.xlsx"; st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            else:
+                df = df_raw.rename(columns={"piso":"Piso","equipo":"Equipo","dia":"Día","cupos":"Cupos","pct":"%Distrib"})
+                d_data = st.session_state.get('deficit_report', [])
+                st.session_state['rd'] = generate_full_pdf(df, df, logo_path=Path(global_logo_path), deficit_data=d_data)
+                st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
+            st.success("OK")
+        if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'])
+        
+        st.markdown("---")
+        cp, cd = st.columns(2)
+        pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
+        if di=="Todos":
+            if st.button("Generar Dossier"):
+                # CAMBIO: Pasar conn y logo para regenerar
+                m = create_merged_pdf(pi, conn, global_logo_path)
+                if m: st.session_state['dos'] = m; st.success("OK")
+            if 'dos' in st.session_state: st.download_button("Descargar Dossier", st.session_state['dos'], "S.pdf", "application/pdf")
+        else:
+            ds = di.lower().replace("é","e").replace("á","a")
+            fp = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
+            fd = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.pdf"
+            ops = []
+            if fp.exists(): ops.append("Imagen (PNG)")
+            if fd.exists(): ops.append("Documento (PDF)")
+            if ops:
+                if fp.exists(): st.image(str(fp), width=300)
+                sf = st.selectbox("Fmt", ops, key="sf2")
+                tf = fp if "PNG" in sf else fd
+                mm = "image/png" if "PNG" in sf else "application/pdf"
+                with open(tf,"rb") as f: st.download_button("Descargar", f, tf.name, mm)
+            else: st.warning("No existe.")
+
+    with t4:
+        nu = st.text_input("User"); np = st.text_input("Pass", type="password"); ne = st.text_input("Email")
+        if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
+
+    with t5: admin_appearance_ui(conn)
+    
+    with t6:
+        opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"])
+        if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
+
+
+        if st.button("BORRAR", type="primary"): msg = perform_granular_delete(conn, opt); st.success(msg)
