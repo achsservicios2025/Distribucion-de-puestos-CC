@@ -15,8 +15,7 @@ from io import BytesIO
 from dataclasses import dataclass
 import base64
 import streamlit.components.v1 as components
-import base64
-import json
+
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
@@ -1501,7 +1500,7 @@ with t2:
 
     # T3: INFORMES
     # -----------------------------------------------------------
-    with t3:
+with t3:
         st.subheader("Generar Reportes de Distribución")
         
         if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
@@ -1561,19 +1560,19 @@ with t2:
     # -----------------------------------------------------------
     # T4: CONFIG
     # -----------------------------------------------------------
-    with t4:
+with t4:
         nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
         if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
 
     # -----------------------------------------------------------
     # T5: APARIENCIA
     # -----------------------------------------------------------
-    with t5: admin_appearance_ui(conn)
+with t5: admin_appearance_ui(conn)
     
     # -----------------------------------------------------------
     # T6: MANTENIMIENTO
     # -----------------------------------------------------------
-    with t6:
+with t6:
         opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
         # SOLO UN BOTÓN - ELIMINA LA LÍNEA DUPLICADA
         if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
