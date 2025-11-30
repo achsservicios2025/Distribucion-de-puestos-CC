@@ -41,13 +41,13 @@ if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
 # 2. IMPORTACIONES DE MÓDULOS
 # ---------------------------------------------------------
 from modules.database import (
-get_conn, init_db, insert_distribution, clear_distribution,
-read_distribution_df, save_setting, get_all_settings,
-add_reservation, user_has_reservation, list_reservations_df,
-add_room_reservation, get_room_reservations_df,
-count_monthly_free_spots, delete_reservation_from_db, 
-delete_room_reservation_from_db, perform_granular_delete,
-ensure_reset_table, save_reset_token, validate_and_consume_token
+    get_conn, init_db, insert_distribution, clear_distribution,
+    read_distribution_df, save_setting, get_all_settings,
+    add_reservation, user_has_reservation, list_reservations_df,
+    add_room_reservation, get_room_reservations_df,
+    count_monthly_free_spots, delete_reservation_from_db, 
+    delete_room_reservation_from_db, perform_granular_delete,
+    ensure_reset_table, save_reset_token, validate_and_consume_token
 )
 from modules.auth import get_admin_credentials
 from modules.layout import admin_appearance_ui, apply_appearance_styles
@@ -861,7 +861,7 @@ def create_drawing_component(img_path, existing_zones, width=700):
         import traceback
         st.code(f"Detalles del error: {traceback.format_exc()}")
         return None
-    
+
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
 # ---------------------------------------------------------
@@ -1344,188 +1344,189 @@ elif menu == "Administrador":
     # -----------------------------------------------------------
     # T2: EDITOR VISUAL
     # -----------------------------------------------------------
-with t2:
-    st.info("Editor de Zonas - Versión Profesional")
-    
-    # Verificar permisos de administrador
-    if not st.session_state.get("is_admin", False):
-        st.error("🔒 Acceso denegado. Solo administradores pueden acceder al editor.")
-        st.stop()
-    
-    zonas = load_zones()
-    c1, c2 = st.columns(2)
-    
-    df_d = read_distribution_df(conn)
-    pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
-    
-    p_sel = c1.selectbox("Piso", pisos_list, key="editor_piso")
-    d_sel = c2.selectbox("Día Ref.", ORDER_DIAS, key="editor_dia")
-    p_num = p_sel.replace("Piso ", "").strip()
-    
-    # Búsqueda de Archivo
-    file_base = f"piso{p_num}" 
-    pim = PLANOS_DIR / f"{file_base}.png"
-    if not pim.exists(): 
-        pim = PLANOS_DIR / f"{file_base}.jpg"
-    if not pim.exists(): 
-        pim = PLANOS_DIR / f"Piso{p_num}.png"
+    with t2:
+        st.info("Editor de Zonas - Versión Profesional")
         
-    if pim.exists():
-        try:
-            # Cargar zonas existentes para este piso
-            existing_zones = zonas.get(p_sel, [])
+        # Verificar permisos de administrador
+        if not st.session_state.get("is_admin", False):
+            st.error("🔒 Acceso denegado. Solo administradores pueden acceder al editor.")
+            st.stop()
+        
+        zonas = load_zones()
+        c1, c2 = st.columns(2)
+        
+        df_d = read_distribution_df(conn)
+        pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+        
+        p_sel = c1.selectbox("Piso", pisos_list, key="editor_piso")
+        d_sel = c2.selectbox("Día Ref.", ORDER_DIAS, key="editor_dia")
+        p_num = p_sel.replace("Piso ", "").strip()
+        
+        # Búsqueda de Archivo
+        file_base = f"piso{p_num}" 
+        pim = PLANOS_DIR / f"{file_base}.png"
+        if not pim.exists(): 
+            pim = PLANOS_DIR / f"{file_base}.jpg"
+        if not pim.exists(): 
+            pim = PLANOS_DIR / f"Piso{p_num}.png"
             
-            st.success(f"✅ Plano cargado: {pim.name}")
-            
-            # Mostrar componente de dibujo profesional
-            drawing_component = create_drawing_component(str(pim), existing_zones, width=700)
-            
-            # Sección para recibir datos del componente
-            st.markdown("---")
-            st.subheader("📥 Recepción de Datos del Editor")
-            
-            # Área para pegar datos JSON (como respaldo)
-            st.info("""
-            **Instrucciones:**
-            1. Dibuja rectángulos en el editor de arriba
-            2. Haz clic en **"💾 Guardar Zonas"** en el editor
-            3. Los datos se enviarán automáticamente
-            4. Si hay problemas, copia y pega manualmente:
-            """)
-            
-            zones_json = st.text_area(
-                "Datos JSON de zonas (copia y pega si el envío automático falla):",
-                height=150,
-                placeholder='Pega aquí el JSON que aparece en el editor al hacer clic en "Guardar Zonas"'
-            )
-            
-            # Botón para procesar datos manuales
-            col1, col2 = st.columns([3, 1])
-            if col2.button("🔄 Procesar Datos Manuales", type="primary"):
-                if zones_json.strip():
-                    try:
-                        zonas_data = json.loads(zones_json)
-                        zonas[p_sel] = zonas_data
-                        save_zones(zonas)
-                        st.success("✅ Zonas guardadas correctamente (modo manual)")
-                        st.rerun()
-                    except json.JSONDecodeError:
-                        st.error("❌ Error: El texto no es un JSON válido")
-                    except Exception as e:
-                        st.error(f"❌ Error al guardar zonas: {str(e)}")
-                else:
-                    st.warning("⚠️ Por favor, pega los datos JSON en el área de texto")
-            
-            # JavaScript para capturar automáticamente los datos del componente
-            components.html("""
-            <script>
-            window.addEventListener('message', function(event) {
-                // Verificar que el mensaje es del tipo esperado y viene de un origen confiable
-                if (event.data.type === 'ZONAS_GUARDADAS') {
-                    console.log('Datos recibidos del editor:', event.data.data);
-                    
-                    // Enviar a Streamlit mediante el método estándar
-                    if (window.Streamlit) {
-                        // Guardar en sessionStorage para persistencia
-                        sessionStorage.setItem('lastZonesData', JSON.stringify(event.data.data));
+        if pim.exists():
+            try:
+                # Cargar zonas existentes para este piso
+                existing_zones = zonas.get(p_sel, [])
+                
+                st.success(f"✅ Plano cargado: {pim.name}")
+                
+                # Mostrar componente de dibujo profesional
+                drawing_component = create_drawing_component(str(pim), existing_zones, width=700)
+                
+                # Sección para recibir datos del componente
+                st.markdown("---")
+                st.subheader("📥 Recepción de Datos del Editor")
+                
+                # Área para pegar datos JSON (como respaldo)
+                st.info("""
+                **Instrucciones:**
+                1. Dibuja rectángulos en el editor de arriba
+                2. Haz clic en **"💾 Guardar Zonas"** en el editor
+                3. Los datos se enviarán automáticamente
+                4. Si hay problemas, copia y pega manualmente:
+                """)
+                
+                zones_json = st.text_area(
+                    "Datos JSON de zonas (copia y pega si el envío automático falla):",
+                    height=150,
+                    placeholder='Pega aquí el JSON que aparece en el editor al hacer clic en "Guardar Zonas"'
+                )
+                
+                # Botón para procesar datos manuales
+                col1, col2 = st.columns([3, 1])
+                if col2.button("🔄 Procesar Datos Manuales", type="primary"):
+                    if zones_json.strip():
+                        try:
+                            zonas_data = json.loads(zones_json)
+                            zonas[p_sel] = zonas_data
+                            save_zones(zonas)
+                            st.success("✅ Zonas guardadas correctamente (modo manual)")
+                            st.rerun()
+                        except json.JSONDecodeError:
+                            st.error("❌ Error: El texto no es un JSON válido")
+                        except Exception as e:
+                            st.error(f"❌ Error al guardar zonas: {str(e)}")
+                    else:
+                        st.warning("⚠️ Por favor, pega los datos JSON en el área de texto")
+                
+                # JavaScript para capturar automáticamente los datos del componente
+                components.html("""
+                <script>
+                window.addEventListener('message', function(event) {
+                    // Verificar que el mensaje es del tipo esperado y viene de un origen confiable
+                    if (event.data.type === 'ZONAS_GUARDADAS') {
+                        console.log('Datos recibidos del editor:', event.data.data);
                         
-                        // Mostrar notificación
-                        const event = new CustomEvent('streamlitSetComponentValue', {
-                            detail: {value: JSON.stringify(event.data.data)}
-                        });
-                        window.dispatchEvent(event);
+                        // Enviar a Streamlit mediante el método estándar
+                        if (window.Streamlit) {
+                            // Guardar en sessionStorage para persistencia
+                            sessionStorage.setItem('lastZonesData', JSON.stringify(event.data.data));
+                            
+                            // Mostrar notificación
+                            const event = new CustomEvent('streamlitSetComponentValue', {
+                                detail: {value: JSON.stringify(event.data.data)}
+                            });
+                            window.dispatchEvent(event);
+                        }
                     }
-                }
-            });
-            </script>
-            """, height=0)
-            
-            # Verificar si hay datos nuevos en sessionStorage (simulación)
-            if st.button("📥 Verificar Datos Automáticos", key="check_auto_data"):
-                st.info("Esta función verifica si hay datos listos para guardar desde el editor")
-                # En una implementación real, aquí iría la lógica para capturar los datos automáticamente
-            
-            # Mostrar y gestionar zonas existentes
-            st.markdown("---")
-            st.subheader("📋 Zonas Actualmente Guardadas")
-            
-            if p_sel in zonas and zonas[p_sel]:
-                st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
+                });
+                </script>
+                """, height=0)
                 
-                # Selector para editar zonas existentes
-                st.markdown("#### ✏️ Editar Zona Existente")
-                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
-                            for i, z in enumerate(zonas[p_sel])]
+                # Verificar si hay datos nuevos en sessionStorage (simulación)
+                if st.button("📥 Verificar Datos Automáticos", key="check_auto_data"):
+                    st.info("Esta función verifica si hay datos listos para guardar desde el editor")
+                    # En una implementación real, aquí iría la lógica para capturar los datos automáticamente
                 
-                if zone_options:
-                    selected_zone_idx = st.selectbox(
-                        "Selecciona una zona para editar:",
-                        range(len(zone_options)),
-                        format_func=lambda x: zone_options[x],
-                        key="zone_selector"
-                    )
+                # Mostrar y gestionar zonas existentes
+                st.markdown("---")
+                st.subheader("📋 Zonas Actualmente Guardadas")
+                
+                if p_sel in zonas and zonas[p_sel]:
+                    st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
                     
-                    if selected_zone_idx is not None:
-                        zone = zonas[p_sel][selected_zone_idx]
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            new_team = st.text_input("Nombre del equipo:", 
-                                                value=zone.get('team', 'Nueva Zona'),
-                                                key=f"team_{selected_zone_idx}")
-                        
-                        with col2:
-                            new_color = st.color_picker("Color:", 
-                                                    value=zone.get('color', '#00A04A'),
-                                                    key=f"color_{selected_zone_idx}")
-                        
-                        with col3:
-                            if st.button("💾 Actualizar", key=f"update_{selected_zone_idx}"):
-                                zonas[p_sel][selected_zone_idx]['team'] = new_team
-                                zonas[p_sel][selected_zone_idx]['color'] = new_color
-                                save_zones(zonas)
-                                st.success("✅ Zona actualizada")
-                                st.rerun()
-                        
-                        with col4:
-                            if st.button("🗑️ Eliminar", key=f"delete_{selected_zone_idx}"):
-                                zonas[p_sel].pop(selected_zone_idx)
-                                save_zones(zonas)
-                                st.success("✅ Zona eliminada")
-                                st.rerun()
-                
-                # Vista previa de todas las zonas
-                st.markdown("#### 👁️ Vista Previa de Zonas")
-                for i, z in enumerate(zonas[p_sel]):
-                    col1, col2, col3 = st.columns([3, 1, 1])
-                    col1.markdown(
-                        f"<span style='color:{z['color']}; font-size: 20px;'>■</span> **{z.get('team', 'Sin nombre')}** ",
-                        unsafe_allow_html=True
-                    )
-                    col2.info(f"Pos: ({z['x']}, {z['y']})")
-                    col3.metric("Tamaño", f"{z['w']}x{z['h']}")
-            else:
-                st.warning("ℹ️ No hay zonas guardadas para este piso. Usa el editor de arriba para crear zonas.")
+                    # Selector para editar zonas existentes
+                    st.markdown("#### ✏️ Editar Zona Existente")
+                    zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
+                                for i, z in enumerate(zonas[p_sel])]
                     
-        except Exception as e:
-            st.error(f"❌ Error en el editor: {str(e)}")
-            st.code(f"Detalles: {str(e)}")
-    else:
-        st.error(f"❌ No se encontró el plano: {p_sel}")
-        st.info(f"💡 Busqué en: {pim}")
-        st.info("""
-        **Formatos soportados:** PNG, JPG, JPEG
-        **Nombres esperados:** 
-        - piso1.png, piso2.jpg, etc.
-        - Piso1.png, Piso2.jpg, etc.
-        """)
+                    if zone_options:
+                        selected_zone_idx = st.selectbox(
+                            "Selecciona una zona para editar:",
+                            range(len(zone_options)),
+                            format_func=lambda x: zone_options[x],
+                            key="zone_selector"
+                        )
+                        
+                        if selected_zone_idx is not None:
+                            zone = zonas[p_sel][selected_zone_idx]
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                new_team = st.text_input("Nombre del equipo:", 
+                                                    value=zone.get('team', 'Nueva Zona'),
+                                                    key=f"team_{selected_zone_idx}")
+                            
+                            with col2:
+                                new_color = st.color_picker("Color:", 
+                                                        value=zone.get('color', '#00A04A'),
+                                                        key=f"color_{selected_zone_idx}")
+                            
+                            with col3:
+                                if st.button("💾 Actualizar", key=f"update_{selected_zone_idx}"):
+                                    zonas[p_sel][selected_zone_idx]['team'] = new_team
+                                    zonas[p_sel][selected_zone_idx]['color'] = new_color
+                                    save_zones(zonas)
+                                    st.success("✅ Zona actualizada")
+                                    st.rerun()
+                            
+                            with col4:
+                                if st.button("🗑️ Eliminar", key=f"delete_{selected_zone_idx}"):
+                                    zonas[p_sel].pop(selected_zone_idx)
+                                    save_zones(zonas)
+                                    st.success("✅ Zona eliminada")
+                                    st.rerun()
+                    
+                    # Vista previa de todas las zonas
+                    st.markdown("#### 👁️ Vista Previa de Zonas")
+                    for i, z in enumerate(zonas[p_sel]):
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        col1.markdown(
+                            f"<span style='color:{z['color']}; font-size: 20px;'>■</span> **{z.get('team', 'Sin nombre')}** ",
+                            unsafe_allow_html=True
+                        )
+                        col2.info(f"Pos: ({z['x']}, {z['y']})")
+                        col3.metric("Tamaño", f"{z['w']}x{z['h']}")
+                else:
+                    st.warning("ℹ️ No hay zonas guardadas para este piso. Usa el editor de arriba para crear zonas.")
+                        
+            except Exception as e:
+                st.error(f"❌ Error en el editor: {str(e)}")
+                st.code(f"Detalles: {str(e)}")
+        else:
+            st.error(f"❌ No se encontró el plano: {p_sel}")
+            st.info(f"💡 Busqué en: {pim}")
+            st.info("""
+            **Formatos soportados:** PNG, JPG, JPEG
+            **Nombres esperados:** 
+            - piso1.png, piso2.jpg, etc.
+            - Piso1.png, Piso2.jpg, etc.
+            """)
 
+    # -----------------------------------------------------------
     # T3: INFORMES
     # -----------------------------------------------------------
-with t3:
-    st.subheader("Generar Reportes de Distribución")
+    with t3:
+        st.subheader("Generar Reportes de Distribución")
         
-    if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
+        if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
             st.markdown("---")
             st.error("🚨 INFORME DE DÉFICIT DE CUPOS")
             
@@ -1540,8 +1541,8 @@ with t3:
             st.dataframe(df_deficit, hide_index=True, width='stretch')
             st.markdown("---")
 
-    rf = st.selectbox("Formato Reporte", ["Excel", "PDF"], key="formato_reporte")
-    if st.button("Generar Reporte", key="generar_reporte"):
+        rf = st.selectbox("Formato Reporte", ["Excel", "PDF"], key="formato_reporte")
+        if st.button("Generar Reporte", key="generar_reporte"):
             df_raw = read_distribution_df(conn); df_raw = apply_sorting_to_df(df_raw)
             if "Excel" in rf:
                 b = BytesIO()
@@ -1553,19 +1554,19 @@ with t3:
                 st.session_state['rd'] = generate_full_pdf(df, df, logo_path=Path(global_logo_path), deficit_data=d_data)
                 st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
             st.success("OK")
-            if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="descargar_reporte")
+        if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="descargar_reporte")
         
-            st.markdown("---")
-            cp, cd = st.columns(2)
-            pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
-            if di=="Todos":
-                if st.button("Generar Dossier", key="generar_dossier"):
+        st.markdown("---")
+        cp, cd = st.columns(2)
+        pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
+        if di=="Todos":
+            if st.button("Generar Dossier", key="generar_dossier"):
                 # CAMBIO: Pasar conn y logo para regenerar
-                    m= create_merged_pdf(pi, conn, global_logo_path)
+                m = create_merged_pdf(pi, conn, global_logo_path)
                 if m: st.session_state['dos'] = m; st.success("OK")
             if 'dos' in st.session_state: st.download_button("Descargar Dossier", st.session_state['dos'], "S.pdf", "application/pdf", key="descargar_dossier")
-            else:
-                ds = di.lower().replace("é","e").replace("á","a")
+        else:
+            ds = di.lower().replace("é","e").replace("á","a")
             fp = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
             fd = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.pdf"
             ops = []
@@ -1582,21 +1583,22 @@ with t3:
     # -----------------------------------------------------------
     # T4: CONFIG
     # -----------------------------------------------------------
-with t4:
-    nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
-    if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
+    with t4:
+        nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
+        if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
 
     # -----------------------------------------------------------
     # T5: APARIENCIA
     # -----------------------------------------------------------
-with t5: admin_appearance_ui(conn)
+    with t5: 
+        admin_appearance_ui(conn)
     
     # -----------------------------------------------------------
     # T6: MANTENIMIENTO
     # -----------------------------------------------------------
-with t6:
-    opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
+    with t6:
+        opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
         # SOLO UN BOTÓN - ELIMINA LA LÍNEA DUPLICADA
-    if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
-        msg = perform_granular_delete(conn, opt); 
-        st.success(msg)
+        if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
+            msg = perform_granular_delete(conn, opt); 
+            st.success(msg)
