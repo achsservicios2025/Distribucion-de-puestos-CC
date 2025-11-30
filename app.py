@@ -152,11 +152,27 @@ def safe_convert_df(df):
         
     df_clean = df.copy()
     for col in df_clean.columns:
-        # Convertir columnas de objeto a string
-        if df_clean[col].dtype == 'object':
-            df_clean[col] = df_clean[col].astype(str)
-        # Manejar valores NaN
-        df_clean[col] = df_clean[col].fillna('')
+        try:
+            # Si la columna es de tipo categoría, convertir a string primero
+            if hasattr(df_clean[col], 'cat'):
+                df_clean[col] = df_clean[col].astype(str)
+            
+            # Para columnas de objeto, convertir a string y llenar NaN
+            if df_clean[col].dtype == 'object':
+                df_clean[col] = df_clean[col].astype(str)
+                df_clean[col] = df_clean[col].fillna('')
+            # Para otros tipos, solo llenar NaN si es necesario
+            elif df_clean[col].isna().any():
+                # Para numéricos, llenar con 0 en lugar de string vacío
+                if pd.api.types.is_numeric_dtype(df_clean[col]):
+                    df_clean[col] = df_clean[col].fillna(0)
+                else:
+                    df_clean[col] = df_clean[col].fillna('')
+        except Exception as e:
+            # Si falla, simplemente saltar la columna
+            print(f"Advertencia: No se pudo procesar la columna {col}: {e}")
+            continue
+            
     return df_clean
 
 # --- NUEVA FUNCIÓN CON ESTRATEGIAS DE ORDENAMIENTO ---
@@ -943,10 +959,10 @@ elif menu == "Administrador":
     # -----------------------------------------------------------
     # T2: EDITOR VISUAL
     # -----------------------------------------------------------
-    with t2:
-        st.info("Editor de Zonas")
-        zonas = load_zones()
-        c1, c2 = st.columns(2)
+with t2:
+    st.info("Editor de Zonas")
+    zonas = load_zones()
+    c1, c2 = st.columns(2)
     
     # MODIFICADO: Leer con funcion importada
     df_d = read_distribution_df(conn)
@@ -969,33 +985,53 @@ elif menu == "Administrador":
             # Cargar imagen
             img = PILImage.open(pim)
             
-            # Mostrar imagen estática primero para verificar que carga
-            st.image(img, caption=f"Plano de {p_sel}", use_column_width=True)
+            # Redimensionar la imagen para que no sea tan grande
+            # Tamaño máximo para el canvas
+            max_width = 700
+            original_width, original_height = img.size
             
-            # Calcular dimensiones para el canvas
-            cw = 800
-            w, h = img.size
-            if w > cw:
-                ratio = cw / w
-                ch = int(h * ratio)
+            if original_width > max_width:
+                # Calcular nueva altura manteniendo la proporción
+                ratio = max_width / original_width
+                new_height = int(original_height * ratio)
+                img_resized = img.resize((max_width, new_height), PILImage.Resampling.LANCZOS)
+                display_width = max_width
+                display_height = new_height
             else:
-                ch = h
-                cw = w
+                img_resized = img
+                display_width = original_width
+                display_height = original_height
 
-            # Canvas simplificado - sin background_image problemático
+            # Mostrar imagen estática primero para verificar que carga
+            st.image(img_resized, caption=f"Plano de {p_sel} (Vista previa)", use_container_width=False)
+            
+            st.markdown("---")
+            st.subheader("Editor de Zonas - Dibuja rectángulos sobre el plano")
+            
+            # Canvas con la imagen como fondo - usando base64
+            import base64
+            from io import BytesIO
+            
+            # Convertir imagen a base64 para el canvas
+            buffered = BytesIO()
+            img_resized.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            img_data = f"data:image/png;base64,{img_str}"
+
+            # Canvas con background_image
             canvas_result = st_canvas(
                 fill_color="rgba(0, 160, 74, 0.3)",
                 stroke_width=2,
                 stroke_color="#00A04A",
-                background_color="#FFFFFF",
+                background_image=img_data,  # Imagen en base64
                 update_streamlit=True,
-                width=cw,
-                height=ch,
+                width=display_width,
+                height=display_height,
                 drawing_mode="rect",
                 key=f"canvas_{p_sel}_{d_sel}",
             )
             
-            # El resto del código para procesar las zonas...
+            # El resto del código se mantiene igual...
             current_seats_dict = {}
             eqs = [""]
             if not df_d.empty:
@@ -1039,6 +1075,7 @@ elif menu == "Administrador":
     else:
         st.warning(f"No se encontró el plano: {pim}")
 
+    # ... el resto del código del editor visual se mantiene igual ...
     # ... el resto del código del editor visual se mantiene igual ...
         # Listado y eliminación de zonas guardadas
         if p_sel in zonas:
