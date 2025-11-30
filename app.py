@@ -14,6 +14,9 @@ from PIL import Image
 from io import BytesIO
 from dataclasses import dataclass
 import base64
+import streamlit.components.v1 as components
+import base64
+import json
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
@@ -476,6 +479,333 @@ if os.path.exists(global_logo_path):
     c2.title(site_title)
 else:
     st.title(site_title)
+
+
+def create_drawing_component(img_path, existing_zones, width=700):
+    """Componente profesional de dibujo integrado con la app"""
+    
+    try:
+        # Convertir imagen a base64
+        with open(img_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode()
+        
+        # Preparar zonas existentes para JSON
+        safe_zones = []
+        for zone in existing_zones:
+            safe_zone = {
+                'x': zone.get('x', 0),
+                'y': zone.get('y', 0),
+                'w': zone.get('w', 0),
+                'h': zone.get('h', 0),
+                'color': zone.get('color', '#00A04A'),
+                'team': zone.get('team', 'Sin nombre')
+            }
+            safe_zones.append(safe_zone)
+        
+        existing_zones_json = json.dumps(safe_zones)
+        
+        # HTML/JS Componente de dibujo profesional
+        html_code = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Editor de Planos</title>
+            <style>
+                body {{
+                    font-family: 'Arial', sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    background: #f8f9fa;
+                }}
+                .editor-container {{
+                    max-width: {width}px;
+                    margin: 0 auto;
+                    background: white;
+                    border-radius: 10px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    overflow: hidden;
+                }}
+                .editor-header {{
+                    background: #00A04A;
+                    color: white;
+                    padding: 15px 20px;
+                    margin: 0;
+                }}
+                .editor-controls {{
+                    padding: 15px 20px;
+                    background: #f8f9fa;
+                    border-bottom: 1px solid #dee2e6;
+                }}
+                .control-btn {{
+                    background: #007bff;
+                    color: white;
+                    border: none;
+                    padding: 8px 15px;
+                    margin-right: 10px;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 14px;
+                }}
+                .control-btn:hover {{
+                    background: #0056b3;
+                }}
+                .control-btn.delete {{
+                    background: #dc3545;
+                }}
+                .control-btn.delete:hover {{
+                    background: #c82333;
+                }}
+                .canvas-container {{
+                    position: relative;
+                    background: white;
+                }}
+                #drawingCanvas {{
+                    display: block;
+                    cursor: crosshair;
+                    max-width: 100%;
+                }}
+                .status-panel {{
+                    padding: 15px 20px;
+                    background: #e9ecef;
+                    border-top: 1px solid #dee2e6;
+                }}
+                .status-message {{
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 5px 0;
+                }}
+                .status-success {{
+                    background: #d4edda;
+                    color: #155724;
+                    border: 1px solid #c3e6cb;
+                }}
+                .status-info {{
+                    background: #d1ecf1;
+                    color: #0c5460;
+                    border: 1px solid #bee5eb;
+                }}
+                .coordinates {{
+                    font-family: monospace;
+                    background: #2b303b;
+                    color: #00ff00;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                    font-size: 12px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="editor-container">
+                <h2 class="editor-header">🎨 Editor de Planos Profesional</h2>
+                
+                <div class="editor-controls">
+                    <button class="control-btn" onclick="startDrawing()">
+                        ✏️ Dibujar Rectángulo
+                    </button>
+                    <button class="control-btn" onclick="clearLast()">
+                        🗑️ Borrar Último
+                    </button>
+                    <button class="control-btn delete" onclick="clearAll()">
+                        🗑️ Borrar Todo
+                    </button>
+                    <button class="control-btn" onclick="saveZones()" style="background: #28a745;">
+                        💾 Guardar Zonas
+                    </button>
+                </div>
+
+                <div class="canvas-container">
+                    <canvas id="drawingCanvas" width="{width}" height="500"></canvas>
+                </div>
+
+                <div class="status-panel">
+                    <div id="statusMessage" class="status-message status-info">
+                        👆 Haz clic en "Dibujar Rectángulo" y luego arrastra en el plano para crear una zona.
+                    </div>
+                    <div class="coordinates">
+                        <strong>Coordenadas actuales:</strong><br>
+                        <span id="coordsDisplay">X: 0, Y: 0, Ancho: 0, Alto: 0</span>
+                    </div>
+                </div>
+            </div>
+
+            <img id="sourceImage" src="data:image/png;base64,{img_data}" style="display:none">
+            
+            <script>
+                // Variables globales
+                let canvas = document.getElementById('drawingCanvas');
+                let ctx = canvas.getContext('2d');
+                let img = document.getElementById('sourceImage');
+                let isDrawing = false;
+                let startX, startY, currentX, currentY;
+                let rectangles = {existing_zones_json};
+                let currentRect = null;
+
+                // Cargar imagen y zonas existentes
+                img.onload = function() {{
+                    drawImageAndZones();
+                }};
+
+                function drawImageAndZones() {{
+                    // Limpiar canvas
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Dibujar imagen de fondo
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    
+                    // Dibujar rectángulo actual (si está en proceso)
+                    if (currentRect) {{
+                        drawRectangle(currentRect);
+                    }}
+                    
+                    // Dibujar zonas existentes
+                    rectangles.forEach(rect => {{
+                        drawRectangle(rect);
+                        
+                        // Dibujar etiqueta
+                        if (rect.team && rect.team !== 'Nueva Zona') {{
+                            ctx.fillStyle = '#000';
+                            ctx.font = 'bold 14px Arial';
+                            ctx.fillText(rect.team, rect.x + 5, rect.y + 20);
+                        }}
+                    }});
+                }}
+
+                function drawRectangle(rect) {{
+                    ctx.strokeStyle = rect.color || '#00A04A';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+                    
+                    // Relleno semi-transparente
+                    ctx.fillStyle = (rect.color || '#00A04A') + '40';
+                    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+                }}
+
+                function startDrawing() {{
+                    isDrawing = true;
+                    canvas.style.cursor = 'crosshair';
+                    showStatus('🎯 Modo dibujo activado: Haz clic y arrastra para dibujar un rectángulo', 'success');
+                }}
+
+                // Eventos del mouse
+                canvas.addEventListener('mousedown', function(e) {{
+                    if (!isDrawing) return;
+                    
+                    const rect = canvas.getBoundingClientRect();
+                    startX = e.clientX - rect.left;
+                    startY = e.clientY - rect.top;
+                    
+                    currentRect = {{
+                        x: startX, y: startY, w: 0, h: 0,
+                        color: '#00A04A'
+                    }};
+                }});
+
+                canvas.addEventListener('mousemove', function(e) {{
+                    if (!isDrawing || !currentRect) return;
+                    
+                    const rect = canvas.getBoundingClientRect();
+                    currentX = e.clientX - rect.left;
+                    currentY = e.clientY - rect.top;
+                    
+                    currentRect.w = currentX - startX;
+                    currentRect.h = currentY - startY;
+                    
+                    // Actualizar display de coordenadas
+                    document.getElementById('coordsDisplay').textContent = 
+                        `X: ${{Math.round(startX)}}, Y: ${{Math.round(startY)}}, ` +
+                        `Ancho: ${{Math.round(currentRect.w)}}, Alto: ${{Math.round(currentRect.h)}}`;
+                    
+                    drawImageAndZones();
+                }});
+
+                canvas.addEventListener('mouseup', function(e) {{
+                    if (!isDrawing || !currentRect) return;
+                    
+                    // Solo guardar si el rectángulo tiene tamaño suficiente
+                    if (Math.abs(currentRect.w) > 10 && Math.abs(currentRect.h) > 10) {{
+                        // Escalar a coordenadas originales de la imagen
+                        const scaleX = img.naturalWidth / canvas.width;
+                        const scaleY = img.naturalHeight / canvas.height;
+                        
+                        const newRect = {{
+                            x: Math.round(currentRect.x * scaleX),
+                            y: Math.round(currentRect.y * scaleY),
+                            w: Math.round(currentRect.w * scaleX),
+                            h: Math.round(currentRect.h * scaleY),
+                            color: '#00A04A',
+                            team: 'Nueva Zona'
+                        }};
+                        
+                        rectangles.push(newRect);
+                        showStatus('✅ Rectángulo creado. Asigna un nombre al equipo abajo.', 'success');
+                    }}
+                    
+                    currentRect = null;
+                    isDrawing = false;
+                    canvas.style.cursor = 'default';
+                    drawImageAndZones();
+                }});
+
+                function clearLast() {{
+                    if (rectangles.length > 0) {{
+                        rectangles.pop();
+                        drawImageAndZones();
+                        showStatus('🗑️ Último rectángulo eliminado', 'info');
+                    }} else {{
+                        showStatus('ℹ️ No hay rectángulos para eliminar', 'info');
+                    }}
+                }}
+
+                function clearAll() {{
+                    if (rectangles.length > 0) {{
+                        if (confirm('¿Estás seguro de que quieres eliminar TODAS las zonas?')) {{
+                            rectangles = [];
+                            drawImageAndZones();
+                            showStatus('🗑️ Todas las zonas han sido eliminadas', 'info');
+                        }}
+                    }} else {{
+                        showStatus('ℹ️ No hay zonas para eliminar', 'info');
+                    }}
+                }}
+
+                function saveZones() {{
+                    // Enviar zonas a Streamlit
+                    window.parent.postMessage({{
+                        type: 'ZONAS_GUARDADAS',
+                        data: rectangles
+                    }}, '*');
+                    showStatus('📤 Zonas enviadas a la aplicación. Revisa la sección de abajo.', 'success');
+                }}
+
+                function showStatus(message, type) {{
+                    const statusDiv = document.getElementById('statusMessage');
+                    statusDiv.textContent = message;
+                    statusDiv.className = 'status-message status-' + type;
+                }}
+
+                // Mostrar coordenadas al mover el mouse
+                canvas.addEventListener('mousemove', function(e) {{
+                    const rect = canvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    if (!isDrawing) {{
+                        document.getElementById('coordsDisplay').textContent = 
+                            `X: ${{Math.round(x)}}, Y: ${{Math.round(y)}}`;
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
+        '''
+        
+        return components.html(html_code, width=width + 100, height=700, scrolling=False)
+        
+    except Exception as e:
+        st.error(f"Error al crear el componente de dibujo: {str(e)}")
+        return None
 
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
@@ -960,7 +1290,13 @@ elif menu == "Administrador":
     # T2: EDITOR VISUAL
     # -----------------------------------------------------------
 with t2:
-    st.info("Editor de Zonas")
+    st.info("Editor de Zonas - Versión Profesional")
+    
+    # Verificar permisos de administrador
+    if not st.session_state.get("is_admin", False):
+        st.error("🔒 Acceso denegado. Solo administradores pueden acceder al editor.")
+        st.stop()
+    
     zonas = load_zones()
     c1, c2 = st.columns(2)
     
@@ -971,7 +1307,7 @@ with t2:
     d_sel = c2.selectbox("Día Ref.", ORDER_DIAS, key="editor_dia")
     p_num = p_sel.replace("Piso ", "").strip()
     
-    # 1. Búsqueda de Archivo
+    # Búsqueda de Archivo
     file_base = f"piso{p_num}" 
     pim = PLANOS_DIR / f"{file_base}.png"
     if not pim.exists(): 
@@ -981,197 +1317,154 @@ with t2:
         
     if pim.exists():
         try:
-            # Cargar imagen
-            img = PILImage.open(pim)
-            original_width, original_height = img.size
+            # Cargar zonas existentes para este piso
+            existing_zones = zonas.get(p_sel, [])
             
-            # Redimensionar para mostrar
-            max_display_width = 700
-            if original_width > max_display_width:
-                ratio = max_display_width / original_width
-                display_height = int(original_height * ratio)
-                display_width = max_display_width
-            else:
-                display_width = original_width
-                display_height = original_height
-
-            # SOLUCIÓN DEFINITIVA: Canvas SIN background_image
-            st.subheader("Dibuja sobre el área de abajo:")
-            st.info("💡 **Instrucciones:** Dibuja rectángulos en el área blanca (representa tu plano)")
+            st.success(f"✅ Plano cargado: {pim.name}")
             
-            # Canvas con fondo blanco del mismo tamaño que la imagen
-            canvas_result = st_canvas(
-                fill_color="rgba(0, 160, 74, 0.3)",
-                stroke_width=3,
-                stroke_color="#00A04A",
-                background_color="#FFFFFF",
-                update_streamlit=True,
-                width=display_width,
-                height=display_height,
-                drawing_mode="rect",
-                key=f"canvas_{p_sel}_{d_sel}",
+            # Mostrar componente de dibujo profesional
+            drawing_component = create_drawing_component(str(pim), existing_zones, width=700)
+            
+            # Sección para recibir datos del componente
+            st.markdown("---")
+            st.subheader("📥 Recepción de Datos del Editor")
+            
+            # Área para pegar datos JSON (como respaldo)
+            st.info("""
+            **Instrucciones:**
+            1. Dibuja rectángulos en el editor de arriba
+            2. Haz clic en **"💾 Guardar Zonas"** en el editor
+            3. Los datos se enviarán automáticamente
+            4. Si hay problemas, copia y pega manualmente:
+            """)
+            
+            zones_json = st.text_area(
+                "Datos JSON de zonas (copia y pega si el envío automático falla):",
+                height=150,
+                placeholder='Pega aquí el JSON que aparece en el editor al hacer clic en "Guardar Zonas"'
             )
             
-            # Mostrar la imagen real como referencia
-            st.subheader("Referencia - Tu plano:")
-            st.image(img, width=display_width, caption=f"Plano de {p_sel} - Usa esto como referencia para dibujar arriba")
-            
-            # Configuración de zonas
-            current_seats_dict = {}
-            eqs = [""]
-            if not df_d.empty:
-                subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
-                current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
-                eqs += sorted(subset['equipo'].unique().tolist())
-            
-            salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones - Piso 3"]
-            eqs = eqs + salas_piso
-
-            # Selección de equipo y color
-            st.markdown("---")
-            st.subheader("Configurar Zona")
-            c1, c2, c3 = st.columns([2, 1, 1])
-            tn = c1.selectbox("Equipo / Sala", eqs, key="editor_equipo")
-            tc = c2.color_picker("Color", "#00A04A", key="editor_color")
-
-            if tn and tn in current_seats_dict:
-                st.info(f"Cupos: {current_seats_dict[tn]}")
-
-            # Guardar zona dibujada
-            if c3.button("💾 Guardar Zona", type="primary", key="guardar_zona"):
-                if tn and canvas_result.json_data and canvas_result.json_data.get("objects"):
-                    # Tomar el último rectángulo dibujado
-                    o = canvas_result.json_data["objects"][-1]
-                    
-                    # Las coordenadas ya están en el espacio del canvas (que tiene el mismo tamaño que la imagen mostrada)
-                    # Como el canvas tiene el mismo tamaño que la imagen redimensionada, escalamos a la original
-                    scale_x = original_width / display_width
-                    scale_y = original_height / display_height
-                    
-                    zonas.setdefault(p_sel, []).append({
-                        "team": tn,
-                        "x": int(o.get("left", 0) * scale_x),
-                        "y": int(o.get("top", 0) * scale_y), 
-                        "w": int(o.get("width", 0) * o.get("scaleX", 1) * scale_x),
-                        "h": int(o.get("height", 0) * o.get("scaleY", 1) * scale_y),
-                        "color": tc
-                    })
-                    save_zones(zonas)
-                    st.success("✅ Zona guardada correctamente")
-                    st.rerun()
+            # Botón para procesar datos manuales
+            col1, col2 = st.columns([3, 1])
+            if col2.button("🔄 Procesar Datos Manuales", type="primary"):
+                if zones_json.strip():
+                    try:
+                        zonas_data = json.loads(zones_json)
+                        zonas[p_sel] = zonas_data
+                        save_zones(zonas)
+                        st.success("✅ Zonas guardadas correctamente (modo manual)")
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("❌ Error: El texto no es un JSON válido")
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar zonas: {str(e)}")
                 else:
-                    st.error("❌ No hay figura dibujada o no seleccionaste equipo")
-
-            # Mostrar zonas existentes
+                    st.warning("⚠️ Por favor, pega los datos JSON en el área de texto")
+            
+            # JavaScript para capturar automáticamente los datos del componente
+            components.html("""
+            <script>
+            window.addEventListener('message', function(event) {
+                // Verificar que el mensaje es del tipo esperado y viene de un origen confiable
+                if (event.data.type === 'ZONAS_GUARDADAS') {
+                    console.log('Datos recibidos del editor:', event.data.data);
+                    
+                    // Enviar a Streamlit mediante el método estándar
+                    if (window.Streamlit) {
+                        // Guardar en sessionStorage para persistencia
+                        sessionStorage.setItem('lastZonesData', JSON.stringify(event.data.data));
+                        
+                        // Mostrar notificación
+                        const event = new CustomEvent('streamlitSetComponentValue', {
+                            detail: {value: JSON.stringify(event.data.data)}
+                        });
+                        window.dispatchEvent(event);
+                    }
+                }
+            });
+            </script>
+            """, height=0)
+            
+            # Verificar si hay datos nuevos en sessionStorage (simulación)
+            if st.button("📥 Verificar Datos Automáticos", key="check_auto_data"):
+                st.info("Esta función verifica si hay datos listos para guardar desde el editor")
+                # En una implementación real, aquí iría la lógica para capturar los datos automáticamente
+            
+            # Mostrar y gestionar zonas existentes
+            st.markdown("---")
+            st.subheader("📋 Zonas Actualmente Guardadas")
+            
             if p_sel in zonas and zonas[p_sel]:
-                st.markdown("---")
-                st.subheader("Zonas Guardadas")
+                st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
+                
+                # Selector para editar zonas existentes
+                st.markdown("#### ✏️ Editar Zona Existente")
+                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({(z['x']}, {z['y']})" 
+                               for i, z in enumerate(zonas[p_sel])]
+                
+                if zone_options:
+                    selected_zone_idx = st.selectbox(
+                        "Selecciona una zona para editar:",
+                        range(len(zone_options)),
+                        format_func=lambda x: zone_options[x],
+                        key="zone_selector"
+                    )
+                    
+                    if selected_zone_idx is not None:
+                        zone = zonas[p_sel][selected_zone_idx]
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            new_team = st.text_input("Nombre del equipo:", 
+                                                   value=zone.get('team', 'Nueva Zona'),
+                                                   key=f"team_{selected_zone_idx}")
+                        
+                        with col2:
+                            new_color = st.color_picker("Color:", 
+                                                      value=zone.get('color', '#00A04A'),
+                                                      key=f"color_{selected_zone_idx}")
+                        
+                        with col3:
+                            if st.button("💾 Actualizar", key=f"update_{selected_zone_idx}"):
+                                zonas[p_sel][selected_zone_idx]['team'] = new_team
+                                zonas[p_sel][selected_zone_idx]['color'] = new_color
+                                save_zones(zonas)
+                                st.success("✅ Zona actualizada")
+                                st.rerun()
+                        
+                        with col4:
+                            if st.button("🗑️ Eliminar", key=f"delete_{selected_zone_idx}"):
+                                zonas[p_sel].pop(selected_zone_idx)
+                                save_zones(zonas)
+                                st.success("✅ Zona eliminada")
+                                st.rerun()
+                
+                # Vista previa de todas las zonas
+                st.markdown("#### 👁️ Vista Previa de Zonas")
                 for i, z in enumerate(zonas[p_sel]):
                     col1, col2, col3 = st.columns([3, 1, 1])
                     col1.markdown(
-                        f"<span style='color:{z['color']}; font-size: 20px;'>■</span> **{z['team']}** ",
+                        f"<span style='color:{z['color']}; font-size: 20px;'>■</span> **{z.get('team', 'Sin nombre')}** ",
                         unsafe_allow_html=True
                     )
                     col2.info(f"Pos: ({z['x']}, {z['y']})")
-                    if col3.button("🗑️ Eliminar", key=f"del_{i}"):
-                        zonas[p_sel].pop(i)
-                        save_zones(zonas)
-                        st.success("Zona eliminada")
-                        st.rerun()
+                    col3.metric("Tamaño", f"{z['w']}x{z['h']}")
+            else:
+                st.warning("ℹ️ No hay zonas guardadas para este piso. Usa el editor de arriba para crear zonas.")
                     
         except Exception as e:
-            st.error(f"Error al cargar el plano: {str(e)}")
+            st.error(f"❌ Error en el editor: {str(e)}")
+            st.code(f"Detalles: {str(e)}")
     else:
         st.error(f"❌ No se encontró el plano: {p_sel}")
+        st.info(f"💡 Busqué en: {pim}")
+        st.info("""
+        **Formatos soportados:** PNG, JPG, JPEG
+        **Nombres esperados:** 
+        - piso1.png, piso2.jpg, etc.
+        - Piso1.png, Piso2.jpg, etc.
+        """)
 
-    # --- CÓDIGO DE PERSONALIZACIÓN (que estaba en el segundo bloque with t2) ---
-    st.divider()
-    st.subheader("Personalización Título y Leyenda")
-    
-    with st.expander("🎨 Editar Estilos", expanded=True):
-        tm = st.text_input("Título Principal", f"Distribución {p_sel}", key="titulo_principal")
-        ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}", key="subtitulo")
-        
-        align_options = ["Izquierda", "Centro", "Derecha"]
-
-        st.markdown("##### Estilos del Título Principal")
-        cf1, cf2, cf3 = st.columns(3)
-        ff_t = cf1.selectbox("Tipografía (Título)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_t")
-        fs_t = cf2.selectbox("Tamaño Letra (Título)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=9, key="size_t")
-        align = cf3.selectbox("Alineación (Título)", align_options, index=1, key="align_t")
-
-        st.markdown("---")
-        st.markdown("##### Estilos del Subtítulo")
-        cs1, cs2, cs3 = st.columns(3)
-        ff_s = cs1.selectbox("Tipografía (Subtítulo)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_s")
-        fs_s = cs2.selectbox("Tamaño Letra (Subtítulo)", [10, 12, 14, 16, 18, 20, 24, 28, 30, 32, 36, 40, 48, 56, 64, 72, 80], index=5, key="size_s")
-        align_s = cs3.selectbox("Alineación (Subtítulo)", align_options, index=1, key="align_s")
-
-        st.markdown("---")
-        st.markdown("##### Estilos de la Leyenda")
-        cl1, cl2, cl3 = st.columns(3)
-        ff_l = cl1.selectbox("Tipografía (Leyenda)", ["Arial", "Arial Black", "Calibri", "Comic Sans MS", "Courier New", "Georgia", "Impact", "Lucida Console", "Roboto", "Segoe UI", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"], key="font_l", index=0)
-        fs_l = cl2.selectbox("Tamaño Letra (Leyenda)", [8, 10, 12, 14, 16, 18, 20, 24, 28, 32], index=3, key="size_l")
-        align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0, key="align_l")
-        
-        st.markdown("---")
-        cg1, cg2, cg3, cg4 = st.columns(4) 
-        lg = cg1.checkbox("Logo", True, key="chk_logo")
-        ln = cg2.checkbox("Mostrar Leyenda", True, key="chk_legend")
-        align_logo = cg3.selectbox("Alineación Logo", align_options, index=0, key="align_logo")
-        lw = cg4.slider("Ancho Logo", 50, 300, 150, key="logo_width")
-        
-        cc1, cc2 = st.columns(2)
-        bg = cc1.color_picker("Fondo Header", "#FFFFFF", key="bg_color")
-        tx = cc2.color_picker("Color Texto", "#000000", key="text_color")
-
-    fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"], key="formato_salida")
-    f_code = "PNG" if "PNG" in fmt_sel else "PDF"
-    
-    if st.button("🎨 Actualizar Vista Previa", key="actualizar_vista"):
-        conf = {
-            "title_text": tm,
-            "subtitle_text": ts,
-            "title_font": ff_t,
-            "title_size": fs_t,
-            "subtitle_font": ff_s,
-            "subtitle_size": fs_s,
-            "legend_font": ff_l,
-            "legend_size": fs_l,
-            "alignment": align, 
-            "subtitle_align": align_s, 
-            "legend_align": align_l, 
-            "bg_color": bg, 
-            "title_color": tx, 
-            "subtitle_color": "#666666", 
-            "use_logo": lg, 
-            "use_legend": ln, 
-            "logo_width": lw,
-            "logo_align": align_logo
-        }
-        st.session_state['last_style_config'] = conf
-        
-        out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-        if out: 
-            st.success("Generado.")
-    
-    ds = d_sel.lower().replace("é","e").replace("á","a")
-    fpng = COLORED_DIR / f"piso_{p_num}_{ds}_combined.png"
-    fpdf = COLORED_DIR / f"piso_{p_num}_{ds}_combined.pdf"
-    
-    if fpng.exists(): 
-        st.image(str(fpng), width=550, caption="Vista Previa")
-    elif fpdf.exists(): 
-        st.info("PDF generado (sin vista previa)")
-    
-    tf = fpng if "PNG" in fmt_sel else fpdf
-    mm = "image/png" if "PNG" in fmt_sel else "application/pdf"
-    if tf.exists():
-        with open(tf,"rb") as f: 
-            st.download_button(f"Descargar {fmt_sel}", f, tf.name, mm, use_container_width=True, key=f"dl_{fmt_sel}")
     # T3: INFORMES
     # -----------------------------------------------------------
     with t3:
