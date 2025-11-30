@@ -1399,8 +1399,8 @@ with t2:
                 
                 # Selector para editar zonas existentes
                 st.markdown("#### ✏️ Editar Zona Existente")
-                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({(z['x']}, {z['y']})" 
-                               for i, z in enumerate(zonas[p_sel])]
+                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')} ({z['x']}, {z['y']})" 
+                            for i, z in enumerate(zonas[p_sel])]
                 
                 if zone_options:
                     selected_zone_idx = st.selectbox(
@@ -1416,13 +1416,13 @@ with t2:
                         
                         with col1:
                             new_team = st.text_input("Nombre del equipo:", 
-                                                   value=zone.get('team', 'Nueva Zona'),
-                                                   key=f"team_{selected_zone_idx}")
+                                                value=zone.get('team', 'Nueva Zona'),
+                                                key=f"team_{selected_zone_idx}")
                         
                         with col2:
                             new_color = st.color_picker("Color:", 
-                                                      value=zone.get('color', '#00A04A'),
-                                                      key=f"color_{selected_zone_idx}")
+                                                    value=zone.get('color', '#00A04A'),
+                                                    key=f"color_{selected_zone_idx}")
                         
                         with col3:
                             if st.button("💾 Actualizar", key=f"update_{selected_zone_idx}"):
