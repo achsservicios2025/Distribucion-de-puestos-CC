@@ -578,38 +578,38 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                 }}
                 
                 function saveZones() {{
-                    // Guardar automáticamente en localStorage
-                    const zonesData = JSON.stringify(rectangles);
-                    localStorage.setItem('zones_save_' + '{p_sel}', zonesData);
+                    // Guardar automáticamente - enviar directamente a Streamlit
+                    const zonesData = rectangles;
                     
-                    // Copiar al portapapeles también para respaldo
-                    const textArea = document.createElement('textarea');
-                    textArea.value = JSON.stringify(rectangles, null, 2);
-                    textArea.style.position = 'fixed';
-                    textArea.style.left = '-999999px';
-                    document.body.appendChild(textArea);
-                    textArea.select();
-                    
-                    try {{
-                        document.execCommand('copy');
-                        alert('✅ Zonas guardadas! (' + rectangles.length + ' zonas)\\n\\nHaz clic en "💾 Guardar desde Editor" en Streamlit para confirmar.\\n\\n(El JSON también se copió al portapapeles)');
-                    }} catch (err) {{
-                        alert('✅ Zonas guardadas! (' + rectangles.length + ' zonas)\\n\\nHaz clic en "💾 Guardar desde Editor" en Streamlit.');
+                    // Enviar a Streamlit usando postMessage
+                    if (window.parent) {{
+                        window.parent.postMessage({{
+                            type: 'zones_saved',
+                            piso: '{p_sel}',
+                            zones: zonesData
+                        }}, '*');
+                        
+                        alert('✅ Zonas guardadas automáticamente! (' + rectangles.length + ' zonas)\\n\\nLa página se actualizará en un momento.');
+                    }} else {{
+                        alert('✅ Zonas listas para guardar! (' + rectangles.length + ' zonas)');
                     }}
-                    
-                    document.body.removeChild(textArea);
                 }}
                 
-                // Auto-guardar cuando se dibuja un rectángulo (guardar en localStorage)
-                const originalMouseUp = canvas.onmouseup;
+                // Auto-guardar cuando se dibuja un rectángulo
                 canvas.addEventListener('mouseup', function(e) {{
-                    // Después de que se procese el evento original, guardar automáticamente
-                    setTimeout(() => {{
-                        if (rectangles.length > 0) {{
-                            const zonesData = JSON.stringify(rectangles);
-                            localStorage.setItem('zones_auto_save_' + '{p_sel}', zonesData);
-                        }}
-                    }}, 300);
+                    // Después de dibujar, auto-guardar después de un breve delay
+                    if (isDrawing && currentRect && Math.abs(currentRect.w) > 10 && Math.abs(currentRect.h) > 10) {{
+                        setTimeout(() => {{
+                            // Auto-guardar silenciosamente
+                            if (window.parent && rectangles.length > 0) {{
+                                window.parent.postMessage({{
+                                    type: 'zones_saved',
+                                    piso: '{p_sel}',
+                                    zones: rectangles
+                                }}, '*');
+                            }}
+                        }}, 500);
+                    }}
                 }});
                 
                 // Mostrar coordenadas al mover el mouse
@@ -980,8 +980,12 @@ if menu == "Vista pública":
                     mim = "image/png" if "PNG" in sf else "application/pdf"
                     with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True, key=f"dl_btn_{p_sel}_{ds}")
                 else:
-                    if has_zones:
-                        st.warning(f"⚠️ Hay {len(zonas[p_sel])} zonas guardadas para {p_sel}, pero el plano no está generado.")
+                    # Recargar zonas para verificar
+                    zonas_check = load_zones()
+                    has_zones_check = p_sel in zonas_check and zonas_check[p_sel] and len(zonas_check[p_sel]) > 0
+                    
+                    if has_zones_check:
+                        st.warning(f"⚠️ Hay {len(zonas_check[p_sel])} zonas guardadas para {p_sel}, pero el plano no está generado.")
                         st.info(f"💡 Ve a 'Editor Visual de Zonas' → 'Generar Planos' y haz clic en '🎨 Generar Vista Previa' para crear el plano.")
                     else:
                         st.warning(f"⚠️ No hay planos generados para {p_sel} - {ds}.")
@@ -1465,29 +1469,63 @@ elif menu == "Administrador":
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                     
-                    # Área para recibir JSON del componente
-                    zones_json_input = st.text_area(
-                        "JSON de zonas (copia desde el editor cuando guardes):",
-                        value=json.dumps(existing_zones, indent=2),
-                        height=100,
-                        key=f"zones_json_input_{p_sel}",
-                        help="Cuando guardes en el editor, copia el JSON que aparece y pégalo aquí"
+                    # Campo oculto para recibir datos del componente (completamente invisible)
+                    zones_json_hidden = st.text_input(
+                        "",
+                        value=json.dumps(existing_zones),
+                        key=f"zones_json_hidden_{p_sel}",
+                        label_visibility="collapsed"
                     )
                     
-                    # Botón para guardar desde el JSON
-                    if st.button("💾 Guardar Zonas", key=f"save_zones_{p_sel}", type="primary"):
-                        try:
-                            zones_data = json.loads(zones_json_input)
-                            zonas[p_sel] = zones_data
-                            save_zones(zonas)
-                            st.success(f"✅ {len(zones_data)} zonas guardadas correctamente")
-                            st.rerun()
-                        except json.JSONDecodeError:
-                            st.error("❌ Error: El JSON no es válido. Asegúrate de copiar el JSON completo del editor.")
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
+                    # Script para detectar cuando se guarda desde el componente y guardar automáticamente
+                    auto_save_script = f"""
+                    <script>
+                    // Escuchar mensajes del componente HTML
+                    window.addEventListener('message', function(event) {{
+                        if (event.data && event.data.type === 'zones_saved' && event.data.piso === '{p_sel}') {{
+                            // Actualizar el campo oculto con los datos
+                            const hiddenInput = document.querySelector('input[data-testid*="zones_json_hidden_{p_sel}"]');
+                            if (hiddenInput) {{
+                                hiddenInput.value = JSON.stringify(event.data.zones);
+                                hiddenInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                hiddenInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                
+                                // Recargar la página para que Streamlit procese
+                                setTimeout(() => {{
+                                    window.location.reload();
+                                }}, 500);
+                            }}
+                        }}
+                    }}, false);
+                    </script>
+                    """
+                    st.markdown(auto_save_script, unsafe_allow_html=True)
                     
-                    st.info("💡 **Instrucciones:** 1) Dibuja zonas en el editor 2) Haz clic en '💾 Guardar Zonas' en el editor 3) Copia el JSON que aparece 4) Pégalo arriba 5) Haz clic en '💾 Guardar Zonas'")
+                    # Procesar guardado automático cuando cambia el campo oculto
+                    auto_save_key = f"auto_save_trigger_{p_sel}"
+                    if auto_save_key in st.session_state and st.session_state[auto_save_key]:
+                        try:
+                            zones_data = json.loads(zones_json_hidden)
+                            if zones_data:
+                                zonas[p_sel] = zones_data
+                                save_zones(zonas)
+                                st.success(f"✅ {len(zones_data)} zonas guardadas automáticamente!")
+                                st.session_state[auto_save_key] = False
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error al guardar automáticamente: {str(e)}")
+                            st.session_state[auto_save_key] = False
+                    
+                    # Detectar cambios en el campo oculto
+                    try:
+                        zones_data = json.loads(zones_json_hidden)
+                        if zones_data != existing_zones and len(zones_data) > 0:
+                            # Marcar para guardar en el siguiente rerun
+                            st.session_state[auto_save_key] = True
+                    except:
+                        pass
+                    
+                    st.info("💡 **Guardado Automático:** Dibuja zonas y haz clic en '💾 Guardar Zonas' en el editor. Las zonas se guardarán automáticamente.")
                             
                 except Exception as e:
                     st.error(f"❌ Error en el editor: {str(e)}")
@@ -1672,18 +1710,30 @@ elif menu == "Administrador":
         
         # Generar automáticamente al cambiar opciones
         if st.button("🎨 Generar Vista Previa", key=f"preview_{p_sel}", type="primary"):
+            # Recargar zonas antes de generar para asegurar que tenemos los datos más recientes
+            zonas_check = load_zones()
+            has_zones_for_piso = p_sel in zonas_check and zonas_check[p_sel] and len(zonas_check[p_sel]) > 0
+            
             if not has_zones_for_piso:
                 st.error("❌ No se puede generar el plano sin zonas. Crea zonas primero en 'Editor Visual de Zonas'.")
             else:
                 try:
+                    # Asegurar que tenemos los datos más recientes
+                    current_seats_dict = {}
+                    if not df_d.empty:
+                        subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
+                        current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
+                    
                     out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-                    if out: 
-                        st.success(f"✅ Vista previa generada correctamente en: {out}")
+                    if out and Path(out).exists(): 
+                        st.success(f"✅ Vista previa generada correctamente!")
                         st.rerun()
                     else:
-                        st.error("❌ Error al generar el plano. Verifica que las zonas estén guardadas correctamente.")
+                        st.error(f"❌ Error al generar el plano. Zonas encontradas: {len(zonas_check.get(p_sel, []))}. Verifica que las zonas estén guardadas correctamente.")
                 except Exception as e:
                     st.error(f"❌ Error al generar el plano: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
         
         # Mostrar vista previa si existe
         ds = d_sel.lower().replace("é","e").replace("á","a")
