@@ -78,6 +78,7 @@ from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
 from streamlit_drawable_canvas import st_canvas
 import streamlit.components.v1 as components
+from streamlit_zone_editor import zone_editor
 
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
@@ -1407,24 +1408,36 @@ elif menu == "Administrador":
                     if st.button("🔄 Actualizar Editor con Equipo/Color Seleccionado", key=f"update_editor_{p_sel}"):
                         st.rerun()
                     
-                    # Mostrar componente de dibujo mejorado
+                    # Mostrar componente de dibujo mejorado con guardado automático
                     st.markdown("### 🎨 Herramientas de Dibujo")
-                    drawing_component = create_enhanced_drawing_component(
-                        str(pim), 
-                        existing_zones, 
-                        selected_team=selected_team,
-                        selected_color=selected_color,
-                        width=600
-                    )
-                    
-                    if drawing_component is None:
-                        st.error("❌ No se pudo cargar el componente de dibujo")
                     
                     # Mostrar información actual
                     if selected_team:
                         st.info(f"🎨 **Equipo seleccionado:** {selected_team} | **Color:** {selected_color}")
                     else:
                         st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
+                    
+                    # Usar el componente personalizado con guardado automático
+                    component_result = zone_editor(
+                        img_path=str(pim),
+                        existing_zones=existing_zones,
+                        selected_team=selected_team,
+                        selected_color=selected_color,
+                        width=600,
+                        key=f"zone_editor_{p_sel}"
+                    )
+                    
+                    # Procesar resultado del componente (guardado automático)
+                    if component_result and component_result.get('action') == 'save':
+                        try:
+                            zones_data = component_result.get('zones', [])
+                            if zones_data:
+                                zonas[p_sel] = zones_data
+                                save_zones(zonas)
+                                st.success(f"✅ {len(zones_data)} zonas guardadas automáticamente!")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error al guardar zonas: {str(e)}")
                     
                     # Botones de acción
                     col_btn1, col_btn2 = st.columns(2)
@@ -1444,35 +1457,7 @@ elif menu == "Administrador":
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                     
-                    # Sistema de guardado automático - el componente guarda directamente
-                    # Agregar script para leer desde localStorage y guardar automáticamente
-                    auto_save_script = f"""
-                    <script>
-                    // Leer zonas desde localStorage cuando la página carga
-                    window.addEventListener('load', function() {{
-                        const savedZones = localStorage.getItem('zones_save_{p_sel}');
-                        if (savedZones) {{
-                            // Las zonas están guardadas, Streamlit las leerá automáticamente
-                            console.log('Zonas encontradas en localStorage:', savedZones);
-                        }}
-                    }});
-                    </script>
-                    """
-                    st.markdown(auto_save_script, unsafe_allow_html=True)
-                    
-                    # Botón para guardar automáticamente desde localStorage
-                    if st.button("💾 Guardar Zonas Automáticamente", key=f"auto_save_{p_sel}", type="primary"):
-                        # Intentar leer desde el componente usando JavaScript
-                        st.info("💡 Haz clic en '💾 Guardar Zonas' en el editor primero, luego vuelve a hacer clic en este botón para guardar automáticamente.")
-                        
-                        # Recargar zonas desde archivo por si el componente las guardó
-                        zonas = load_zones()
-                        if p_sel in zonas and zonas[p_sel]:
-                            st.success(f"✅ {len(zonas[p_sel])} zonas encontradas y guardadas")
-                        else:
-                            st.warning("⚠️ No se encontraron zonas guardadas. Asegúrate de hacer clic en '💾 Guardar Zonas' en el editor primero.")
-                    
-                    st.info("💡 **Guardado Automático:** 1) Dibuja zonas 2) Haz clic en '💾 Guardar Zonas' en el editor 3) Haz clic en '💾 Guardar Zonas Automáticamente' arriba")
+                    st.info("💡 **Guardado Automático:** Dibuja zonas y haz clic en '💾 Guardar Zonas' en el editor. Las zonas se guardarán automáticamente sin necesidad de copiar/pegar.")
                             
                 except Exception as e:
                     st.error(f"❌ Error en el editor: {str(e)}")
@@ -1648,12 +1633,27 @@ elif menu == "Administrador":
             subset = df_d[(df_d['piso'] == p_sel) & (df_d['dia'] == d_sel)]
             current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
         
+        # Verificar que hay zonas guardadas antes de generar
+        zonas_check = load_zones()
+        has_zones_for_piso = p_sel in zonas_check and zonas_check[p_sel] and len(zonas_check[p_sel]) > 0
+        
+        if not has_zones_for_piso:
+            st.warning(f"⚠️ No hay zonas guardadas para {p_sel}. Ve a 'Editor Visual de Zonas' para crear zonas primero.")
+        
         # Generar automáticamente al cambiar opciones
         if st.button("🎨 Generar Vista Previa", key=f"preview_{p_sel}", type="primary"):
-            out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-            if out: 
-                st.success("✅ Vista previa generada correctamente")
-                st.rerun()
+            if not has_zones_for_piso:
+                st.error("❌ No se puede generar el plano sin zonas. Crea zonas primero en 'Editor Visual de Zonas'.")
+            else:
+                try:
+                    out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
+                    if out: 
+                        st.success(f"✅ Vista previa generada correctamente en: {out}")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error al generar el plano. Verifica que las zonas estén guardadas correctamente.")
+                except Exception as e:
+                    st.error(f"❌ Error al generar el plano: {str(e)}")
         
         # Mostrar vista previa si existe
         ds = d_sel.lower().replace("é","e").replace("á","a")
