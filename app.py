@@ -481,7 +481,7 @@ else:
 
 
 def create_drawing_component(img_path, existing_zones, width=700):
-    """Componente profesional de dibujo - VERSIÓN CORREGIDA"""
+    """Componente profesional de dibujo - VERSIÓN CORREGIDA Y MEJORADA"""
     
     try:
         # Convertir imagen a base64
@@ -503,6 +503,10 @@ def create_drawing_component(img_path, existing_zones, width=700):
         
         existing_zones_json = json.dumps(safe_zones)
         
+        # CORRECCIÓN: Usar el parámetro width directamente
+        canvas_width = width
+        html_height = 800  # Altura fija para el componente
+        
         # HTML/JS Componente de dibujo profesional CORREGIDO
         html_code = f'''
         <!DOCTYPE html>
@@ -518,7 +522,7 @@ def create_drawing_component(img_path, existing_zones, width=700):
                     background: #f8f9fa;
                 }}
                 .editor-container {{
-                    max-width: {width}px;
+                    max-width: {canvas_width}px;
                     margin: 0 auto;
                     background: white;
                     border-radius: 10px;
@@ -561,11 +565,13 @@ def create_drawing_component(img_path, existing_zones, width=700):
                     display: flex;
                     justify-content: center;
                     align-items: center;
+                    padding: 10px;
                 }}
                 #drawingCanvas {{
                     display: block;
                     cursor: crosshair;
                     border: 1px solid #ccc;
+                    max-width: 100%;
                 }}
                 .status-panel {{
                     padding: 15px 20px;
@@ -643,7 +649,7 @@ def create_drawing_component(img_path, existing_zones, width=700):
                 let startX, startY, currentX, currentY;
                 let rectangles = {existing_zones_json};
                 let currentRect = null;
-                let canvasWidth = {width};
+                let canvasWidth = {canvas_width};
                 let canvasHeight = 0;
 
                 // CORRECCIÓN PRINCIPAL: Calcular dimensiones del canvas cuando la imagen cargue
@@ -713,15 +719,20 @@ def create_drawing_component(img_path, existing_zones, width=700):
                     showStatus('🎯 Modo dibujo activado: Haz clic y arrastra para dibujar un rectángulo', 'success');
                 }}
 
-                // CORRECCIÓN: Obtener coordenadas relativas al canvas correctamente
+                // CORRECCIÓN MEJORADA: Obtener coordenadas relativas al canvas correctamente
                 function getCanvasCoordinates(e) {{
                     const rect = canvas.getBoundingClientRect();
+                    // Usar pageX/pageY para mayor precisión cross-browser
+                    const x = (e.pageX - rect.left - window.pageXOffset);
+                    const y = (e.pageY - rect.top - window.pageYOffset);
+                    
+                    // Escalar según las dimensiones reales del canvas
                     const scaleX = canvas.width / rect.width;
                     const scaleY = canvas.height / rect.height;
                     
                     return {{
-                        x: (e.clientX - rect.left) * scaleX,
-                        y: (e.clientY - rect.top) * scaleY
+                        x: x * scaleX,
+                        y: y * scaleY
                     }};
                 }}
 
@@ -830,15 +841,25 @@ def create_drawing_component(img_path, existing_zones, width=700):
                             `X: ${{Math.round(coords.x)}}, Y: ${{Math.round(coords.y)}}`;
                     }}
                 }});
+
+                // Inicializar cuando el DOM esté listo
+                document.addEventListener('DOMContentLoaded', function() {{
+                    if (img.complete) {{
+                        img.onload();
+                    }}
+                }});
             </script>
         </body>
         </html>
         '''
         
-        return components.html(html_code, width=canvasWidth + 50, height=800, scrolling=False)
+        # CORRECCIÓN: Usar variables locales definidas
+        return components.html(html_code, width=canvas_width + 50, height=html_height, scrolling=False)
         
     except Exception as e:
         st.error(f"Error al crear el componente de dibujo: {str(e)}")
+        import traceback
+        st.code(f"Detalles del error: {traceback.format_exc()}")
         return None
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
@@ -1501,9 +1522,9 @@ with t2:
     # T3: INFORMES
     # -----------------------------------------------------------
 with t3:
-        st.subheader("Generar Reportes de Distribución")
+    st.subheader("Generar Reportes de Distribución")
         
-        if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
+    if 'deficit_report' in st.session_state and st.session_state['deficit_report']:
             st.markdown("---")
             st.error("🚨 INFORME DE DÉFICIT DE CUPOS")
             
@@ -1518,8 +1539,8 @@ with t3:
             st.dataframe(df_deficit, hide_index=True, width='stretch')
             st.markdown("---")
 
-        rf = st.selectbox("Formato Reporte", ["Excel", "PDF"], key="formato_reporte")
-        if st.button("Generar Reporte", key="generar_reporte"):
+    rf = st.selectbox("Formato Reporte", ["Excel", "PDF"], key="formato_reporte")
+    if st.button("Generar Reporte", key="generar_reporte"):
             df_raw = read_distribution_df(conn); df_raw = apply_sorting_to_df(df_raw)
             if "Excel" in rf:
                 b = BytesIO()
@@ -1531,19 +1552,19 @@ with t3:
                 st.session_state['rd'] = generate_full_pdf(df, df, logo_path=Path(global_logo_path), deficit_data=d_data)
                 st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
             st.success("OK")
-        if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="descargar_reporte")
+            if 'rd' in st.session_state: st.download_button("Descargar", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="descargar_reporte")
         
-        st.markdown("---")
-        cp, cd = st.columns(2)
-        pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
-        if di=="Todos":
-            if st.button("Generar Dossier", key="generar_dossier"):
+            st.markdown("---")
+            cp, cd = st.columns(2)
+            pi = cp.selectbox("Piso", pisos_list, key="pi2"); di = cd.selectbox("Día", ["Todos"]+ORDER_DIAS, key="di2")
+            if di=="Todos":
+                if st.button("Generar Dossier", key="generar_dossier"):
                 # CAMBIO: Pasar conn y logo para regenerar
-                m = create_merged_pdf(pi, conn, global_logo_path)
+                    m= create_merged_pdf(pi, conn, global_logo_path)
                 if m: st.session_state['dos'] = m; st.success("OK")
             if 'dos' in st.session_state: st.download_button("Descargar Dossier", st.session_state['dos'], "S.pdf", "application/pdf", key="descargar_dossier")
-        else:
-            ds = di.lower().replace("é","e").replace("á","a")
+            else:
+                ds = di.lower().replace("é","e").replace("á","a")
             fp = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.png"
             fd = COLORED_DIR / f"piso_{pi.split()[-1]}_{ds}_combined.pdf"
             ops = []
@@ -1561,8 +1582,8 @@ with t3:
     # T4: CONFIG
     # -----------------------------------------------------------
 with t4:
-        nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
-        if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
+    nu = st.text_input("User", key="admin_user"); np = st.text_input("Pass", type="password", key="admin_pass"); ne = st.text_input("Email", key="admin_email")
+    if st.button("Guardar", key="sc"): save_setting(conn, "admin_user", nu); save_setting(conn, "admin_pass", np); save_setting(conn, "admin_email", ne); st.success("OK")
 
     # -----------------------------------------------------------
     # T5: APARIENCIA
@@ -1573,8 +1594,8 @@ with t5: admin_appearance_ui(conn)
     # T6: MANTENIMIENTO
     # -----------------------------------------------------------
 with t6:
-        opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
+    opt = st.radio("Borrar:", ["Reservas", "Distribución", "Planos/Zonas", "TODO"], key="opcion_borrar")
         # SOLO UN BOTÓN - ELIMINA LA LÍNEA DUPLICADA
-        if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
-            msg = perform_granular_delete(conn, opt); 
-            st.success(msg)
+    if st.button("BORRAR", type="primary", key="borrar_mantenimiento"): 
+        msg = perform_granular_delete(conn, opt); 
+        st.success(msg)
