@@ -944,9 +944,9 @@ elif menu == "Administrador":
     # T2: EDITOR VISUAL
     # -----------------------------------------------------------
     with t2:
-    st.info("Editor de Zonas")
-    zonas = load_zones()
-    c1, c2 = st.columns(2)
+        st.info("Editor de Zonas")
+        zonas = load_zones()
+        c1, c2 = st.columns(2)
     
     # MODIFICADO: Leer con funcion importada
     df_d = read_distribution_df(conn)
