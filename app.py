@@ -280,11 +280,16 @@ def filter_minimum_deficits(deficit_list):
     filtered = []
     for item in deficit_list or []:
         try:
-            minimo = int(item.get("minimo", 0))
-            asignado = int(item.get("asignado", 0))
+            minimo = int(str(item.get("minimo", 0)).strip())
+            asignado = int(str(item.get("asignado", 0)).strip())
         except (TypeError, ValueError):
             continue
-        if asignado < minimo:
+        deficit_val = minimo - asignado
+        if deficit_val > 0:
+            item = dict(item)
+            item["minimo"] = minimo
+            item["asignado"] = asignado
+            item["deficit"] = deficit_val
             filtered.append(item)
     return filtered
 
