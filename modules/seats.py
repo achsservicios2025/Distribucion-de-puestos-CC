@@ -1671,6 +1671,7 @@ elif menu == "Administrador":
 
             st.markdown("---")
             st.markdown("### 🔧 Herramientas de Justicia")
+            st.caption("💡 **Probar otra suerte:** Genera una nueva variación aleatoria | **Auto-Optimizar:** Prueba 20 variaciones y elige la más equitativa | **Guardar Definitivo:** Guarda la distribución actual en la base de datos")
             
             c_actions = st.columns([1, 1, 1])
             
@@ -1939,12 +1940,23 @@ elif menu == "Administrador":
                     if st.button("💾 Guardar Zonas Manualmente", key=f"manual_save_{p_sel}"):
                         try:
                             zones_data = json.loads(zones_json_hidden)
-                            zonas[p_sel] = zones_data
-                            save_zones(zonas)
-                            st.success(f"✅ {len(zones_data)} zonas guardadas manualmente!")
-                            st.rerun()
+                            if isinstance(zones_data, list):
+                                zonas[p_sel] = zones_data
+                                save_zones(zonas)
+                                # Actualizar session_state
+                                st.session_state[last_zones_key] = json.dumps(zones_data, sort_keys=True)
+                                st.success(f"✅ {len(zones_data)} zonas guardadas manualmente!")
+                                # Recargar zonas
+                                zonas = load_zones()
+                                st.rerun()
+                            else:
+                                st.error("Formato de datos inválido")
+                        except json.JSONDecodeError as e:
+                            st.error(f"Error al parsear JSON: {e}")
                         except Exception as e:
                             st.error(f"Error al guardar: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
                     
                     st.info("💡 **Guardado Automático:** Dibuja zonas y haz clic en '💾 Guardar Zonas' en el editor. Las zonas se guardarán automáticamente.")
                             
