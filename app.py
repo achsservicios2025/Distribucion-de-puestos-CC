@@ -1619,7 +1619,7 @@ elif menu == "Administrador":
 
     t1, t2, t3, t4, t5, t6 = st.tabs(["Excel", "Editor Visual", "Informes", "Config", "Apariencia", "Mantenimiento"])
     
-# -----------------------------------------------------------
+    # -----------------------------------------------------------
     # T1: GENERADOR DE DISTRIBUCIÓN
     # -----------------------------------------------------------
     with t1:
@@ -1636,7 +1636,7 @@ elif menu == "Administrador":
         )
 
         # Botón Inicial para arrancar el proceso
-        if st.button("🚀 Generar Distribución Inicial", type="primary"):
+        if st.button("🚀 Generar Distribución Inicial", type="primary", key="btn_init_process"):
             st.cache_data.clear()
             
             if up:
@@ -1687,7 +1687,7 @@ elif menu == "Administrador":
             c_regen, c_opt, c_save = st.columns([1, 1, 1])
             
             # 1. BOTÓN REGENERAR
-            if c_regen.button("🔄 Regenerar (Nueva Distribución)"):
+            if c_regen.button("🔄 Regenerar (Nueva Distribución)", key="btn_regenerate"):
                 with st.spinner("Calculando nueva opción..."):
                     # Volvemos a calcular una sola opción aleatoria
                     rows, deficit = get_distribution_proposal(
@@ -1703,7 +1703,7 @@ elif menu == "Administrador":
                 st.rerun()
 
             # 2. BOTÓN AUTO-OPTIMIZAR
-            if c_opt.button("✨ Auto-Optimizar (Buscar Equidad)"):
+            if c_opt.button("✨ Auto-Optimizar (Buscar Equidad)", key="btn_optimize"):
                 NUM_INTENTOS = 20 
                 progress_text = "Buscando la distribución más justa..."
                 my_bar = st.progress(0, text=progress_text)
@@ -1755,7 +1755,7 @@ elif menu == "Administrador":
                 st.rerun()
 
             # 3. BOTÓN GUARDAR
-            if c_save.button("💾 Guardar Definitivo", type="primary"):
+            if c_save.button("💾 Guardar Definitivo", type="primary", key="btn_save_db"):
                 try:
                     clear_distribution(conn)
                     insert_distribution(conn, st.session_state['proposal_rows'])
@@ -1774,7 +1774,7 @@ elif menu == "Administrador":
             if st.session_state.get('ideal_options'):
                 st.info("💡 Modo Ideal: Se generaron múltiples opciones. Selecciona la que prefieras:")
                 opts = st.session_state['ideal_options']
-                n_opt = st.selectbox("Selecciona opción:", range(len(opts)), format_func=lambda x: f"Opción {x+1}")
+                n_opt = st.selectbox("Selecciona opción:", range(len(opts)), format_func=lambda x: f"Opción {x+1}", key="sel_ideal_opt")
                 
                 if n_opt != st.session_state.get('selected_ideal_option', 0):
                     st.session_state['selected_ideal_option'] = n_opt
@@ -1800,136 +1800,6 @@ elif menu == "Administrador":
                     st.dataframe(pd.DataFrame(deficit_data), hide_index=True, use_container_width=True)
                 else:
                     st.success("✅ Distribución perfecta. No hay conflictos.")
-            
-            # --- SECCIÓN DE RESULTADOS ---
-            n_def = len(st.session_state['proposal_deficit']) if st.session_state['proposal_deficit'] else 0
-
-            if n_def == 0:
-                st.success("✅ **¡Distribución Perfecta!** 0 conflictos detectados.")
-            else:
-                st.warning(f"⚠️ **Distribución Actual:** {n_def} cupos faltantes en total.")
-
-            t_view, t_def = st.tabs(["📊 Distribución Visual", "🚨 Reporte de Conflictos"])
-            
-            with t_view:
-                df_preview = pd.DataFrame(st.session_state['proposal_rows'])
-                if not df_preview.empty:
-                    # CAMBIO: Mostrar tabla completa ocupando todo el ancho
-                    df_sorted = apply_sorting_to_df(df_preview)
-                    st.dataframe(df_sorted, hide_index=True, width=None, use_container_width=True)
-                else:
-                    st.warning("No se generaron asignaciones.")
-            
-            with t_def:
-                if st.session_state['proposal_deficit']:
-                    # Análisis de "Injusticia"
-                    def_df = pd.DataFrame(filter_minimum_deficits(st.session_state['proposal_deficit']))
-                    
-                    # Contamos cuántas veces aparece cada equipo en el reporte de déficit
-                    conteo_injusticia = def_df['equipo'].value_counts().reset_index()
-                    conteo_injusticia.columns = ['Equipo', 'Veces Perjudicado']
-                    
-                    # CORREGIDO: Tablas una arriba y otra abajo para mejor visualización
-                    st.markdown("**📊 Detalle de Conflictos:**")
-                    st.dataframe(def_df, hide_index=True, use_container_width=True)
-                    
-                    st.markdown("---")
-                    st.markdown("**⚠️ Equipos más afectados (Repetición):**")
-                    st.dataframe(conteo_injusticia, hide_index=True, use_container_width=True)
-                    
-                    if conteo_injusticia['Veces Perjudicado'].max() > 1:
-                        st.error("Hay equipos sufriendo déficit múltiples días. Se recomienda usar 'Auto-Optimizar'.")
-                else:
-                    st.info("Sin conflictos. Todos los equipos caben perfectamente.")
-
-            st.markdown("---")
-            st.markdown("### 🔧 Herramientas de Justicia")
-            st.caption("💡 **Probar otra suerte:** Genera una nueva variación aleatoria | **Auto-Optimizar:** Prueba 20 variaciones y elige la más equitativa | **Guardar Definitivo:** Guarda la distribución actual en la base de datos")
-            
-            c_actions = st.columns([1, 1, 1])
-            
-            # Botón 1: Regenerar simple
-            if c_actions[0].button("🔄 Probar otra suerte"):
-                with st.spinner("Generando nueva variación..."):
-                    rows, deficit = get_distribution_proposal(
-                        st.session_state['excel_equipos'], 
-                        st.session_state['excel_params'], 
-                        strategy=sel_strat_code
-                    )
-                    st.session_state['proposal_rows'] = rows
-                    st.session_state['proposal_deficit'] = filter_minimum_deficits(deficit)
-                    st.session_state['last_optimization_stats'] = None
-                st.rerun()
-
-            # Botón 2: AUTO-OPTIMIZAR JUSTICIA (LOGICA NUEVA)
-            if c_actions[1].button("✨ Auto-Optimizar (Buscar Equidad)"):
-                
-                NUM_INTENTOS = 20 
-                
-                progress_text = "Analizando múltiples escenarios para repartir la carga..."
-                my_bar = st.progress(0, text=progress_text)
-                
-                best_rows = None
-                best_deficit = None
-                
-                # Puntuación inicial (mientras más baja mejor)
-                min_unfairness_score = 999999 
-                min_total_conflicts = 999999
-                
-                for i in range(NUM_INTENTOS):
-                    # Siempre usamos random para explorar, independiente de lo seleccionado arriba
-                    r, d = get_distribution_proposal(st.session_state['excel_equipos'], st.session_state['excel_params'], strategy="random")
-                    
-                    current_conflicts = len(d) if d else 0
-                    
-                    # Calcular Score de Injusticia
-                    if d:
-                        equipos_afectados = [x['equipo'] for x in d]
-                        freqs = {x:equipos_afectados.count(x) for x in set(equipos_afectados)}
-                        unfairness_score = sum([val**2 for val in freqs.values()])
-                    else:
-                        unfairness_score = 0
-                    
-                    if unfairness_score < min_unfairness_score:
-                        min_unfairness_score = unfairness_score
-                        min_total_conflicts = current_conflicts
-                        best_rows = r
-                        best_deficit = d
-                    elif unfairness_score == min_unfairness_score:
-                        if current_conflicts < min_total_conflicts:
-                            min_total_conflicts = current_conflicts
-                            best_rows = r
-                            best_deficit = d
-                    
-                    my_bar.progress(int((i + 1) / NUM_INTENTOS * 100), text=f"Simulando escenario {i+1}/{NUM_INTENTOS}...")
-                
-                st.session_state['proposal_rows'] = best_rows
-                st.session_state['proposal_deficit'] = filter_minimum_deficits(best_deficit)
-                st.session_state['last_optimization_stats'] = {'iterations': NUM_INTENTOS, 'score': min_unfairness_score}
-                
-                my_bar.empty()
-                st.toast("¡Optimización finalizada! Se aplicó el criterio de equidad.", icon="⚖️")
-                st.rerun()
-
-            # Botón 3: Guardar
-            if c_actions[2].button("💾 Guardar Definitivo", type="primary"):
-                try:
-                    clear_distribution(conn)
-                    insert_distribution(conn, st.session_state['proposal_rows'])
-                    
-                    if st.session_state['proposal_deficit']:
-                        st.session_state['deficit_report'] = filter_minimum_deficits(st.session_state['proposal_deficit'])
-                    elif 'deficit_report' in st.session_state:
-                        del st.session_state['deficit_report']
-                        
-                    st.success("✅ Distribución guardada exitosamente.")
-                    st.balloons()
-                    st.session_state['proposal_rows'] = None
-                    st.session_state['excel_equipos'] = None
-                    st.session_state['last_optimization_stats'] = None
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al guardar: {e}")
 
     with t2:
         st.info("Editor de Zonas - Versión Profesional")
@@ -2785,6 +2655,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
