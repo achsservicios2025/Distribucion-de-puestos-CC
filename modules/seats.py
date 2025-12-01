@@ -30,7 +30,7 @@ def parse_days_from_text(text):
     for s in flexible_options: all_days.update(s)
     return {'fijos': all_days, 'flexibles': options}
 
-def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
+def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2, ignore_params=False):
     rows = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     deficit_report = [] 
@@ -48,27 +48,37 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
     if not (col_piso and col_equipo and col_personas and col_minimos):
         return [], []
 
-    # 3. Procesar Parámetros
-    col_param = next((c for c in parametros_df.columns if 'criterio' in normalize_text(c) or 'parametro' in normalize_text(c)), '')
-    col_valor = next((c for c in parametros_df.columns if 'valor' in normalize_text(c)), '')
-
+    # 3. Procesar Parámetros (o ignorarlos si ignore_params=True)
     capacidad_pisos = {}
     reglas_full_day = {}
-    cap_reserva_fija = 0 
+    cap_reserva_fija = 2  # Por defecto 2 cupos libres por día (máximo según requerimiento)
     
-    for _, row in parametros_df.iterrows():
-        p = str(row.get(col_param, '')).strip().lower()
-        v = str(row.get(col_valor, '')).strip()
-        if "cupos totales piso" in p:
-            match_p = re.search(r'piso\s+(\d+)', p)
-            match_c = re.search(r'(\d+)', v)
-            if match_p and match_c: capacidad_pisos[match_p.group(1)] = int(match_c.group(1))
-        if "cupos libres por piso" in p:
-            match_r = re.search(r'(\d+)', v)
-            if match_r: cap_reserva_fija = int(match_r.group(1))
-        if "dia completo" in p or "día completo" in p:
-            equipo_nombre = re.split(r'd[ií]a completo\s+', p, flags=re.IGNORECASE)[-1].strip()
-            if v: reglas_full_day[normalize_text(equipo_nombre)] = parse_days_from_text(v)
+    if not ignore_params:
+        col_param = next((c for c in parametros_df.columns if 'criterio' in normalize_text(c) or 'parametro' in normalize_text(c)), '')
+        col_valor = next((c for c in parametros_df.columns if 'valor' in normalize_text(c)), '')
+        
+        for _, row in parametros_df.iterrows():
+            p = str(row.get(col_param, '')).strip().lower()
+            v = str(row.get(col_valor, '')).strip()
+            if "cupos totales piso" in p:
+                match_p = re.search(r'piso\s+(\d+)', p)
+                match_c = re.search(r'(\d+)', v)
+                if match_p and match_c: capacidad_pisos[match_p.group(1)] = int(match_c.group(1))
+            if "cupos libres por piso" in p:
+                match_r = re.search(r'(\d+)', v)
+                if match_r: cap_reserva_fija = min(int(match_r.group(1)), 2)  # Máximo 2 cupos libres
+            if "dia completo" in p or "día completo" in p:
+                equipo_nombre = re.split(r'd[ií]a completo\s+', p, flags=re.IGNORECASE)[-1].strip()
+                if v: reglas_full_day[normalize_text(equipo_nombre)] = parse_days_from_text(v)
+    else:
+        # Modo ideal: calcular capacidad automáticamente basada en equipos
+        # Estimar capacidad por piso basada en equipos
+        for piso_raw in equipos_df[col_piso].dropna().unique():
+            piso_str = str(int(piso_raw)) if isinstance(piso_raw, (int, float)) else str(piso_raw)
+            df_piso = equipos_df[equipos_df[col_piso] == piso_raw]
+            personas_piso = df_piso[col_personas].sum() if col_personas else 0
+            # Capacidad = personas + margen para flexibilidad (mínimo 10% más, pero al menos capacidad para 2 cupos libres)
+            capacidad_pisos[piso_str] = int(personas_piso * 1.1) + 2
 
     # 4. Algoritmo de Distribución
     pisos_unicos = equipos_df[col_piso].dropna().unique()
@@ -247,7 +257,8 @@ def compute_distribution_from_excel(equipos_df, parametros_df, cupos_reserva=2):
             alguien_falta = any(t['asig'] < t['per'] for t in normal_teams)
             
             if not alguien_falta and remaining_cap > 0:
-                 final_libres = min(remaining_cap, cap_reserva_fija) if cap_reserva_fija > 0 else remaining_cap
+                 # Máximo 2 cupos libres por día (según requerimiento)
+                 final_libres = min(remaining_cap, min(cap_reserva_fija, 2)) if cap_reserva_fija > 0 else min(remaining_cap, 2)
 
             # Guardar resultados
             all_teams = fd_teams + normal_teams
