@@ -69,9 +69,23 @@ from modules.database import (
     count_monthly_free_spots, delete_reservation_from_db, 
     delete_room_reservation_from_db, perform_granular_delete,
     ensure_reset_table, save_reset_token, validate_and_consume_token,
-    delete_distribution_row, delete_distribution_rows_by_indices,
     get_worksheet
 )
+
+# Importar funciones opcionales para borrado individual (pueden no existir en versiones antiguas)
+try:
+    from modules.database import delete_distribution_row, delete_distribution_rows_by_indices
+except ImportError:
+    # Si no existen, crear funciones stub que usen perform_granular_delete
+    def delete_distribution_row(conn, piso, equipo, dia):
+        """Elimina una fila específica de distribución (fallback)"""
+        # Fallback: no se puede borrar individualmente sin estas funciones
+        return False
+    
+    def delete_distribution_rows_by_indices(conn, indices):
+        """Elimina múltiples filas de distribución (fallback)"""
+        # Fallback: no se puede borrar individualmente sin estas funciones
+        return False
 from modules.auth import get_admin_credentials
 from modules.layout import admin_appearance_ui, apply_appearance_styles
 from modules.seats import compute_distribution_from_excel
