@@ -1043,22 +1043,17 @@ if menu == "Vista pública":
                 cal = calendar.monthcalendar(mes_sel.year, mes_sel.month)
                 
                 # Crear HTML para el calendario con mejor diseño
-                html_cal = f"""
-                <div style="margin: 20px 0; overflow-x: auto;">
-                    <table style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; table-layout: fixed;">
-                        <thead>
-                            <tr style="background-color: #00A04A; color: white;">
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Lun</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mar</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mié</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Jue</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Vie</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Sáb</th>
-                                <th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Dom</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                """
+                html_cal = '<div style="margin: 20px 0; overflow-x: auto;">'
+                html_cal += '<table style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; table-layout: fixed;">'
+                html_cal += '<thead><tr style="background-color: #00A04A; color: white;">'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Lun</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mar</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mié</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Jue</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Vie</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Sáb</th>'
+                html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Dom</th>'
+                html_cal += '</tr></thead><tbody>'
                 
                 for week in cal:
                     html_cal += "<tr style='height: 120px;'>"
@@ -1081,34 +1076,19 @@ if menu == "Vista pública":
                                 else:
                                     equipos_str = "<br>".join([f"• {eq}" for eq in equipos_lista])
                                 
-                                html_cal += f'''
-                                <td style="padding: 8px 6px; border: 1px solid #ddd; background-color: #e8f5e9; vertical-align: top; min-height: 120px;">
-                                    <div style="font-size: 14px; font-weight: bold; color: #006B32; margin-bottom: 4px; border-bottom: 1px solid #c8e6c9; padding-bottom: 2px;">{day}</div>
-                                    <div style="font-size: 10px; color: #2e7d32; line-height: 1.4; word-wrap: break-word; overflow-wrap: break-word;">
-                                        {equipos_str}
-                                    </div>
-                                </td>
-                                '''
+                                html_cal += f'<td style="padding: 8px 6px; border: 1px solid #ddd; background-color: #e8f5e9; vertical-align: top; min-height: 120px;">'
+                                html_cal += f'<div style="font-size: 14px; font-weight: bold; color: #006B32; margin-bottom: 4px; border-bottom: 1px solid #c8e6c9; padding-bottom: 2px;">{day}</div>'
+                                html_cal += f'<div style="font-size: 10px; color: #2e7d32; line-height: 1.4; word-wrap: break-word; overflow-wrap: break-word;">{equipos_str}</div>'
+                                html_cal += '</td>'
                             else:
-                                html_cal += f'''
-                                <td style="padding: 8px 6px; border: 1px solid #ddd; vertical-align: top; min-height: 120px;">
-                                    <div style="font-size: 14px; font-weight: bold; color: #666; margin-bottom: 4px;">{day}</div>
-                                    <div style="font-size: 9px; color: #999; font-style: italic;">Disponible</div>
-                                </td>
-                                '''
+                                html_cal += f'<td style="padding: 8px 6px; border: 1px solid #ddd; vertical-align: top; min-height: 120px;">'
+                                html_cal += f'<div style="font-size: 14px; font-weight: bold; color: #666; margin-bottom: 4px;">{day}</div>'
+                                html_cal += '<div style="font-size: 9px; color: #999; font-style: italic;">Disponible</div>'
+                                html_cal += '</td>'
                     html_cal += "</tr>"
                 
-                html_cal += """
-                        </tbody>
-                    </table>
-                </div>
-                <style>
-                    @media (max-width: 768px) {
-                        table { font-size: 10px; }
-                        td { padding: 4px 2px !important; min-height: 80px !important; }
-                    }
-                </style>
-                """
+                html_cal += '</tbody></table></div>'
+                html_cal += '<style>@media (max-width: 768px) { table { font-size: 10px; } td { padding: 4px 2px !important; min-height: 80px !important; } }</style>'
                 
                 st.markdown(html_cal, unsafe_allow_html=True)
                 st.markdown("---")
