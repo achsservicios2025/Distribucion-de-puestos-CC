@@ -936,53 +936,60 @@ global_logo_path = settings.get("logo_path", "static/logo.png")
 # Cargar logo de forma simple y directa
 logo_cargado = False
 
-# Determinar qué ruta usar
-logo_path_to_use = None
+# Lista de rutas a intentar (en orden de prioridad)
+logo_paths_to_try = []
 
-# Si hay una ruta personalizada y existe, usarla
+# Si hay una ruta personalizada, intentarla primero
 if global_logo_path and global_logo_path != "static/logo.png":
-    if os.path.exists(global_logo_path) and os.path.isfile(global_logo_path):
-        logo_path_to_use = global_logo_path
+    logo_paths_to_try.append(global_logo_path)
 
-# Si no hay ruta personalizada o no existe, usar la ruta por defecto
-if not logo_path_to_use:
-    default_paths = [
-        "static/logo.png",
-        str(Path("static/logo.png")),
-        str(Path("static") / "logo.png"),
-    ]
-    for path in default_paths:
-        if os.path.exists(path) and os.path.isfile(path):
-            logo_path_to_use = path
-            break
+# Siempre intentar la ruta por defecto
+logo_paths_to_try.extend([
+    "static/logo.png",
+    str(Path("static/logo.png")),
+    str(Path("static") / "logo.png"),
+])
 
 # Intentar cargar el logo
-if logo_path_to_use:
+for logo_path in logo_paths_to_try:
     try:
+        # Convertir Path a string si es necesario
+        logo_str = str(logo_path) if isinstance(logo_path, Path) else logo_path
+        
+        # Verificar que existe
+        if not os.path.exists(logo_str) or not os.path.isfile(logo_str):
+            continue
+        
+        # Intentar cargar directamente con Streamlit (método más simple)
         c1, c2 = st.columns([1, 5])
-        c1.image(logo_path_to_use, width=150, use_container_width=False)
+        c1.image(logo_str, width=150, use_container_width=False)
         c2.title(site_title)
         logo_cargado = True
+        break
     except Exception as e:
-        # Si falla, intentar con PIL
+        # Si falla Streamlit, intentar con PIL
         try:
             from PIL import Image
-            img = Image.open(logo_path_to_use)
+            img = Image.open(logo_str)
             c1, c2 = st.columns([1, 5])
             c1.image(img, width=150, use_container_width=False)
             c2.title(site_title)
             logo_cargado = True
-        except Exception as pil_error:
-            pass
+            break
+        except Exception:
+            continue
 
 # Si no se cargó el logo, mostrar solo el título
 if not logo_cargado:
     st.title(site_title)
-    # Mostrar información de debug
-    if logo_path_to_use:
-        st.warning(f"⚠️ El archivo {logo_path_to_use} existe pero no se pudo cargar. Verifica que sea una imagen válida.")
+    # Mostrar información de debug solo si es necesario
+    default_path = "static/logo.png"
+    if os.path.exists(default_path):
+        # El archivo existe pero no se pudo cargar
+        st.caption("💡 Logo encontrado pero no se pudo cargar. Verifica que sea una imagen válida.")
     else:
-        st.info(f"💡 Logo no encontrado. Buscado en: static/logo.png. Configurado en settings: {global_logo_path}")
+        # El archivo no existe
+        st.caption(f"💡 Logo no encontrado en static/logo.png")
 
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
@@ -1842,18 +1849,10 @@ elif menu == "Administrador":
                     
                     if drawing_component is None:
                         st.error("❌ No se pudo cargar el componente de dibujo")
-                    
-                    # Componente Streamlit para recibir datos del HTML
-                    zones_key = f"zones_data_{p_sel}"
-                    if zones_key not in st.session_state:
-                        st.session_state[zones_key] = json.dumps(existing_zones)
-                    
-                    # Renderizar componente HTML con callback
-                    result = components.html(
-                        drawing_component,
-                        height=650,
-                        key=f"drawing_comp_{p_sel}"
-                    )
+                    else:
+                        # El componente ya está renderizado por create_enhanced_drawing_component
+                        # No necesitamos renderizarlo de nuevo
+                        pass
                     
                     # Botones de acción
                     col_btn1, col_btn2 = st.columns(2)
