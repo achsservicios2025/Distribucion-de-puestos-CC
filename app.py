@@ -1312,7 +1312,6 @@ elif menu == "Reservas":
                 st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
             else:
                 # CORREGIDO: Siempre hay máximo 2 cupos libres por piso/día (según requerimiento)
-                # Si no hay configuración, se asume 1 cupo disponible mínimo
                 total_cupos = 2  # Máximo 2 cupos libres por día según requerimiento
                 
                 # Calcular ocupados
@@ -1429,93 +1428,102 @@ elif menu == "Reservas":
                        (df_reservas_sala["room_name"] == sl)
                 reservas_hoy = df_reservas_sala[mask].to_dict("records")
             
-            # Generar slots de una hora (formato horas médicas)
-            tm = generate_time_slots("08:00", "18:00", 60)  # Slots de 1 hora
-            
             st.markdown("#### Horarios Disponibles")
             
-            # Mostrar horarios ocupados y disponibles (estilo calendario médico)
+            # Mostrar horarios ocupados (informativo)
             if reservas_hoy:
                 horarios_ocupados = ', '.join([f"{r.get('start_time', '')} - {r.get('end_time', '')}" for r in reservas_hoy])
                 st.warning(f"⚠️ Horarios ocupados: {horarios_ocupados}")
             
-            # Crear grid de horarios disponibles
-            cols_horarios = st.columns(4)
-            horarios_disponibles = []
-            
-            for idx, hora_inicio in enumerate(tm):
-                # Calcular hora fin (1 hora después)
-                hora_obj = datetime.datetime.strptime(hora_inicio, "%H:%M")
-                hora_fin_obj = hora_obj + datetime.timedelta(hours=1)
-                hora_fin = hora_fin_obj.strftime("%H:%M")
-                
-                # Verificar si está ocupado
-                ocupado = False
-                for r in reservas_hoy:
-                    r_start = r.get('start_time', '')
-                    r_end = r.get('end_time', '')
-                    if r_start and r_end:
-                        if check_room_conflict([r], str(fe_s), sl, hora_inicio, hora_fin):
-                            ocupado = True
-                            break
-                
-                if not ocupado:
-                    horarios_disponibles.append((hora_inicio, hora_fin))
-            
-            if not horarios_disponibles:
-                st.error("🔴 No hay horarios disponibles para esta sala en la fecha seleccionada.")
+            slots_completos = generate_time_slots("08:00", "20:00", 15)
+            if len(slots_completos) < 2:
+                st.error("No hay horarios configurados para esta sala.")
             else:
-                # Mostrar horarios disponibles en grid
-                st.markdown("**Horarios disponibles (1 hora):**")
-                grid_cols = st.columns(min(4, len(horarios_disponibles)))
-                horario_seleccionado = None
+                opciones_inicio = slots_completos[:-1]
+                inicio_key = f"inicio_sala_{sl}"
+                fin_key = f"fin_sala_{sl}"
                 
-                for idx, (h_inicio, h_fin) in enumerate(horarios_disponibles):
-                    col_idx = idx % 4
-                    with grid_cols[col_idx]:
-                        if st.button(f"{h_inicio} - {h_fin}", key=f"slot_{idx}", use_container_width=True):
-                            horario_seleccionado = (h_inicio, h_fin)
-                            st.session_state['selected_slot'] = horario_seleccionado
+                idx_inicio = 0
+                hora_inicio_sel = st.selectbox("Hora de inicio", opciones_inicio, index=idx_inicio, key=inicio_key)
                 
-                # Si hay un horario seleccionado, mostrar formulario
-                if 'selected_slot' in st.session_state:
-                    h_inicio, h_fin = st.session_state['selected_slot']
+                if hora_inicio_sel not in slots_completos:
+                    hora_inicio_sel = opciones_inicio[0]
+                pos_inicio = slots_completos.index(hora_inicio_sel)
+                opciones_fin = slots_completos[pos_inicio + 1:]
+                
+                if not opciones_fin:
+                    st.warning("Selecciona una hora de inicio anterior a las 20:00 hrs.")
+                else:
+                    idx_fin = min(4, len(opciones_fin) - 1)  # Default: 1 hora
+                    hora_fin_sel = st.selectbox("Hora de término", opciones_fin, index=idx_fin, key=fin_key)
                     
-                    st.markdown("---")
-                    st.markdown(f"### Confirmar Reserva: {h_inicio} - {h_fin}")
+                    inicio_dt = datetime.datetime.strptime(hora_inicio_sel, "%H:%M")
+                    fin_dt = datetime.datetime.strptime(hora_fin_sel, "%H:%M")
+                    duracion_min = int((fin_dt - inicio_dt).total_seconds() / 60)
                     
-                    with st.form("form_sala"):
-                        st.info(f"**Equipo/Área:** {equipo_seleccionado}\n\n**Sala:** {sl}\n\n**Fecha:** {fe_s}\n\n**Horario:** {h_inicio} - {h_fin}")
+                    if duracion_min < 15:
+                        st.error("El intervalo debe ser de al menos 15 minutos.")
+                    else:
+                        conflicto_actual = check_room_conflict(
+                            reservas_hoy, str(fe_s), sl, hora_inicio_sel, hora_fin_sel
+                        )
+                        if conflicto_actual:
+                            st.error("❌ Ese intervalo ya está reservado. Elige otro horario.")
                         
-                        e_s = st.text_input("Correo Electrónico", key="email_sala")
+                        st.markdown("---")
+                        st.markdown(f"### Confirmar Reserva: {hora_inicio_sel} - {hora_fin_sel}")
                         
-                        sub_sala = st.form_submit_button("✅ Confirmar Reserva", type="primary")
-                    
-                    if sub_sala:
-                        if not e_s:
-                            st.error("Por favor ingresa tu correo electrónico.")
-                        elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', e_s):
-                            st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
-                        elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, h_inicio, h_fin):
-                            st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
-                            del st.session_state['selected_slot']       
-                        else:
-                            add_room_reservation(conn, equipo_seleccionado, e_s, pi_s, sl, str(fe_s), h_inicio, h_fin, datetime.datetime.now(datetime.timezone.utc).isoformat())
-                            msg = f"✅ Sala Confirmada:\n\n- Equipo/Área: {equipo_seleccionado}\n- Sala: {sl}\n- Fecha: {fe_s}\n- Horario: {h_inicio} - {h_fin}"
-                            st.success(msg)
+                        with st.form("form_sala"):
+                            st.info(
+                                f"**Equipo/Área:** {equipo_seleccionado}\n\n"
+                                f"**Sala:** {sl}\n\n"
+                                f"**Fecha:** {fe_s}\n\n"
+                                f"**Horario:** {hora_inicio_sel} - {hora_fin_sel}"
+                            )
                             
-                            if e_s:
-                                try:
-                                    email_sent = send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
-                                    if email_sent:
-                                        st.info("📧 Correo de confirmación enviado")
-                                    else:
-                                        st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
-                                except Exception as email_error:
-                                    st.warning(f"⚠️ Error al enviar correo: {email_error}")
+                            e_s = st.text_input("Correo Electrónico", key="email_sala")
                             
-                            del st.session_state['selected_slot']
-                            st.rerun()
+                            sub_sala = st.form_submit_button("✅ Confirmar Reserva", type="primary", disabled=conflicto_actual)
+                        
+                        if sub_sala:
+                            if not e_s:
+                                st.error("Por favor ingresa tu correo electrónico.")
+                            elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', e_s):
+                                st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
+                            elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, hora_inicio_sel, hora_fin_sel):
+                                st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
+                            else:
+                                add_room_reservation(
+                                    conn,
+                                    equipo_seleccionado,
+                                    e_s,
+                                    pi_s,
+                                    sl,
+                                    str(fe_s),
+                                    hora_inicio_sel,
+                                    hora_fin_sel,
+                                    datetime.datetime.now(datetime.timezone.utc).isoformat()
+                                )
+                                msg = (
+                                    f"✅ Sala Confirmada:\n\n"
+                                    f"- Equipo/Área: {equipo_seleccionado}\n"
+                                    f"- Sala: {sl}\n"
+                                    f"- Fecha: {fe_s}\n"
+                                    f"- Horario: {hora_inicio_sel} - {hora_fin_sel}"
+                                )
+                                st.success(msg)
+                                
+                                if e_s:
+                                    try:
+                                        email_sent = send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
+                                        if email_sent:
+                                            st.info("📧 Correo de confirmación enviado")
+                                        else:
+                                            st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
+                                    except Exception as email_error:
+                                        st.warning(f"⚠️ Error al enviar correo: {email_error}")
+                                
+                                st.rerun()
 
     # ---------------------------------------------------------
     # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
@@ -1858,15 +1866,15 @@ elif menu == "Administrador":
         with col_left:
             p_sel = st.selectbox("Piso", pisos_list, key="editor_piso")
             p_num = p_sel.replace("Piso ", "").strip()
-        
+            
             # Búsqueda de Archivo
             file_base = f"piso{p_num}"
             pim = PLANOS_DIR / f"{file_base}.png"
             if not pim.exists(): 
                 pim = PLANOS_DIR / f"{file_base}.jpg"
-            if not pim.exists():
-                pim = PLANOS_DIR / f"Piso{p_num}.png"
-        
+                if not pim.exists():
+                    pim = PLANOS_DIR / f"Piso{p_num}.png"
+            
             if pim.exists():
                 try:
                     # Cargar zonas existentes para este piso
@@ -1959,10 +1967,13 @@ elif menu == "Administrador":
                 eqs += sorted(subset['equipo'].unique().tolist())
             
             salas_piso = []
-            if "1" in p_sel: salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
-            elif "2" in p_sel: salas_piso = ["Sala Reuniones - Piso 2"]
-            elif "3" in p_sel: salas_piso = ["Sala Reuniones - Piso 3"]
-            eqs = eqs + salas_piso
+            if "1" in p_sel:
+                salas_piso = ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
+            elif "2" in p_sel:
+                salas_piso = ["Sala Reuniones - Piso 2"]
+            elif "3" in p_sel:
+                salas_piso = ["Sala Reuniones - Piso 3"]
+            eqs += salas_piso
 
             # Selector de equipo y color
             tn = st.selectbox("Equipo / Sala", eqs, key=f"team_{p_sel}")
@@ -1979,8 +1990,10 @@ elif menu == "Administrador":
                 
                 # Editor de zonas existentes
                 st.markdown("#### ✏️ Editar Zona Existente")
-                zone_options = [f"{i+1}. {z.get('team', 'Sin nombre')}" 
-                            for i, z in enumerate(zonas[p_sel])]
+                zone_options = [
+                    f"{i+1}. {z.get('team', 'Sin nombre')}"
+                    for i, z in enumerate(zonas[p_sel])
+                ]
                 
                 if zone_options:
                     selected_zone_idx = st.selectbox(
@@ -1993,14 +2006,17 @@ elif menu == "Administrador":
                     if selected_zone_idx is not None:
                         zone = zonas[p_sel][selected_zone_idx]
                         
-                        # Controles de edición
-                        new_team = st.text_input("Nombre del equipo:", 
-                                            value=zone.get('team', 'Nueva Zona'),
-                                            key=f"team_edit_{selected_zone_idx}_{p_sel}")
+                        new_team = st.text_input(
+                            "Nombre del equipo:",
+                            value=zone.get('team', 'Nueva Zona'),
+                            key=f"team_edit_{selected_zone_idx}_{p_sel}"
+                        )
                         
-                        new_color = st.color_picker("Color:", 
-                                                value=zone.get('color', '#00A04A'),
-                                                key=f"color_edit_{selected_zone_idx}_{p_sel}")
+                        new_color = st.color_picker(
+                            "Color:",
+                            value=zone.get('color', '#00A04A'),
+                            key=f"color_edit_{selected_zone_idx}_{p_sel}"
+                        )
                         
                         col_edit1, col_edit2 = st.columns(2)
                         
@@ -2028,7 +2044,10 @@ elif menu == "Administrador":
                 for i, z in enumerate(zonas[p_sel]):
                     col_leg1, col_leg2 = st.columns([1, 4])
                     with col_leg1:
-                        st.markdown(f'<div style="width:30px;height:30px;background-color:{z.get("color", "#00A04A")};border:1px solid #ccc;"></div>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div style="width:30px;height:30px;background-color:{z.get("color", "#00A04A")};border:1px solid #ccc;"></div>',
+                            unsafe_allow_html=True
+                        )
                     with col_leg2:
                         st.write(f"**{z.get('team', 'Sin nombre')}**")
                         
@@ -2044,15 +2063,15 @@ elif menu == "Administrador":
             4. Haz clic en **💾 Guardar Zonas** en el editor para guardar automáticamente
             5. Las zonas se guardarán automáticamente y la página se actualizará
             """)
-        
+
         # Sección de personalización de título y leyenda (fuera de las columnas)
         st.divider()
         st.subheader("Personalización Título y Leyenda")
         with st.expander("🎨 Editar Estilos", expanded=True):
+            align_options = ["Izquierda", "Centro", "Derecha"]
+            
             tm = st.text_input("Título Principal", f"Distribución {p_sel}", key=f"title_{p_sel}")
             ts = st.text_input("Subtítulo (Opcional)", f"Día: {d_sel}", key=f"subtitle_{p_sel}")
-            
-            align_options = ["Izquierda", "Centro", "Derecha"]
             
             st.markdown("##### Estilos del Título Principal")
             cf1, cf2, cf3 = st.columns(3)
@@ -2075,7 +2094,7 @@ elif menu == "Administrador":
             align_l = cl3.selectbox("Alineación (Leyenda)", align_options, index=0, key=f"align_l_{p_sel}")
             
             st.markdown("---")
-            cg1, cg2, cg3, cg4 = st.columns(4) 
+            cg1, cg2, cg3, cg4 = st.columns(4)
             lg = cg1.checkbox("Logo", True, key=f"chk_logo_{p_sel}")
             ln = cg2.checkbox("Mostrar Leyenda", True, key=f"chk_legend_{p_sel}")
             align_logo = cg3.selectbox("Alineación Logo", align_options, index=0, key=f"logo_align_{p_sel}")
@@ -2084,10 +2103,10 @@ elif menu == "Administrador":
             cc1, cc2 = st.columns(2)
             bg = cc1.color_picker("Fondo Header", "#FFFFFF", key=f"bg_{p_sel}")
             tx = cc2.color_picker("Color Texto", "#000000", key=f"tx_{p_sel}")
-        
+
         fmt_sel = st.selectbox("Formato:", ["Imagen (PNG)", "Documento (PDF)"], key=f"fmt_{p_sel}")
         f_code = "PNG" if "PNG" in fmt_sel else "PDF"
-            
+        
         # Preparar configuración
         conf = {
             "title_text": tm,
@@ -2098,14 +2117,14 @@ elif menu == "Administrador":
             "subtitle_size": fs_s,
             "legend_font": ff_l,
             "legend_size": fs_l,
-            "alignment": align, 
-            "subtitle_align": align_s, 
-            "legend_align": align_l, 
-            "bg_color": bg, 
-            "title_color": tx, 
-            "subtitle_color": "#666666", 
-            "use_logo": lg, 
-            "use_legend": ln, 
+            "alignment": align,
+            "subtitle_align": align_s,
+            "legend_align": align_l,
+            "bg_color": bg,
+            "title_color": tx,
+            "subtitle_color": "#666666",
+            "use_logo": lg,
+            "use_legend": ln,
             "logo_width": lw,
             "logo_align": align_logo
         }
@@ -2142,8 +2161,8 @@ elif menu == "Administrador":
                         current_seats_dict = dict(zip(subset['equipo'], subset['cupos']))
                     
                     out = generate_colored_plan(p_sel, d_sel, current_seats_dict, f_code, conf, global_logo_path)
-                    if out and Path(out).exists(): 
-                        st.success(f"✅ Vista previa generada correctamente!")
+                    if out and Path(out).exists():
+                        st.success("✅ Vista previa generada correctamente!")
                         st.rerun()
                     else:
                         st.error(f"❌ Error al generar el plano. Zonas encontradas: {len(zonas_check.get(p_sel, []))}. Verifica que las zonas estén guardadas correctamente.")
