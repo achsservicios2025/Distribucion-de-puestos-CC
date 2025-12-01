@@ -612,42 +612,33 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                     }});
                 }}
                 
-                function notifyStreamlit(actionType) {{
+                function emitZones(actionType) {{
                     const payload = {{
+                        type: 'zones_saved',
+                        piso: '{p_sel}',
                         action: actionType,
                         zones: rectangles
                     }};
                     
-                    // API oficial de componentes
-                    if (window.Streamlit && typeof window.Streamlit.setComponentValue === 'function') {{
-                        window.Streamlit.setComponentValue(payload);
-                        return true;
+                    try {{
+                        if (window.parent) {{
+                            window.parent.postMessage(payload, '*');
+                        }}
+                        localStorage.setItem('zones_save_{p_sel}', JSON.stringify(payload));
+                    }} catch (err) {{
+                        console.error('Error enviando zonas a Streamlit:', err);
                     }}
-                    
-                    // Fallback via postMessage
-                    if (window.parent) {{
-                        window.parent.postMessage({{
-                            type: 'streamlit:setComponentValue',
-                            value: payload
-                        }}, '*');
-                        return true;
-                    }}
-                    
-                    return false;
                 }}
                 
                 function saveZones() {{
-                    if (notifyStreamlit('manual')) {{
-                        alert('✅ Zonas guardadas automáticamente! (' + rectangles.length + ' zonas)');
-                    }} else {{
-                        alert('⚠️ No se pudo comunicar con Streamlit. Intenta recargar la página.');
-                    }}
+                    emitZones('manual');
+                    alert('✅ Zonas guardadas automáticamente! (' + rectangles.length + ' zonas)');
                 }}
                 
                 // Auto-guardar silencioso al terminar de dibujar
                 canvas.addEventListener('mouseup', function(e) {{
                     if (isDrawing && currentRect && Math.abs(currentRect.w) > 10 && Math.abs(currentRect.h) > 10) {{
-                        setTimeout(() => notifyStreamlit('auto'), 300);
+                        setTimeout(() => emitZones('auto'), 300);
                     }}
                 }});
                 
@@ -1833,19 +1824,13 @@ elif menu == "Administrador":
                     else:
                         st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
                     
-                    # Renderizar componente HTML con comunicación via Streamlit.setComponentValue
-                    editor_html = create_enhanced_drawing_component(
+                    # Renderizar componente HTML con comunicación via mensajes
+                    editor_result = create_enhanced_drawing_component(
                         str(pim),
                         existing_zones,
                         selected_team=selected_team,
                         selected_color=selected_color or "#00A04A",
                         width=640
-                    )
-                    
-                    editor_result = components.html(
-                        editor_html,
-                        height=720,
-                        scrolling=False
                     )
                     
                     # Botones de acción
@@ -1871,24 +1856,80 @@ elif menu == "Administrador":
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                     
-                    # Procesar respuesta del componente
-                    if editor_result:
+                    # Campo oculto para recibir mensajes del componente
+                    hidden_key = f"zones_payload_{p_sel}"
+                    if f"last_zones_{p_sel}" not in st.session_state:
+                        st.session_state[f"last_zones_{p_sel}"] = json.dumps(existing_zones, sort_keys=True)
+                    placeholder_tag = f"zones_hook_{p_sel}"
+                    zones_payload = st.text_input(
+                        "",
+                        value="",
+                        key=hidden_key,
+                        label_visibility="collapsed",
+                        placeholder=placeholder_tag
+                    )
+                    
+                    # Ocultar el input para que el usuario no lo vea
+                    st.markdown(f"""
+                    <style>
+                    input[placeholder="{placeholder_tag}"] {{
+                        position: absolute !important;
+                        opacity: 0 !important;
+                        pointer-events: none !important;
+                        height: 0 !important;
+                        width: 0 !important;
+                    }}
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    # Script para actualizar el campo oculto cuando el iframe envía datos
+                    st.markdown(f"""
+                    <script>
+                    (function() {{
+                        const selector = 'input[placeholder="{placeholder_tag}"]';
+                        
+                        window.addEventListener('message', function(event) {{
+                            if (event.data && event.data.type === 'zones_saved' && event.data.piso === '{p_sel}') {{
+                                const payload = JSON.stringify(event.data);
+                                const el = window.parent.document.querySelector(selector);
+                                const applyValue = () => {{
+                                    const target = window.parent.document.querySelector(selector);
+                                    if (target) {{
+                                        target.value = payload;
+                                        target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                        target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                        return true;
+                                    }}
+                                    return false;
+                                }};
+                                
+                                if (!applyValue()) {{
+                                    setTimeout(applyValue, 400);
+                                }}
+                            }}
+                        }}, false);
+                    }})();
+                    </script>
+                    """, unsafe_allow_html=True)
+                    
+                    # Procesar payload recibido
+                    if zones_payload:
                         try:
-                            payload = editor_result
-                            if isinstance(payload, str):
-                                payload = json.loads(payload)
-                            if isinstance(payload, dict):
-                                action = payload.get("action")
-                                zonas_component = payload.get("zones", [])
-                                if action in ("save", "auto") and isinstance(zonas_component, list):
-                                    zonas[p_sel] = zonas_component
-                                    if save_zones(zonas):
-                                        st.success(f"✅ {len(zonas_component)} zonas guardadas correctamente.")
-                                        st.session_state[f"last_zones_{p_sel}"] = json.dumps(zonas_component, sort_keys=True)
-                                        if action == "save":
-                                            st.rerun()
-                                    else:
-                                        st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
+                            payload = json.loads(zones_payload)
+                            zonas_component = payload.get("zones", [])
+                            if isinstance(zonas_component, list):
+                                action = payload.get("action", "manual")
+                                zonas[p_sel] = zonas_component
+                                if save_zones(zonas):
+                                    st.success(f"✅ {len(zonas_component)} zonas guardadas automáticamente.")
+                                    st.session_state[f"last_zones_{p_sel}"] = json.dumps(zonas_component, sort_keys=True)
+                                    st.session_state[hidden_key] = ""
+                                    if action == "manual":
+                                        st.rerun()
+                                else:
+                                    st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
+                        except json.JSONDecodeError:
+                            pass
                         except Exception:
                             pass
                     
