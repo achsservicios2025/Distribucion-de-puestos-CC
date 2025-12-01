@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def generate_time_slots(start_str, end_str, interval_minutes):
     """Genera lista de horas ej: ['08:00', '08:15', ...]"""
@@ -8,7 +8,7 @@ def generate_time_slots(start_str, end_str, interval_minutes):
         slots = []
         while start <= end:
             slots.append(start.strftime("%H:%M"))
-            start += datetime.timedelta(minutes=interval_minutes)
+            start += timedelta(minutes=interval_minutes)
         return slots
     except:
         # Fallback manual si falla la importación interna
