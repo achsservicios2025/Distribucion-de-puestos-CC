@@ -920,37 +920,60 @@ global_logo_path = settings.get("logo_path", "static/logo.png")
 # CORREGIDO: Cargar logo con manejo robusto de errores
 logo_cargado = False
 rutas_posibles = [
-    global_logo_path,
-    str(Path(global_logo_path).resolve()),
+    "static/logo.png",  # Primero intentar la ruta más común
     str(Path("static/logo.png").resolve()),
-    "static/logo.png",
     str(Path("static") / "logo.png"),
+    global_logo_path,
+    str(Path(global_logo_path).resolve()) if global_logo_path else None,
 ]
+
+# Filtrar None
+rutas_posibles = [r for r in rutas_posibles if r is not None]
 
 for ruta in rutas_posibles:
     try:
         ruta_str = str(ruta) if isinstance(ruta, Path) else ruta
         if os.path.exists(ruta_str) and os.path.isfile(ruta_str):
-            # Verificar que sea una imagen válida
+            # Verificar que sea una imagen válida (sin usar verify que cierra la imagen)
             try:
                 from PIL import Image as PILImage
-                img_test = PILImage.open(ruta_str)
-                img_test.verify()
-                # Si llegamos aquí, la imagen es válida
-                c1, c2 = st.columns([1, 5])
-                c1.image(ruta_str, width=150, use_container_width=False)
-                c2.title(site_title)
-                logo_cargado = True
-                break
+                # Abrir y verificar sin usar verify() que cierra el archivo
+                with PILImage.open(ruta_str) as img_test:
+                    # Si llegamos aquí, la imagen es válida
+                    c1, c2 = st.columns([1, 5])
+                    c1.image(ruta_str, width=150, use_container_width=False)
+                    c2.title(site_title)
+                    logo_cargado = True
+                    break
             except Exception as img_error:
-                continue
-    except Exception:
+                # Si falla PIL, intentar cargar directamente con Streamlit
+                try:
+                    c1, c2 = st.columns([1, 5])
+                    c1.image(ruta_str, width=150, use_container_width=False)
+                    c2.title(site_title)
+                    logo_cargado = True
+                    break
+                except:
+                    continue
+    except Exception as e:
         continue
 
 if not logo_cargado:
     st.title(site_title)
+    # Mostrar información de debug solo si no es la ruta por defecto
     if global_logo_path != "static/logo.png":
         st.info(f"💡 Logo configurado en: {global_logo_path} (archivo no encontrado o inválido)")
+    else:
+        # Intentar una última vez con la ruta directa
+        try:
+            if os.path.exists("static/logo.png"):
+                c1, c2 = st.columns([1, 5])
+                c1.image("static/logo.png", width=150, use_container_width=False)
+                c2.title(site_title)
+            else:
+                st.warning("⚠️ No se encontró el logo en static/logo.png")
+        except Exception as e:
+            st.warning(f"⚠️ Error al cargar logo: {str(e)}")
 
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
