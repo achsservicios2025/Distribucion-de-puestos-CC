@@ -1838,21 +1838,15 @@ elif menu == "Administrador":
                     else:
                         st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
                     
-                    # Usar el componente HTML mejorado con guardado automático
-                    drawing_component = create_enhanced_drawing_component(
-                        str(pim), 
-                        existing_zones, 
+                    # Renderizar componente personalizado (con comunicación nativa)
+                    editor_result = zone_editor(
+                        img_path=str(pim),
+                        existing_zones=existing_zones,
                         selected_team=selected_team,
-                        selected_color=selected_color,
-                        width=600
+                        selected_color=selected_color or "#00A04A",
+                        width=650,
+                        key=f"zone_editor_{p_sel}"
                     )
-                    
-                    if drawing_component is None:
-                        st.error("❌ No se pudo cargar el componente de dibujo")
-                    else:
-                        # El componente ya está renderizado por create_enhanced_drawing_component
-                        # No necesitamos renderizarlo de nuevo
-                        pass
                     
                     # Botones de acción
                     col_btn1, col_btn2 = st.columns(2)
@@ -1877,172 +1871,20 @@ elif menu == "Administrador":
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                     
-                    # Procesar guardado automático usando session_state
-                    last_zones_key = f"last_zones_{p_sel}"
-                    if last_zones_key not in st.session_state:
-                        st.session_state[last_zones_key] = json.dumps(existing_zones, sort_keys=True)
-                    
-                    # Script para procesar guardado automático desde el componente HTML
-                    auto_save_script = f"""
-                    <script>
-                    (function() {{
-                        // Escuchar mensajes del componente HTML
-                        window.addEventListener('message', function(event) {{
-                            if (event.data && event.data.type === 'zones_saved' && event.data.piso === '{p_sel}') {{
-                                console.log('✅ Zonas guardadas:', event.data.zones.length, 'zonas');
-                                
-                                // Guardar en localStorage como respaldo
-                                if (event.data.zones_json) {{
-                                    localStorage.setItem('zones_save_{p_sel}', event.data.zones_json);
-                                }}
-                                
-                                // Recargar página para que Streamlit procese
-                                setTimeout(() => {{
-                                    window.location.reload();
-                                }}, 500);
-                            }}
-                        }}, false);
-                    }})();
-                    </script>
-                    """
-                    st.markdown(auto_save_script, unsafe_allow_html=True)
-                    
-                    # Verificar si hay zonas guardadas en localStorage al cargar
-                    saved_zones_key = f"saved_zones_{p_sel}"
-                    if saved_zones_key not in st.session_state:
-                        # Intentar leer desde localStorage usando JavaScript
-                        check_storage_script = f"""
-                        <script>
-                        (function() {{
-                            const savedZones = localStorage.getItem('zones_save_{p_sel}');
-                            if (savedZones) {{
-                                // Enviar a Streamlit usando postMessage
-                                if (window.parent) {{
-                                    window.parent.postMessage({{
-                                        type: 'zones_from_storage',
-                                        piso: '{p_sel}',
-                                        zones_json: savedZones
-                                    }}, '*');
-                                }}
-                            }}
-                        }})();
-                        </script>
-                        """
-                        st.markdown(check_storage_script, unsafe_allow_html=True)
-                        st.session_state[saved_zones_key] = True
-                    
-                    # Procesar guardado cuando se detecta cambio
-                    try:
-                        # Verificar si hay nuevas zonas guardadas (esto se actualizará cuando el componente envíe datos)
-                        # Por ahora, verificar si las zonas en memoria son diferentes
-                        zonas_actuales = zonas.get(p_sel, [])
-                        zonas_json_actual = json.dumps(zonas_actuales, sort_keys=True)
-                        last_json = st.session_state[last_zones_key]
-                        
-                        # Si hay diferencias, ya fueron guardadas (el componente las guarda automáticamente)
-                        # Solo mostrar mensaje de éxito si se detecta un cambio
-                        if zonas_json_actual != last_json and len(zonas_actuales) > 0:
-                            st.session_state[last_zones_key] = zonas_json_actual
-                            st.success(f"✅ {len(zonas_actuales)} zonas guardadas correctamente!")
-                    except Exception as e:
-                        pass  # Silenciar errores menores
-                    
-                    # Campo oculto para recibir datos del componente (completamente oculto)
-                    zones_json_hidden = st.text_input(
-                        "",
-                        value=json.dumps(existing_zones),
-                        key=f"zones_json_hidden_{p_sel}",
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Script mejorado para procesar guardado automático
-                    auto_save_script = f"""
-                    <script>
-                    (function() {{
-                        // Función para actualizar el campo oculto de Streamlit
-                        function updateHiddenField(zonesJson) {{
-                            // Buscar el campo oculto usando múltiples métodos
-                            const selectors = [
-                                'input[data-testid*="zones_json_hidden_{p_sel}"]',
-                                'input[key*="zones_json_hidden_{p_sel}"]',
-                                'input[type="text"]'
-                            ];
-                            
-                            let hiddenInput = null;
-                            for (const selector of selectors) {{
-                                hiddenInput = document.querySelector(selector);
-                                if (hiddenInput && hiddenInput.value.includes('[')) break;
-                            }}
-                            
-                            if (hiddenInput) {{
-                                hiddenInput.value = zonesJson;
-                                hiddenInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                hiddenInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                return true;
-                            }}
-                            return false;
-                        }}
-                        
-                        // Escuchar mensajes del componente HTML
-                        window.addEventListener('message', function(event) {{
-                            if (event.data && event.data.type === 'zones_saved' && event.data.piso === '{p_sel}') {{
-                                console.log('✅ Zonas guardadas recibidas:', event.data.zones.length);
-                                
-                                if (event.data.zones_json) {{
-                                    // Actualizar campo oculto
-                                    if (updateHiddenField(event.data.zones_json)) {{
-                                        console.log('Campo actualizado, recargando...');
-                                        // Recargar después de un breve delay
-                                        setTimeout(() => {{
-                                            window.location.reload();
-                                        }}, 300);
-                                    }} else {{
-                                        // Guardar en localStorage como respaldo
-                                        localStorage.setItem('zones_save_{p_sel}', event.data.zones_json);
-                                        console.log('Guardado en localStorage, reintentando...');
-                                        setTimeout(() => updateHiddenField(event.data.zones_json), 500);
-                                    }}
-                                }}
-                            }}
-                        }}, false);
-                        
-                        // Al cargar, verificar si hay zonas en localStorage
-                        window.addEventListener('load', function() {{
-                            const savedZones = localStorage.getItem('zones_save_{p_sel}');
-                            if (savedZones) {{
-                                console.log('Procesando zonas desde localStorage...');
-                                if (updateHiddenField(savedZones)) {{
-                                    localStorage.removeItem('zones_save_{p_sel}');
-                                    setTimeout(() => window.location.reload(), 300);
-                                }}
-                            }}
-                        }});
-                    }})();
-                    </script>
-                    """
-                    st.markdown(auto_save_script, unsafe_allow_html=True)
-                    
-                    # Procesar guardado cuando cambia el campo oculto
-                    try:
-                        zones_data = json.loads(zones_json_hidden)
-                        new_json = json.dumps(zones_data, sort_keys=True)
-                        last_json = st.session_state[last_zones_key]
-                        
-                        if new_json != last_json:
-                            # Guardar inmediatamente
-                            zonas[p_sel] = zones_data
+                    # Procesar respuesta del componente
+                    if editor_result and isinstance(editor_result, dict):
+                        action = editor_result.get("action")
+                        zonas_component = editor_result.get("zones", [])
+                        if action == "save" and isinstance(zonas_component, list):
+                            zonas[p_sel] = zonas_component
                             if save_zones(zonas):
-                                st.session_state[last_zones_key] = new_json
-                                st.success(f"✅ {len(zones_data)} zonas guardadas automáticamente!")
+                                st.success(f"✅ {len(zonas_component)} zonas guardadas correctamente.")
+                                st.session_state[f"last_zones_{p_sel}"] = json.dumps(zonas_component, sort_keys=True)
                                 st.rerun()
                             else:
-                                st.error("❌ Error al guardar las zonas.")
-                    except json.JSONDecodeError:
-                        pass  # Ignorar errores de JSON durante la inicialización
-                    except Exception as e:
-                        pass  # Silenciar errores menores
+                                st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
                     
-                    st.info("💡 **Instrucciones:** 1) Selecciona equipo y color a la derecha, 2) Dibuja zonas en el editor, 3) Haz clic en '💾 Guardar Zonas' en el editor. Las zonas se guardarán automáticamente.")
+                    st.info("💡 **Instrucciones:** 1) Selecciona equipo y color a la derecha. 2) Dibuja zonas en el editor. 3) Haz clic en '💾 Guardar Zonas' dentro del editor para guardar automáticamente.")
                             
                 except Exception as e:
                     st.error(f"❌ Error en el editor: {str(e)}")
