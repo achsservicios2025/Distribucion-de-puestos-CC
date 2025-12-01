@@ -294,6 +294,62 @@ def filter_minimum_deficits(deficit_list):
             filtered.append(fixed)
     return filtered
 
+def infer_team_dotacion_map(df):
+    """Intenta inferir la dotación total por equipo usando la data disponible."""
+    if df is None or df.empty:
+        return {}
+    
+    cols_lower = {c.lower(): c for c in df.columns}
+    col_equipo = None
+    for key, col in cols_lower.items():
+        if "equipo" in key:
+            col_equipo = col
+            break
+    if not col_equipo:
+        return {}
+    
+    col_dot = next((col for key, col in cols_lower.items() if "dotacion" in key or "dotación" in key), None)
+    cupos_col = next((col for key, col in cols_lower.items() if "cupo" in key), None)
+    pct_col = None
+    for key, col in cols_lower.items():
+        if "%distrib" in key or "pct" in key or "porcentaje" in key:
+            pct_col = col
+            break
+    
+    dot_map = {}
+    
+    if col_dot:
+        series = df[[col_equipo, col_dot]].dropna()
+        for _, row in series.iterrows():
+            eq = str(row[col_equipo]).strip()
+            if not eq or eq.lower().startswith("cupos libres"):
+                continue
+            try:
+                dot = int(float(row[col_dot]))
+            except (TypeError, ValueError):
+                continue
+            if dot > 0:
+                dot_map.setdefault(eq, dot)
+    
+    if not dot_map and cupos_col and pct_col:
+        temp = df[[col_equipo, cupos_col, pct_col]].dropna()
+        for _, row in temp.iterrows():
+            eq = str(row[col_equipo]).strip()
+            if not eq or eq.lower().startswith("cupos libres"):
+                continue
+            try:
+                cupos_val = float(str(row[cupos_col]).replace(",", "."))
+                pct_val = float(str(row[pct_col]).replace("%", "").replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            if pct_val <= 0:
+                continue
+            dot_est = int(round(cupos_val * 100 / pct_val))
+            if dot_est > 0 and eq not in dot_map:
+                dot_map[eq] = dot_est
+    
+    return dot_map
+
 def clean_reservation_df(df, tipo="puesto"):
     if df.empty: return df
     cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at', 'registro', 'id.1']]
@@ -830,12 +886,13 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
             dias_habiles = len(ORDER_DIAS)
             weekly_stats["Promedio Cupo Semanal"] = (weekly_stats["Total Semanal"] / max(dias_habiles, 1)).round(2)
             
-            # Calcular porcentaje de uso semanal basado en el promedio
-            suma_promedios = weekly_stats["Promedio Cupo Semanal"].sum()
-            if suma_promedios > 0:
-                weekly_stats["% Uso Semanal"] = (weekly_stats["Promedio Cupo Semanal"] / suma_promedios * 100).round(2)
-            else:
-                weekly_stats["% Uso Semanal"] = 0
+            # Calcular % de uso semanal respecto de la dotación total
+            team_dots = infer_team_dotacion_map(semanal_df)
+            weekly_stats["Dotación"] = weekly_stats["Equipo"].map(team_dots).fillna(0).astype(int)
+            weekly_stats["% Uso Semanal"] = weekly_stats.apply(
+                lambda row: round((row["Total Semanal"] / row["Dotación"]) * 100, 2) if row["Dotación"] > 0 else 0,
+                axis=1
+            )
             
             # Ordenar por promedio descendente
             weekly_stats = weekly_stats.sort_values("Promedio Cupo Semanal", ascending=False)
@@ -871,7 +928,7 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
     notas = [
         "1. % Distribución Diario: Se calcula dividiendo los cupos asignados en un día específico por la dotación total del equipo.",
         "2. Promedio de Cupo Semanal: Suma de los cupos asignados al equipo durante la semana dividida por los 5 días hábiles (Lunes a Viernes).",
-        "3. % Uso Semanal: Proporción del promedio de cupos semanales del equipo respecto de la suma de promedios de todos los equipos.",
+        "3. % Uso Semanal: Cupos asignados durante la semana divididos por la dotación total del equipo.",
         "4. Cálculo de Déficit: Diferencia entre los cupos mínimos requeridos (según reglas de presencialidad) y los asignados."
     ]
     
