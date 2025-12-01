@@ -917,64 +917,69 @@ settings = st.session_state["app_settings"]
 
 # Definir variables
 site_title = settings.get("site_title", "Gestor de Puestos y Salas — ACHS Servicios")
-global_logo_path = settings.get("logo_path", "static/logo.png")
+global_logo_path = settings.get("logo_path", "static/logo.png") or "static/logo.png"
+if isinstance(global_logo_path, str):
+    global_logo_path = global_logo_path.strip()
 
-# Cargar logo de forma simple y directa
 logo_cargado = False
 
-# Lista de rutas a intentar (en orden de prioridad)
-logo_paths_to_try = []
-
-# Si hay una ruta personalizada, intentarla primero
-if global_logo_path and global_logo_path != "static/logo.png":
-    logo_paths_to_try.append(global_logo_path)
-
-# Siempre intentar la ruta por defecto
-logo_paths_to_try.extend([
-    "static/logo.png",
-    str(Path("static/logo.png")),
-    str(Path("static") / "logo.png"),
-])
-
-# Intentar cargar el logo
-for logo_path in logo_paths_to_try:
+# Si el logo es una URL remota, intentar mostrarla directamente
+if isinstance(global_logo_path, str) and global_logo_path.lower().startswith(("http://", "https://")):
     try:
-        # Convertir Path a string si es necesario
-        logo_str = str(logo_path) if isinstance(logo_path, Path) else logo_path
-        
-        # Verificar que existe
-        if not os.path.exists(logo_str) or not os.path.isfile(logo_str):
-            continue
-        
-        # Intentar cargar directamente con Streamlit (método más simple)
         c1, c2 = st.columns([1, 5])
-        c1.image(logo_str, width=150, use_container_width=False)
+        c1.image(global_logo_path, width=150, use_container_width=False)
         c2.title(site_title)
         logo_cargado = True
-        break
-    except Exception as e:
-        # Si falla Streamlit, intentar con PIL
+    except Exception:
+        logo_cargado = False
+
+if not logo_cargado:
+    # Normalizar separadores de ruta para manejar valores guardados en Windows
+    if isinstance(global_logo_path, str):
+        global_logo_path = global_logo_path.replace("\\", "/")
+
+    # Lista de rutas a intentar (en orden de prioridad)
+    logo_paths_to_try = []
+    if global_logo_path and global_logo_path != "static/logo.png":
+        logo_paths_to_try.append(global_logo_path)
+
+    logo_paths_to_try.extend([
+        "static/logo.png",
+        str(Path("static/logo.png")),
+        str(Path("static") / "logo.png"),
+    ])
+
+    for logo_path in logo_paths_to_try:
         try:
-            from PIL import Image
-            img = Image.open(logo_str)
+            logo_str = str(logo_path) if isinstance(logo_path, Path) else logo_path
+            logo_str = logo_str.replace("\\", "/")
+
+            if not os.path.exists(logo_str) or not os.path.isfile(logo_str):
+                continue
+
             c1, c2 = st.columns([1, 5])
-            c1.image(img, width=150, use_container_width=False)
+            c1.image(logo_str, width=150, use_container_width=False)
             c2.title(site_title)
             logo_cargado = True
             break
         except Exception:
-            continue
+            try:
+                from PIL import Image
+                img = Image.open(logo_str)
+                c1, c2 = st.columns([1, 5])
+                c1.image(img, width=150, use_container_width=False)
+                c2.title(site_title)
+                logo_cargado = True
+                break
+            except Exception:
+                continue
 
-# Si no se cargó el logo, mostrar solo el título
 if not logo_cargado:
     st.title(site_title)
-    # Mostrar información de debug solo si es necesario
     default_path = "static/logo.png"
     if os.path.exists(default_path):
-        # El archivo existe pero no se pudo cargar
         st.caption("💡 Logo encontrado pero no se pudo cargar. Verifica que sea una imagen válida.")
     else:
-        # El archivo no existe
         st.caption(f"💡 Logo no encontrado en static/logo.png")
 
 # ---------------------------------------------------------
