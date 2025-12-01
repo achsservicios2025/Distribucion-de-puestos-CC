@@ -276,21 +276,22 @@ def generate_ideal_distributions(df_equipos, df_parametros, num_options=3):
     return distributions
 
 def filter_minimum_deficits(deficit_list):
-    """Devuelve solo los déficits donde no se cumple el mínimo requerido."""
+    """Recalcula los déficits únicamente cuando el mínimo no se cumple."""
     filtered = []
     for item in deficit_list or []:
         try:
-            minimo = int(str(item.get("minimo", 0)).strip())
-            asignado = int(str(item.get("asignado", 0)).strip())
+            minimo = int(float(str(item.get("minimo", 0)).strip()))
+            asignado = int(float(str(item.get("asignado", 0)).strip()))
         except (TypeError, ValueError):
             continue
-        deficit_val = minimo - asignado
+        deficit_val = max(0, minimo - asignado)
         if deficit_val > 0:
-            item = dict(item)
-            item["minimo"] = minimo
-            item["asignado"] = asignado
-            item["deficit"] = deficit_val
-            filtered.append(item)
+            fixed = dict(item)
+            fixed["minimo"] = minimo
+            fixed["asignado"] = asignado
+            fixed["deficit"] = deficit_val
+            fixed["causa"] = f"Faltan {deficit_val} puestos (capacidad insuficiente)"
+            filtered.append(fixed)
     return filtered
 
 def clean_reservation_df(df, tipo="puesto"):
@@ -2123,7 +2124,8 @@ elif menu == "Administrador":
     with t3:
         st.subheader("Generar Reportes de Distribución")
         
-        deficits_ui = filter_minimum_deficits(st.session_state.get('deficit_report', []))
+        raw_deficits = st.session_state.get('deficit_report') or st.session_state.get('proposal_deficit') or []
+        deficits_ui = filter_minimum_deficits(raw_deficits)
         if deficits_ui:
             st.markdown("---")
             st.error("🚨 INFORME DE DÉFICIT DE CUPOS")
@@ -2155,7 +2157,8 @@ elif menu == "Administrador":
                 st.session_state['rd'] = b.getvalue(); st.session_state['rn'] = "distribucion.xlsx"; st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             else:
                 df = df_raw.rename(columns={"piso":"Piso","equipo":"Equipo","dia":"Día","cupos":"Cupos","pct":"%Distrib"})
-                d_data = st.session_state.get('deficit_report', [])
+                raw_deficits_pdf = st.session_state.get('deficit_report') or st.session_state.get('proposal_deficit') or []
+                d_data = filter_minimum_deficits(raw_deficits_pdf)
                 st.session_state['rd'] = generate_full_pdf(df, df, logo_path=Path(global_logo_path), deficit_data=d_data)
                 st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
             st.success("✅ Reporte generado")
