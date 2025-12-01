@@ -918,26 +918,39 @@ site_title = settings.get("site_title", "Gestor de Puestos y Salas — ACHS Serv
 global_logo_path = settings.get("logo_path", "static/logo.png")
 
 # CORREGIDO: Cargar logo con manejo robusto de errores
-try:
-    logo_path_abs = Path(global_logo_path).resolve()
-    if logo_path_abs.exists() and logo_path_abs.is_file():
-        c1, c2 = st.columns([1, 5])
-        c1.image(str(logo_path_abs), width=150, use_container_width=False)
-        c2.title(site_title)
-    else:
-        # Intentar con ruta relativa
-        if os.path.exists(global_logo_path):
-            c1, c2 = st.columns([1, 5])
-            c1.image(global_logo_path, width=150, use_container_width=False)
-            c2.title(site_title)
-        else:
-            st.title(site_title)
-            if global_logo_path != "static/logo.png":
-                st.info(f"💡 Logo configurado en: {global_logo_path} (archivo no encontrado)")
-except Exception as e:
-    # Si hay error al cargar el logo, mostrar solo el título
+logo_cargado = False
+rutas_posibles = [
+    global_logo_path,
+    str(Path(global_logo_path).resolve()),
+    str(Path("static/logo.png").resolve()),
+    "static/logo.png",
+    str(Path("static") / "logo.png"),
+]
+
+for ruta in rutas_posibles:
+    try:
+        ruta_str = str(ruta) if isinstance(ruta, Path) else ruta
+        if os.path.exists(ruta_str) and os.path.isfile(ruta_str):
+            # Verificar que sea una imagen válida
+            try:
+                from PIL import Image as PILImage
+                img_test = PILImage.open(ruta_str)
+                img_test.verify()
+                # Si llegamos aquí, la imagen es válida
+                c1, c2 = st.columns([1, 5])
+                c1.image(ruta_str, width=150, use_container_width=False)
+                c2.title(site_title)
+                logo_cargado = True
+                break
+            except Exception as img_error:
+                continue
+    except Exception:
+        continue
+
+if not logo_cargado:
     st.title(site_title)
-    st.warning(f"⚠️ No se pudo cargar el logo desde {global_logo_path}: {str(e)}")
+    if global_logo_path != "static/logo.png":
+        st.info(f"💡 Logo configurado en: {global_logo_path} (archivo no encontrado o inválido)")
 
 # ---------------------------------------------------------
 # MENÚ PRINCIPAL
@@ -1637,15 +1650,16 @@ elif menu == "Administrador":
                     conteo_injusticia = def_df['equipo'].value_counts().reset_index()
                     conteo_injusticia.columns = ['Equipo', 'Veces Perjudicado']
                     
-                    c1, c2 = st.columns(2)
-                    c1.markdown("**Detalle de Conflictos:**")
-                    c1.dataframe(def_df, use_container_width=True)
+                    # CORREGIDO: Tablas una arriba y otra abajo para mejor visualización
+                    st.markdown("**📊 Detalle de Conflictos:**")
+                    st.dataframe(def_df, hide_index=True, use_container_width=True)
                     
-                    c2.markdown("**⚠️ Equipos más afectados (Repetición):**")
-                    c2.dataframe(conteo_injusticia, use_container_width=True)
+                    st.markdown("---")
+                    st.markdown("**⚠️ Equipos más afectados (Repetición):**")
+                    st.dataframe(conteo_injusticia, hide_index=True, use_container_width=True)
                     
                     if conteo_injusticia['Veces Perjudicado'].max() > 1:
-                        c2.error("Hay equipos sufriendo déficit múltiples días. Se recomienda usar 'Auto-Optimizar'.")
+                        st.error("Hay equipos sufriendo déficit múltiples días. Se recomienda usar 'Auto-Optimizar'.")
                 else:
                     st.info("Sin conflictos. Todos los equipos caben perfectamente.")
 
@@ -1807,7 +1821,12 @@ elif menu == "Administrador":
                     if col_btn2.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
                         if st.session_state.get(f"confirm_clear_{p_sel}", False):
                             zonas[p_sel] = []
-                            save_zones(zonas)
+                            if save_zones(zonas):
+                                st.success("✅ Todas las zonas eliminadas")
+                                st.session_state[f"confirm_clear_{p_sel}"] = False
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al eliminar las zonas")
                             st.success("✅ Todas las zonas eliminadas")
                             st.session_state[f"confirm_clear_{p_sel}"] = False
                             st.rerun()
@@ -1907,14 +1926,23 @@ elif menu == "Administrador":
                         if new_json != last_json:
                             # Guardar inmediatamente
                             zonas[p_sel] = zones_data
-                            save_zones(zonas)
-                            st.session_state[last_zones_key] = new_json
-                            st.success(f"✅ {len(zones_data)} zonas guardadas automáticamente!")
-                            st.rerun()
-                    except json.JSONDecodeError:
-                        pass
+                            if save_zones(zonas):
+                                st.session_state[last_zones_key] = new_json
+                                st.success(f"✅ {len(zones_data)} zonas guardadas automáticamente!")
+                                # Recargar zonas para verificar
+                                zonas_verificadas = load_zones()
+                                if p_sel in zonas_verificadas and len(zonas_verificadas[p_sel]) == len(zones_data):
+                                    st.rerun()
+                                else:
+                                    st.warning("⚠️ Las zonas se guardaron pero no se pudieron verificar. Intenta recargar la página.")
+                            else:
+                                st.error("❌ Error al guardar las zonas. Intenta usar el botón de guardado manual.")
+                    except json.JSONDecodeError as e:
+                        st.warning(f"⚠️ Error al parsear JSON: {e}")
                     except Exception as e:
-                        pass
+                        st.warning(f"⚠️ Error al guardar: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
                     
                     # Botón manual de guardado como respaldo
                     if st.button("💾 Guardar Zonas Manualmente", key=f"manual_save_{p_sel}"):
@@ -1922,13 +1950,18 @@ elif menu == "Administrador":
                             zones_data = json.loads(zones_json_hidden)
                             if isinstance(zones_data, list):
                                 zonas[p_sel] = zones_data
-                                save_zones(zonas)
-                                # Actualizar session_state
-                                st.session_state[last_zones_key] = json.dumps(zones_data, sort_keys=True)
-                                st.success(f"✅ {len(zones_data)} zonas guardadas manualmente!")
-                                # Recargar zonas
-                                zonas = load_zones()
-                                st.rerun()
+                                if save_zones(zonas):
+                                    # Actualizar session_state
+                                    st.session_state[last_zones_key] = json.dumps(zones_data, sort_keys=True)
+                                    st.success(f"✅ {len(zones_data)} zonas guardadas manualmente!")
+                                    # Recargar zonas para verificar
+                                    zonas_verificadas = load_zones()
+                                    if p_sel in zonas_verificadas and len(zonas_verificadas[p_sel]) == len(zones_data):
+                                        st.rerun()
+                                    else:
+                                        st.warning("⚠️ Las zonas se guardaron pero no se pudieron verificar. Intenta recargar la página.")
+                                else:
+                                    st.error("❌ Error al guardar las zonas. Verifica los permisos del archivo.")
                             else:
                                 st.error("Formato de datos inválido")
                         except json.JSONDecodeError as e:
@@ -2008,16 +2041,20 @@ elif menu == "Administrador":
                             if st.button("💾 Actualizar Zona", key=f"update_{selected_zone_idx}_{p_sel}"):
                                 zonas[p_sel][selected_zone_idx]['team'] = new_team
                                 zonas[p_sel][selected_zone_idx]['color'] = new_color
-                                save_zones(zonas)
-                                st.success("✅ Zona actualizada")
-                                st.rerun()
+                                if save_zones(zonas):
+                                    st.success("✅ Zona actualizada")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Error al guardar la zona")
                         
                         with col_edit2:
                             if st.button("🗑️ Eliminar Zona", key=f"delete_{selected_zone_idx}_{p_sel}"):
                                 zonas[p_sel].pop(selected_zone_idx)
-                                save_zones(zonas)
-                                st.success("✅ Zona eliminada")
-                                st.rerun()
+                                if save_zones(zonas):
+                                    st.success("✅ Zona eliminada")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Error al eliminar la zona")
                 
                 # Leyenda de colores
                 st.markdown("#### 🎨 Leyenda de Colores")
