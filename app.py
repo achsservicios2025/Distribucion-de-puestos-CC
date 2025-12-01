@@ -134,6 +134,7 @@ from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
 from streamlit_drawable_canvas import st_canvas
+from streamlit_zone_editor import zone_editor
 import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
@@ -1800,16 +1801,17 @@ elif menu == "Administrador":
                     else:
                         st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
                     
-                    # Renderizar componente HTML con comunicación via mensajes
-                    editor_result = create_enhanced_drawing_component(
-                        str(pim),
-                        existing_zones,
+                    # Renderizar componente personalizado basado en Streamlit Components
+                    editor_result = zone_editor(
+                        img_path=str(pim),
+                        existing_zones=existing_zones,
                         selected_team=selected_team,
                         selected_color=selected_color or "#00A04A",
-                        width=640
+                        width=640,
+                        key=f"zone_editor_{p_sel}"
                     )
                     
-                    # Botones de acción
+                    # Botones de acción auxiliares
                     col_btn1, col_btn2 = st.columns(2)
                     
                     if col_btn1.button("🔄 Recargar Zonas", key=f"reload_{p_sel}"):
@@ -1829,82 +1831,22 @@ elif menu == "Administrador":
                             st.session_state[f"confirm_clear_{p_sel}"] = True
                             st.warning("⚠️ Haz clic de nuevo para confirmar la eliminación de TODAS las zonas")
                     
-                    # Campo oculto para recibir mensajes del componente
-                    hidden_key = f"zones_payload_{p_sel}"
-                    if f"last_zones_{p_sel}" not in st.session_state:
-                        st.session_state[f"last_zones_{p_sel}"] = json.dumps(existing_zones, sort_keys=True)
-                    placeholder_tag = f"zones_hook_{p_sel}"
-                    zones_payload = st.text_input(
-                        "",
-                        value="",
-                        key=hidden_key,
-                        label_visibility="collapsed",
-                        placeholder=placeholder_tag
-                    )
-                    
-                    # Ocultar el input para que el usuario no lo vea
-                    st.markdown(f"""
-                    <style>
-                    input[placeholder="{placeholder_tag}"] {{
-                        position: absolute !important;
-                        opacity: 0 !important;
-                        pointer-events: none !important;
-                        height: 0 !important;
-                        width: 0 !important;
-                    }}
-                    </style>
-                    """, unsafe_allow_html=True)
-                    
-                    # Script para actualizar el campo oculto cuando el iframe envía datos
-                    st.markdown(f"""
-                    <script>
-                    (function() {{
-                        const selector = 'input[placeholder="{placeholder_tag}"]';
-                        
-                        window.addEventListener('message', function(event) {{
-                            if (event.data && event.data.type === 'zones_saved' && event.data.piso === '{p_sel}') {{
-                                const payload = JSON.stringify(event.data);
-                                const el = window.parent.document.querySelector(selector);
-                                const applyValue = () => {{
-                                    const target = window.parent.document.querySelector(selector);
-                                    if (target) {{
-                                        target.value = payload;
-                                        target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                        target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                        return true;
-                                    }}
-                                    return false;
-                                }};
-                                
-                                if (!applyValue()) {{
-                                    setTimeout(applyValue, 400);
-                                }}
-                            }}
-                        }}, false);
-                    }})();
-                    </script>
-                    """, unsafe_allow_html=True)
-                    
-                    # Procesar payload recibido
-                    if zones_payload:
+                    # Procesar respuesta del componente
+                    if editor_result:
                         try:
-                            payload = json.loads(zones_payload)
-                            zonas_component = payload.get("zones", [])
+                            zonas_component = editor_result.get("zones", [])
+                            action = editor_result.get("action", "manual")
                             if isinstance(zonas_component, list):
-                                action = payload.get("action", "manual")
                                 zonas[p_sel] = zonas_component
                                 if save_zones(zonas):
                                     st.success(f"✅ {len(zonas_component)} zonas guardadas automáticamente.")
                                     st.session_state[f"last_zones_{p_sel}"] = json.dumps(zonas_component, sort_keys=True)
-                                    st.session_state[hidden_key] = ""
                                     if action == "manual":
                                         st.rerun()
                                 else:
                                     st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
-                        except json.JSONDecodeError:
-                            pass
                         except Exception:
-                            pass
+                            st.warning("⚠️ No se pudo procesar la respuesta del editor.")
                     
                     st.info("💡 **Instrucciones:** 1) Selecciona equipo y color a la derecha. 2) Dibuja zonas en el editor. 3) Haz clic en '💾 Guardar Zonas' dentro del editor para guardar automáticamente.")
                             
