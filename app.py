@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit  # 👈 necesario porque tú usas "streamlit.elements..."
 import pandas as pd
 import datetime
 import os
@@ -18,29 +19,48 @@ from typing import Optional
 import numpy as np
 import random
 
-
 # ---------------------------------------------------------
-# 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
+# 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
 # ---------------------------------------------------------
-import streamlit.elements.lib.image_utils
+try:
+    import streamlit.elements.lib.image_utils as _img_utils
 
-if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
-    _orig_image_to_url = streamlit.elements.lib.image_utils.image_to_url
+    if hasattr(_img_utils, "image_to_url"):
+        _orig_image_to_url = _img_utils.image_to_url
 
-    @dataclass
-    class WidthConfig:
-        width: int
+        @dataclass
+        class WidthConfig:
+            width: int
 
-    def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-        # Si es un string (URL base64), devolverlo directamente
-        if isinstance(image_data, str):
-            return image_data
-        # Si width es int, convertirlo a WidthConfig
-        if isinstance(width, int):
-            width = WidthConfig(width=width)
-        return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
+        def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
+            if isinstance(image_data, str):
+                return image_data
+            if isinstance(width, int):
+                width = WidthConfig(width=width)
+            return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
 
-    streamlit.elements.lib.image_utils.image_to_url = _patched_image_to_url
+        _img_utils.image_to_url = _patched_image_to_url
+
+    # Parche adicional para st_image (usado por st_canvas internamente)
+    try:
+        import streamlit.elements.image as st_image_module
+        if hasattr(st_image_module, "image_to_url"):
+            _orig_st_image_to_url = st_image_module.image_to_url
+
+            def _patched_st_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
+                if isinstance(image_data, str):
+                    return image_data
+                if isinstance(width, int):
+                    width = WidthConfig(width=width)
+                return _orig_st_image_to_url(image_data, width, clamp, channels, output_format, image_id)
+
+            st_image_module.image_to_url = _patched_st_image_to_url
+    except Exception:
+        pass
+
+except Exception:
+    # Si Streamlit cambia internals, no bloquear la app
+    pass
 
 
 def resolve_logo_source(raw_path: Optional[str], logo_b64: Optional[str]):
@@ -82,25 +102,6 @@ def resolve_logo_source(raw_path: Optional[str], logo_b64: Optional[str]):
                 continue
 
     return None
-
-# Parche adicional para st_image (usado por st_canvas internamente)
-try:
-    import streamlit.elements.image as st_image_module
-    if hasattr(st_image_module, "image_to_url"):
-        _orig_st_image_to_url = st_image_module.image_to_url
-        
-        def _patched_st_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-            # Si es un string (URL base64), devolverlo directamente
-            if isinstance(image_data, str):
-                return image_data
-            # Si width es int, convertirlo a WidthConfig
-            if isinstance(width, int):
-                width = WidthConfig(width=width)
-            return _orig_st_image_to_url(image_data, width, clamp, channels, output_format, image_id)
-        
-        st_image_module.image_to_url = _patched_st_image_to_url
-except:
-    pass  # Si no existe el módulo, continuar sin parche
 
 # ---------------------------------------------------------
 # 2. IMPORTACIONES DE MÓDULOS
@@ -1593,12 +1594,12 @@ elif menu == "Reservas":
                                 
                                 st.rerun()
 
-    # ---------------------------------------------------------
-    # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
-    # ---------------------------------------------------------
-    elif opcion_reserva == "📋 Mis Reservas y Listados":
+# ---------------------------------------------------------
+# OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
+# ---------------------------------------------------------
+elif opcion_reserva == "📋 Mis Reservas y Listados":
 
-    # --- SECCION 1: BUSCADOR PARA ANULAR ---
+# --- SECCION 1: BUSCADOR PARA ANULAR ---
     st.subheader("Buscar y Cancelar mis reservas")
     q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
 
@@ -1636,23 +1637,19 @@ elif menu == "Reservas":
 
         required = {"user_name", "user_email"}
         if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
-           (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
+            (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
             st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
             st.stop()
 
         ql = q.strip().lower()
 
-        if dp is None or dp.empty:
-            mp = pd.DataFrame()
-        else:
+        if dp is not None and not dp.empty:
             mp = dp[
                 dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
                 dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
             ]
 
-        if ds is None or ds.empty:
-            ms = pd.DataFrame()
-        else:
+        if ds is not None and not ds.empty:
             ms = ds[
                 ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
                 ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
@@ -1668,7 +1665,7 @@ elif menu == "Reservas":
                         c1, c2 = st.columns([5, 1])
                         c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
                         if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                            confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+                            confirm_delete_dialog(conn, r["user_name"], r["reservation_date"], r["team_area"], r["piso"])
 
             if not ms.empty:
                 st.markdown("#### 🏢 Tus Salas")
@@ -1677,20 +1674,19 @@ elif menu == "Reservas":
                         c1, c2 = st.columns([5, 1])
                         c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
                         if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                            confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+                            confirm_delete_room_dialog(conn, r["user_name"], r["reservation_date"], r["room_name"], r["start_time"])
 
     st.markdown("---")
 
-    # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
-    with st.expander("Ver Listado General de Reservas", expanded=True):
+        # --- SECCION 2: VER TODO ---
+        with st.expander("Ver Listado General de Reservas", expanded=True):
+            st.subheader("Reserva de puestos")
+            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
 
-        st.subheader("Reserva de puestos")
-        st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        st.subheader("Reserva de salas")
-        st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
+            st.subheader("Reserva de salas")
+            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
 
 # ==========================================
 # E. ADMINISTRADOR
@@ -2736,27 +2732,5 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
