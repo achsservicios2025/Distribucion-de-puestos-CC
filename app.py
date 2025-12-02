@@ -827,30 +827,27 @@ def create_merged_pdf(piso_sel, conn, global_logo_path):
     if not found_any: return None
     return pdf.output(dest='S').encode('latin-1')
 
-# --- EN app.py ---
-
 def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
+    """
+    Genera el reporte PDF de distribución.
+    CORRECCIÓN: Lee la columna 'piso' directamente (ya viene limpia de seats.py).
+    """
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
     
     # 1. Copia de seguridad
     df_print = distrib_df.copy()
 
-    # 2. Convertir PISO a texto simple (para que "2" sea texto y no número conflictivo)
-    # Buscamos la columna sin importar mayúsculas
+    # 2. Convertir PISO a texto simple por seguridad (aunque seats.py ya lo limpió)
     col_piso = next((c for c in df_print.columns if c.lower().strip() == "piso"), None)
     
     if col_piso:
-        # Convertimos todo a texto. Si era 2, queda "2". Si era 2.0, queda "2.0".
+        # Convertimos todo a texto
         df_print[col_piso] = df_print[col_piso].astype(str)
-        
-        # Opcional: Quitamos el ".0" si aparece (para que "2.0" se vea "2")
-        df_print[col_piso] = df_print[col_piso].apply(lambda x: x.replace(".0", "") if x.endswith(".0") else x)
-        
-        # Solo si es realmente nulo ponemos guion, sino dejamos el valor
-        df_print[col_piso] = df_print[col_piso].replace("nan", "-")
+        # Limpieza final de seguridad
+        df_print[col_piso] = df_print[col_piso].replace({"nan": "-", "None": "-", "<NA>": "-"})
 
-    # --- PÁGINA 1 ---
+    # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     if logo_path.exists():
@@ -877,7 +874,6 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
 
     # Imprimir filas
     for _, r in df_print.iterrows():
-        # Tomamos el piso directo (ya está limpio como texto "2")
         piso_val = r[col_piso] if col_piso else "-"
         
         pdf.cell(widths[0], 6, clean_pdf_text(piso_val), 1)
@@ -934,6 +930,14 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
 
     except Exception as e:
         pdf.cell(0, 6, clean_pdf_text(f"Error resumen: {str(e)}"), ln=True)
+
+    # --- GLOSARIO ---
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 8, clean_pdf_text("Glosario:"), ln=True)
+    pdf.set_font("Arial", '', 9)
+    pdf.set_x(10)
+    pdf.multi_cell(185, 6, clean_pdf_text("1. El equipo 'Cupos libres' se excluye del resumen semanal.\n2. % Uso Semanal = (Cupos Asignados / (Dotación * 5)) * 100."))
 
     return pdf.output(dest='S').encode('latin-1')
 # --- DIALOGOS MODALES ---
@@ -2664,6 +2668,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
