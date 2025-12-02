@@ -1472,7 +1472,6 @@ elif menu == "Reservas":
         # --- SECCION 1: BUSCADOR PARA ANULAR ---
         st.subheader("Buscar y Cancelar mis reservas")
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
-        
         if q:
     dp = list_reservations_df(conn)
     ds = get_room_reservations_df(conn)
@@ -2710,6 +2709,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
