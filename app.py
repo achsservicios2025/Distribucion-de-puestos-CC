@@ -1474,11 +1474,59 @@ elif menu == "Reservas":
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
         
         if q:
-            dp = list_reservations_df(conn)
-            mp = dp[(dp['user_name'].str.lower().str.contains(q.lower())) | (dp['user_email'].str.lower().str.contains(q.lower()))]
-            
-            ds = get_room_reservations_df(conn)
-            ms = ds[(ds['user_name'].str.lower().str.contains(q.lower())) | (ds['user_email'].str.lower().str.contains(q.lower()))]
+    dp = list_reservations_df(conn)
+    ds = get_room_reservations_df(conn)
+
+    # Blindaje: asegurar columnas esperadas (por si vienen con otros nombres)
+    def ensure_cols(df):
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]  # quita espacios raros
+
+        rename_map = {}
+        if "user_name" not in df.columns:
+            for c in df.columns:
+                if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
+                    rename_map[c] = "user_name"
+                    break
+
+        if "user_email" not in df.columns:
+            for c in df.columns:
+                if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
+                    rename_map[c] = "user_email"
+                    break
+
+        return df.rename(columns=rename_map)
+
+    dp = ensure_cols(dp)
+    ds = ensure_cols(ds)
+
+    # Si aún faltan columnas, mostramos error claro y no rompemos la app
+    required = {"user_name", "user_email"}
+    if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
+       (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
+        st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
+        st.stop()
+
+    ql = q.strip().lower()
+
+    # Evitar .str sobre NaN
+    if dp is None or dp.empty:
+        mp = dp
+    else:
+        mp = dp[
+            dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+            dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+        ]
+
+    if ds is None or ds.empty:
+        ms = ds
+    else:
+        ms = ds[
+            ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+            ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+        ]
             
             if mp.empty and ms.empty:
                 st.warning("No encontré reservas con esos datos.")
@@ -2662,6 +2710,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
