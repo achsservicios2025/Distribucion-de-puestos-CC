@@ -830,10 +830,19 @@ def create_merged_pdf(piso_sel, conn, global_logo_path):
 def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
     """
     Genera el reporte PDF de distribución con tablas diaria y semanal.
+    CORREGIDO: Filtra Cupos libres en resumen semanal y arregla pisos 'nan'.
     """
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
     
+    # --- PRE-PROCESAMIENTO PARA EVITAR 'nan' ---
+    # Convertimos a string y rellenamos nulos antes de cualquier cosa
+    if not distrib_df.empty:
+        # Asegurar que el piso sea string para evitar problemas con Categorical
+        for col in ["Piso", "piso"]:
+            if col in distrib_df.columns:
+                distrib_df[col] = distrib_df[col].astype(str).replace("nan", "").replace("None", "")
+
     # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -862,9 +871,18 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
             if k.lower() in row: return str(row[k.lower()])
         return ""
 
-    distrib_df = apply_sorting_to_df(distrib_df)
-    for _, r in distrib_df.iterrows():
-        pdf.cell(widths[0], 6, clean_pdf_text(get_val(r, ["Piso", "piso"])), 1)
+    # Intentamos ordenar, pero si falla, usamos el DF original para no perder datos
+    try:
+        distrib_df_sorted = apply_sorting_to_df(distrib_df)
+    except:
+        distrib_df_sorted = distrib_df
+
+    for _, r in distrib_df_sorted.iterrows():
+        # Limpieza extra para el piso
+        piso_val = get_val(r, ["Piso", "piso"])
+        if piso_val.lower() == "nan": piso_val = "-"
+
+        pdf.cell(widths[0], 6, clean_pdf_text(piso_val), 1)
         pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
         pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
         pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
@@ -877,60 +895,59 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
     
-    # Cálculo del resumen semanal (CORREGIDO: Fórmula Solicitada)
+    # Cálculo del resumen semanal
     try:
         # Calcular total semanal por equipo
-        if "Cupos" in distrib_df.columns or "cupos" in distrib_df.columns:
-            col_cupos = "Cupos" if "Cupos" in distrib_df.columns else "cupos"
-            col_equipo = "Equipo" if "Equipo" in distrib_df.columns else "equipo"
-            
-            # Agrupar por equipo y sumar cupos semanales
-            weekly_stats = distrib_df.groupby(col_equipo)[col_cupos].sum().reset_index()
-            weekly_stats.columns = ["Equipo", "Total Semanal"]
-            
-            # Calcular promedio semanal por equipo (sobre 5 días hábiles)
-            dias_habiles = len(ORDER_DIAS)
-            weekly_stats["Promedio Cupo Semanal"] = (weekly_stats["Total Semanal"] / max(dias_habiles, 1)).round(2)
-            
-            # Calcular % de uso semanal respecto de la dotación total
-            team_dots = infer_team_dotacion_map(semanal_df)
-            weekly_stats["Dotación"] = weekly_stats["Equipo"].map(team_dots).fillna(0).astype(int)
-            weekly_stats["Total Semanal"] = weekly_stats["Total Semanal"].astype(float)
-            
-            # --- MODIFICACIÓN: FÓRMULA SOLICITADA ---
-            # Cantidad de cupos totales asignados / cantidad de cupos totales necesarios segun total de dotacion * 100
-            # Semana de lunes a viernes (5 dias)
-            
-            dias_semana = 5
-            weekly_stats["Cupos Necesarios Totales"] = weekly_stats["Dotación"] * dias_semana
-            
-            weekly_stats["% Uso Semanal"] = weekly_stats.apply(
-                lambda x: (x["Total Semanal"] / x["Cupos Necesarios Totales"] * 100) if x["Cupos Necesarios Totales"] > 0 else 0.0,
-                axis=1
-            ).round(2)
-            # ---------------------------------------
-            
-            # Ordenar por promedio descendente
-            weekly_stats = weekly_stats.sort_values("Promedio Cupo Semanal", ascending=False)
-            
-            # Dibujar Tabla Semanal
-            pdf.set_font("Arial", 'B', 9)
-            w_wk = [80, 50, 40]
-            h_wk = ["Equipo", "Promedio Cupo Semanal", "% Uso Semanal"]
-            
-            # Centrar un poco la tabla
-            start_x = 25
-            pdf.set_x(start_x)
-            for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
-            pdf.ln()
+        col_cupos = "Cupos" if "Cupos" in distrib_df.columns else "cupos"
+        col_equipo = "Equipo" if "Equipo" in distrib_df.columns else "equipo"
+        
+        # Agrupar por equipo y sumar cupos semanales
+        weekly_stats = distrib_df.groupby(col_equipo)[col_cupos].sum().reset_index()
+        weekly_stats.columns = ["Equipo", "Total Semanal"]
 
-            pdf.set_font("Arial", '', 9)
-            for _, row in weekly_stats.iterrows():
-                pdf.set_x(start_x)
-                pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:40]), 1)
-                pdf.cell(w_wk[1], 6, clean_pdf_text(str(row["Promedio Cupo Semanal"])), 1)
-                pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['% Uso Semanal']:.2f}%"), 1)
-                pdf.ln()
+        # --- CORRECCIÓN 1: FILTRAR CUPOS LIBRES ---
+        # Quitamos "Cupos libres" del reporte semanal para que no salga con 0%
+        weekly_stats = weekly_stats[weekly_stats["Equipo"] != "Cupos libres"]
+        # ------------------------------------------
+        
+        # Calcular promedio semanal por equipo (sobre 5 días hábiles)
+        dias_habiles = len(ORDER_DIAS)
+        weekly_stats["Promedio Cupo Semanal"] = (weekly_stats["Total Semanal"] / max(dias_habiles, 1)).round(2)
+        
+        # Calcular % de uso semanal respecto de la dotación total
+        team_dots = infer_team_dotacion_map(semanal_df)
+        weekly_stats["Dotación"] = weekly_stats["Equipo"].map(team_dots).fillna(0).astype(int)
+        weekly_stats["Total Semanal"] = weekly_stats["Total Semanal"].astype(float)
+        
+        dias_semana = 5
+        weekly_stats["Cupos Necesarios Totales"] = weekly_stats["Dotación"] * dias_semana
+        
+        weekly_stats["% Uso Semanal"] = weekly_stats.apply(
+            lambda x: (x["Total Semanal"] / x["Cupos Necesarios Totales"] * 100) if x["Cupos Necesarios Totales"] > 0 else 0.0,
+            axis=1
+        ).round(2)
+        
+        # Ordenar por promedio descendente
+        weekly_stats = weekly_stats.sort_values("Promedio Cupo Semanal", ascending=False)
+        
+        # Dibujar Tabla Semanal
+        pdf.set_font("Arial", 'B', 9)
+        w_wk = [80, 50, 40]
+        h_wk = ["Equipo", "Promedio Cupo Semanal", "% Uso Semanal"]
+        
+        # Centrar un poco la tabla
+        start_x = 25
+        pdf.set_x(start_x)
+        for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
+        pdf.ln()
+
+        pdf.set_font("Arial", '', 9)
+        for _, row in weekly_stats.iterrows():
+            pdf.set_x(start_x)
+            pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:40]), 1)
+            pdf.cell(w_wk[1], 6, clean_pdf_text(str(row["Promedio Cupo Semanal"])), 1)
+            pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['% Uso Semanal']:.2f}%"), 1)
+            pdf.ln()
     except Exception as e:
         pdf.set_font("Arial", 'I', 9)
         pdf.cell(0, 6, clean_pdf_text(f"No se pudo calcular el resumen semanal: {str(e)}"), ln=True)
@@ -945,7 +962,8 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
         "1. % Distribución Diario: Se calcula dividiendo los cupos asignados en un día específico por la dotación total del equipo.",
         "2. Promedio de Cupo Semanal: Suma de los cupos asignados al equipo durante la semana dividida por los 5 días hábiles (Lunes a Viernes).",
         "3. % Uso Semanal: (Cupos totales asignados en la semana / (Dotación total * 5 días)) * 100.",
-        "4. Cálculo de Déficit: Diferencia entre los cupos mínimos requeridos (según reglas de presencialidad) y los asignados."
+        "4. Cálculo de Déficit: Diferencia entre los cupos mínimos requeridos (según reglas de presencialidad) y los asignados.",
+        "5. Nota: El equipo 'Cupos libres' se excluye del resumen semanal por no tener dotación fija."
     ]
     
     for nota in notas:
@@ -2695,6 +2713,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
