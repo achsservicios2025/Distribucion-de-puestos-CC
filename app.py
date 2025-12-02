@@ -1599,135 +1599,100 @@ elif menu == "Reservas":
     # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
     # ---------------------------------------------------------
     elif opcion_reserva == "📋 Mis Reservas y Listados":
-        
-                # --- SECCION 1: BUSCADOR PARA ANULAR ---
-        st.subheader("Buscar y Cancelar mis reservas")
-        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
 
-        if q:
-            dp = list_reservations_df(conn)
-            ds = get_room_reservations_df(conn)
+    # --- SECCION 1: BUSCADOR PARA ANULAR ---
+    st.subheader("Buscar y Cancelar mis reservas")
+    q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
 
-            # Blindaje: asegurar columnas esperadas (por si vienen con otros nombres)
-            def ensure_cols(df):
-                if df is None or df.empty:
-                    return df
-                df = df.copy()
-                df.columns = [str(c).strip() for c in df.columns]  # quita espacios raros
+    mp = pd.DataFrame()
+    ms = pd.DataFrame()
 
-                rename_map = {}
-                if "user_name" not in df.columns:
-                    for c in df.columns:
-                        if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
-                            rename_map[c] = "user_name"
-                            break
+    if q:
+        dp = list_reservations_df(conn)
+        ds = get_room_reservations_df(conn)
 
-                if "user_email" not in df.columns:
-                    for c in df.columns:
-                        if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
-                            rename_map[c] = "user_email"
-                            break
+        # Blindaje: asegurar columnas esperadas (por si vienen con otros nombres)
+        def ensure_cols(df):
+            if df is None or df.empty:
+                return df
+            df = df.copy()
+            df.columns = [str(c).strip() for c in df.columns]
 
-                return df.rename(columns=rename_map)
+            rename_map = {}
+            if "user_name" not in df.columns:
+                for c in df.columns:
+                    if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
+                        rename_map[c] = "user_name"
+                        break
 
-            dp = ensure_cols(dp)
-            ds = ensure_cols(ds)
+            if "user_email" not in df.columns:
+                for c in df.columns:
+                    if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
+                        rename_map[c] = "user_email"
+                        break
 
-            # Si aún faltan columnas, mostramos error claro y no rompemos la app
-            required = {"user_name", "user_email"}
-            if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
-               (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
-                st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
-                st.stop()
+            return df.rename(columns=rename_map)
 
-            ql = q.strip().lower()
+        dp = ensure_cols(dp)
+        ds = ensure_cols(ds)
 
-            # Evitar .str sobre NaN
-            if dp is None or dp.empty:
-                mp = dp
-            else:
-                mp = dp[
-                    dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-                    dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-                ]
+        required = {"user_name", "user_email"}
+        if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
+           (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
+            st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
+            st.stop()
 
-            if ds is None or ds.empty:
-                ms = ds
-            else:
-                ms = ds[
-                    ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-                    ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-                ]
+        ql = q.strip().lower()
 
-            if (mp is None or mp.empty) and (ms is None or ms.empty):
-                st.warning("No encontré reservas con esos datos.")
-            else:
-                if mp is not None and not mp.empty:
-                    st.markdown("#### 🪑 Tus Puestos")
-                    for idx, r in mp.iterrows():
-                        with st.container(border=True):
-                            c1, c2 = st.columns([5, 1])
-                            c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
-                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+        if dp is None or dp.empty:
+            mp = pd.DataFrame()
+        else:
+            mp = dp[
+                dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+                dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+            ]
 
-                if ms is not None and not ms.empty:
-                    st.markdown("#### 🏢 Tus Salas")
-                    for idx, r in ms.iterrows():
-                        with st.container(border=True):
-                            c1, c2 = st.columns([5, 1])
-                            c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
-                            if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+        if ds is None or ds.empty:
+            ms = pd.DataFrame()
+        else:
+            ms = ds[
+                ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+                ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+            ]
 
-            st.markdown("#### 🪑 Tus Puestos")
-            for idx, r in mp.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([5, 1])
-                    c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
-                    if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                        confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+        if mp.empty and ms.empty:
+            st.warning("No encontré reservas con esos datos.")
+        else:
+            if not mp.empty:
+                st.markdown("#### 🪑 Tus Puestos")
+                for idx, r in mp.iterrows():
+                    with st.container(border=True):
+                        c1, c2 = st.columns([5, 1])
+                        c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
+                        if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                            confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
 
-        if not ms.empty:
-            st.markdown("#### 🏢 Tus Salas")
-            for idx, r in ms.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([5, 1])
-                    c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
-                    if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                        confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+            if not ms.empty:
+                st.markdown("#### 🏢 Tus Salas")
+                for idx, r in ms.iterrows():
+                    with st.container(border=True):
+                        c1, c2 = st.columns([5, 1])
+                        c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
+                        if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                            confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
 
-                    st.markdown("#### 🪑 Tus Puestos")
-                    for idx, r in mp.iterrows():
-                        with st.container(border=True):
-                            c1, c2 = st.columns([5, 1])
-                            c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
-                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+    st.markdown("---")
 
-                if not ms.empty:
-                    st.markdown("#### 🏢 Tus Salas")
-                    for idx, r in ms.iterrows():
-                        with st.container(border=True):
-                            c1, c2 = st.columns([5, 1])
-                            c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
-                            if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+    # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
+    with st.expander("Ver Listado General de Reservas", expanded=True):
 
-        st.markdown("---")
-        
-        # --- SECCION 2: VER TODO (TABLAS CORREGIDAS) ---
-        with st.expander("Ver Listado General de Reservas", expanded=True):
-            
-            # TÍTULO CORREGIDO 1
-            st.subheader("Reserva de puestos") 
-            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
+        st.subheader("Reserva de puestos")
+        st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
 
-            st.markdown("<br>", unsafe_allow_html=True) 
+        st.markdown("<br>", unsafe_allow_html=True)
 
-            # TÍTULO CORREGIDO 2
-            st.subheader("Reserva de salas") 
-            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
+        st.subheader("Reserva de salas")
+        st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
 
 # ==========================================
 # E. ADMINISTRADOR
@@ -1829,96 +1794,79 @@ elif menu == "Administrador":
         # -----------------------------------------------------------
         # ZONA DE RESULTADOS
         # -----------------------------------------------------------
-        # 1. BOTÓN REGENERAR (Equilibrada)
-    if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
-        with st.spinner("Buscando la distribución más equilibrada..."):
-            rows, deficit, meta = generate_balanced_distribution(
-                df_eq_s, df_pa_s, df_cap_s,
-                ignore_params=ign_s,
-                num_attempts=80,   # puedes subirlo si quieres
-                seed=None
-            )
+        if st.session_state.get("proposal_rows") is not None:
 
-            st.session_state["proposal_rows"] = rows
-            st.session_state["proposal_deficit"] = deficit
-            st.session_state["ideal_options"] = None
-            st.session_state["last_balance_meta"] = meta
+            st.markdown("### Panel de Control")
+            c_regen, c_opt, c_save = st.columns([1, 1, 1])
 
+            # Recuperar datos de sesión
+            df_eq_s = st.session_state.get("excel_equipos", pd.DataFrame())
+            df_pa_s = st.session_state.get("excel_params", pd.DataFrame())
+            df_cap_s = st.session_state.get("excel_caps", pd.DataFrame())
+            ign_s = st.session_state.get("ignore_params", False)
+
+            # 1) REGENERAR EQUILIBRADA
+            if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
+                with st.spinner("Buscando la distribución más equilibrada..."):
+                    rows, deficit, meta = generate_balanced_distribution(
+                        df_eq_s, df_pa_s, df_cap_s,
+                        ignore_params=ign_s,
+                        num_attempts=80,
+                        seed=None
+                    )
+
+                    st.session_state["proposal_rows"] = rows
+                    st.session_state["proposal_deficit"] = deficit
+                    st.session_state["ideal_options"] = None
+                    st.session_state["last_balance_meta"] = meta
+
+                    if meta:
+                        st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
+
+                st.rerun()
+
+            # 2) GUARDAR
+            if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
+                try:
+                    clear_distribution(conn)
+                    insert_distribution(conn, st.session_state["proposal_rows"])
+
+                    if st.session_state.get("proposal_deficit"):
+                        st.session_state["deficit_report"] = st.session_state["proposal_deficit"]
+                    elif "deficit_report" in st.session_state:
+                        del st.session_state["deficit_report"]
+
+                    st.success("¡Guardado correctamente!")
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
+
+            # Mostrar meta de la última equilibrada (si existe)
+            meta = st.session_state.get("last_balance_meta")
             if meta:
-                st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
-
-    st.rerun()
-
-            # --- PANEL DE ACCIONES ---
-    st.markdown("### Panel de Control")
-    c_regen, c_opt, c_save = st.columns([1, 1])
-
-    # Recuperar datos de sesión
-    df_eq_s = st.session_state.get("excel_equipos", pd.DataFrame())
-    df_pa_s = st.session_state.get("excel_params", pd.DataFrame())
-    df_cap_s = st.session_state.get("excel_caps", pd.DataFrame())
-    ign_s = st.session_state.get("ignore_params", False)
-
-    # 1. BOTÓN REGENERAR (Equilibrada)
-    if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
-        with st.spinner("Buscando la distribución más equilibrada..."):
-            rows, deficit, meta = generate_balanced_distribution(
-                df_eq_s, df_pa_s, df_cap_s,
-                ignore_params=ign_s,
-                num_attempts=80,
-                seed=None
-            )
-
-            st.session_state["proposal_rows"] = rows
-            st.session_state["proposal_deficit"] = deficit
-            st.session_state["ideal_options"] = None
-            st.session_state["last_balance_meta"] = meta
-
-    if meta:
-        st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
-
-    st.rerun()
-
-    # 2. BOTÓN GUARDAR
-    if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
-        try:
-            clear_distribution(conn)
-            insert_distribution(conn, st.session_state["proposal_rows"])
-
-            if st.session_state.get("proposal_deficit"):
-                st.session_state["deficit_report"] = st.session_state["proposal_deficit"]
-            elif "deficit_report" in st.session_state:
-                del st.session_state["deficit_report"]
-
-            st.success("¡Guardado correctamente!")
-        except Exception as e:
-            st.error(f"Error al guardar: {e}")
-
-    # Mostrar meta de la última equilibrada (si existe)
-    meta = st.session_state.get("last_balance_meta")
-    if meta:
-        st.caption(
-            f"⚖️ Equidad score: {meta['score']:.4f} | intentos: {meta['attempts']} | seed: {meta['seed']}"
-        )
+                st.caption(
+                    f"⚖️ Equidad score: {meta['score']:.4f} | intentos: {meta['attempts']} | seed: {meta['seed']}"
+                )
 
             # --- TABLAS ---
             t_view, t_def = st.tabs(["📊 Tabla de Distribución", "🚨 Reporte de Conflictos"])
-            
+
             with t_view:
-                df_preview = pd.DataFrame(st.session_state['proposal_rows'])
+                df_preview = pd.DataFrame(st.session_state.get("proposal_rows", []))
                 if not df_preview.empty:
                     df_sorted = apply_sorting_to_df(df_preview)
                     st.dataframe(df_sorted, hide_index=True, use_container_width=True)
                 else:
                     st.warning("No hay datos.")
-            
+
             with t_def:
-                deficit_data = st.session_state.get('proposal_deficit', [])
+                deficit_data = st.session_state.get("proposal_deficit", [])
                 if deficit_data:
                     st.error(f"⚠️ {len(deficit_data)} conflictos detectados.")
                     st.dataframe(pd.DataFrame(deficit_data), hide_index=True, use_container_width=True)
                 else:
                     st.success("✅ Distribución perfecta.")
+        else:
+            st.info("Sube y procesa un Excel para generar una propuesta.")
 
     with t2:
         st.info("Editor de Zonas - Versión Profesional")
@@ -2790,6 +2738,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
