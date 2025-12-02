@@ -227,17 +227,16 @@ def apply_sorting_to_df(df):
         
     return df
 
-# --- NUEVA FUNCIÓN CON ESTRATEGIAS DE ORDENAMIENTO ---
+# --- FUNCIONES DE DISTRIBUCIÓN ACTUALIZADAS ---
 def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strategy="random", ignore_params=False):
     """Genera una propuesta basada en estrategia."""
     eq_proc = df_equipos.copy()
     pa_proc = df_parametros.copy()
     
-    # Siempre usamos random para que los botones de regenerar funcionen
     if strategy == "random": 
         eq_proc = eq_proc.sample(frac=1).reset_index(drop=True)
     
-    # LLAMADA A SEATS CON LA NUEVA HOJA
+    # LLAMADA A SEATS CON LA NUEVA HOJA CAPACIDADES
     rows, deficit_report = compute_distribution_from_excel(
         eq_proc, pa_proc, df_capacidades, 2, ignore_params=ignore_params
     )
@@ -1626,19 +1625,15 @@ elif menu == "Administrador":
                     # 1. Leer Excel - Equipos
                     df_eq = pd.read_excel(up, "Equipos", engine='openpyxl')
                     
-                    # 2. Leer Parámetros (SIEMPRE para cupos libres si existen)
-                    try:
-                        df_pa = pd.read_excel(up, "Parámetros", engine='openpyxl')
-                    except:
-                        df_pa = pd.DataFrame()
-                        # No es crítico si falla, usamos default
+                    # 2. Leer Parámetros (SIEMPRE, aunque ignoremos reglas)
+                    try: df_pa = pd.read_excel(up, "Parámetros", engine='openpyxl')
+                    except: df_pa = pd.DataFrame()
                     
                     # 3. Leer Capacidades (CRÍTICO para el límite total)
-                    try:
-                        df_cap = pd.read_excel(up, "Capacidades", engine='openpyxl')
+                    try: df_cap = pd.read_excel(up, "Capacidades", engine='openpyxl')
                     except:
                         df_cap = pd.DataFrame()
-                        st.warning("⚠️ No se encontró la hoja 'Capacidades'. Se usará la suma de personas como capacidad (Riesgo de sobrecupo).")
+                        st.warning("⚠️ No se encontró la hoja 'Capacidades'. Se usará la suma de personas.")
 
                     # Guardar en sesión
                     st.session_state['excel_equipos'] = df_eq
@@ -1676,7 +1671,7 @@ elif menu == "Administrador":
             
             # Selector de opciones ideales
             if st.session_state.get('ideal_options'):
-                st.info("💡 Se han generado 3 opciones ideales. Elige la que prefieras:")
+                st.info("Se han generado 3 opciones ideales. Elige 1:")
                 opts = st.session_state['ideal_options']
                 
                 n_opt = st.selectbox(
@@ -1693,16 +1688,16 @@ elif menu == "Administrador":
                     st.rerun()
 
             # --- PANEL DE ACCIONES ---
-            st.markdown("### ⚙️ Panel de Control")
+            st.markdown("### Panel de Control")
             c_regen, c_opt, c_save = st.columns([1, 1, 1])
             
-            # Recuperar datos de sesión (seguridad)
+            # Recuperar datos de sesión
             df_eq_s = st.session_state.get('excel_equipos', pd.DataFrame())
             df_pa_s = st.session_state.get('excel_params', pd.DataFrame())
             df_cap_s = st.session_state.get('excel_caps', pd.DataFrame())
             ign_s = st.session_state.get('ignore_params', False)
 
-            # 1. BOTÓN REGENERAR
+            # 1. BOTÓN REGENERAR (Key única v3)
             if c_regen.button("🔄 Regenerar Distribución", key="btn_regen_v3"):
                 with st.spinner("Recalculando..."):
                     rows, deficit = get_distribution_proposal(
@@ -1715,7 +1710,7 @@ elif menu == "Administrador":
                     st.session_state['ideal_options'] = None 
                 st.rerun()
 
-            # 2. BOTÓN AUTO-OPTIMIZAR
+            # 2. BOTÓN AUTO-OPTIMIZAR (Key única v3)
             if c_opt.button("✨ Auto-Optimizar", key="btn_opt_v3"):
                 NUM_INTENTOS = 20 
                 progress_text = "Optimizando justicia..."
@@ -1756,13 +1751,14 @@ elif menu == "Administrador":
                 st.session_state['proposal_rows'] = best_rows
                 st.session_state['proposal_deficit'] = filter_minimum_deficits(best_deficit)
                 st.session_state['ideal_options'] = None
+                st.session_state['last_optimization_stats'] = {'iterations': NUM_INTENTOS, 'score': min_unfairness}
                 
                 my_bar.empty()
                 st.toast("¡Optimizado!", icon="⚖️")
                 st.rerun()
 
-            # 3. BOTÓN GUARDAR
-            if c_save.button("💾 Guardar Definitivo", type="primary", key="btn_save_v3"):
+            # 3. BOTÓN GUARDAR (Key única v3)
+            if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
                 try:
                     clear_distribution(conn)
                     insert_distribution(conn, st.session_state['proposal_rows'])
@@ -2648,6 +2644,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
