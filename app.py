@@ -43,8 +43,6 @@ if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
     streamlit.elements.lib.image_utils.image_to_url = _patched_image_to_url
 
 
-from typing import Optional
-
 def resolve_logo_source(raw_path: Optional[str], logo_b64: Optional[str]):
     """
     Devuelve bytes o URL del logo.
@@ -2738,6 +2736,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
