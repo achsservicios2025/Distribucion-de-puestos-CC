@@ -1472,7 +1472,9 @@ elif menu == "Reservas":
         # --- SECCION 1: BUSCADOR PARA ANULAR ---
         st.subheader("Buscar y Cancelar mis reservas")
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
-        if q:
+        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
+
+if q:
     dp = list_reservations_df(conn)
     ds = get_room_reservations_df(conn)
 
@@ -1526,11 +1528,28 @@ elif menu == "Reservas":
             ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
             ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
         ]
-            
-            if mp.empty and ms.empty:
-                st.warning("No encontré reservas con esos datos.")
-            else:
-                if not mp.empty:
+
+    if mp.empty and ms.empty:
+        st.warning("No encontré reservas con esos datos.")
+    else:
+        if not mp.empty:
+            st.markdown("#### 🪑 Tus Puestos")
+            for idx, r in mp.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([5, 1])
+                    c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
+                    if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                        confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+
+        if not ms.empty:
+            st.markdown("#### 🏢 Tus Salas")
+            for idx, r in ms.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([5, 1])
+                    c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
+                    if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                        confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+
                     st.markdown("#### 🪑 Tus Puestos")
                     for idx, r in mp.iterrows():
                         with st.container(border=True):
@@ -2709,6 +2728,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
