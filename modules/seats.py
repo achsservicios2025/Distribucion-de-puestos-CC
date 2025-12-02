@@ -1,245 +1,47 @@
-import pandas as pd
-import math
-import re
+# EN modules/seats.py
 
-def normalize_text(text):
-    """Limpia textos para comparaciones básicas de columnas."""
-    if pd.isna(text) or text == "": return ""
-    text = str(text).strip().lower()
-    replacements = {'á':'a', 'é':'e', 'í':'i', 'ó':'o', 'ú':'u', 'ñ':'n', '/': ' ', '-': ' '}
-    for bad, good in replacements.items():
-        text = text.replace(bad, good)
-    return re.sub(r'\s+', ' ', text)
+# ... (dentro del bucle for piso_raw in pisos_unicos) ...
 
-def extract_clean_number_str(val):
-    """
-    Normalizador agresivo de Pisos.
-    Convierte: "Piso 1", 1, 1.0, "1 ", "Nivel 1" -> "1"
-    """
-    if pd.isna(val): return None
-    
-    # Convertir a string
-    s = str(val).strip()
-    
-    # Si es un float puro (ej: 1.0), convertirlo a int primero para quitar el decimal
-    try:
-        f = float(s)
-        if f.is_integer():
-            return str(int(f))
-    except:
-        pass
-
-    # Si es texto ("Piso 1"), buscar el primer dígito
-    nums = re.findall(r'\d+', s)
-    if nums:
-        # Tomamos el primer grupo numérico y lo hacemos int para quitar ceros a la izquierda
-        return str(int(nums[0]))
-        
-    return None
-
-def parse_days_from_text(text):
-    if pd.isna(text): return {'fijos': set(), 'flexibles': []}
-    mapa = {"lunes":"Lunes", "martes":"Martes", "miercoles":"Miércoles", "jueves":"Jueves", "viernes":"Viernes"}
-    options = re.split(r'\s+o\s+|,\s*o\s+', text, flags=re.IGNORECASE)
-    all_days = set()
-    for o in options:
-        norm = normalize_text(o)
-        for k, v in mapa.items():
-            if k in norm: all_days.add(v)
-    return {'fijos': all_days, 'flexibles': options}
-
-def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, cupos_reserva=2, ignore_params=False):
-    rows = []
-    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-    deficit_report = [] 
-
-    # 1. Normalizar columnas (headers)
-    equipos_df.columns = [str(c).strip().lower() for c in equipos_df.columns]
-    if not parametros_df.empty:
-        parametros_df.columns = [str(c).strip().lower() for c in parametros_df.columns]
-
-    # 2. Buscar columnas clave
-    col_piso = next((c for c in equipos_df.columns if 'piso' in normalize_text(c)), None)
-    col_equipo = next((c for c in equipos_df.columns if 'equipo' in normalize_text(c)), None)
-    col_personas = next((c for c in equipos_df.columns if 'personas' in normalize_text(c) or 'total' in normalize_text(c)), None)
-    col_minimos = next((c for c in equipos_df.columns if 'minimo' in normalize_text(c) or 'mínimo' in normalize_text(c)), None)
-    
-    if not (col_piso and col_equipo and col_personas and col_minimos): return [], []
-
-    # 3. PROCESAR CAPACIDADES (Mapeo robusto)
-    capacidad_pisos = {}
-    RESERVA_OBLIGATORIA = 2 
-
-    if not df_capacidades.empty:
-        for _, row in df_capacidades.iterrows():
-            try:
-                # Asumimos Col 0: Nombre Piso, Col 1: Total Numérico
-                raw_piso = row.iloc[0]
-                raw_cap = row.iloc[1]
+        # D. Guardar Resultados (Equipos)
+        final_asig_sum = 0
+        for t in teams:
+            if t['asig'] > 0:
+                pct = round(t['asig']/t['per']*100, 1) if t['per'] else 0
                 
-                key_piso = extract_clean_number_str(raw_piso) # Normaliza a "1", "2", etc.
-                
-                # Asegurar que la capacidad sea un número válido
-                if key_piso is not None:
-                    try:
-                        cap_val = int(float(str(raw_cap)))
-                        capacidad_pisos[key_piso] = cap_val
-                    except:
-                        continue
-            except:
-                continue
-
-    # 4. PROCESAR REGLAS
-    reglas_full_day = {}
-    if not ignore_params and not parametros_df.empty:
-        col_param = next((c for c in parametros_df.columns if 'criterio' in normalize_text(c) or 'parametro' in normalize_text(c)), '')
-        col_valor = next((c for c in parametros_df.columns if 'valor' in normalize_text(c)), '')
-        if col_param and col_valor:
-            for _, row in parametros_df.iterrows():
-                p = str(row.get(col_param, '')).strip().lower()
-                v = str(row.get(col_valor, '')).strip()
-                if "dia completo" in p:
-                    nm = re.split(r'd[ií]a completo\s+', p)[-1].strip()
-                    if v: reglas_full_day[normalize_text(nm)] = parse_days_from_text(v)
-
-    # --- ALGORITMO ---
-    pisos_unicos = equipos_df[col_piso].dropna().unique()
-
-    for piso_raw in pisos_unicos:
-        # Normalizar el piso que viene de la hoja Equipos para que coincida con el diccionario
-        piso_str = extract_clean_number_str(piso_raw)
-        if not piso_str: continue 
-
-        # 1. DETERMINAR CAPACIDAD REAL
-        if piso_str in capacidad_pisos:
-            cap_total_real = capacidad_pisos[piso_str]
-        else:
-            # Fallback crítico: Si no coincide, asumimos suma de personas + reserva
-            # (Esto evita el crash, pero idealmente deberían coincidir los nombres)
-            df_temp = equipos_df[equipos_df[col_piso] == piso_raw]
-            cap_total_real = int(df_temp[col_personas].sum()) + RESERVA_OBLIGATORIA
-
-        # 2. EL LIMITE DURO (GUILLOTINA)
-        # Ejemplo: Excel dice 38 -> Límite es 36.
-        hard_limit = max(0, cap_total_real - RESERVA_OBLIGATORIA)
-        
-        df_piso = equipos_df[equipos_df[col_piso] == piso_raw].copy()
-        
-        # Pre-cálculo flexibles
-        full_day_asignacion = {} 
-        capacidad_fija_por_dia = {d: 0 for d in dias_semana}
-        equipos_flexibles = []
-
-        for _, r in df_piso.iterrows():
-            nm = str(r[col_equipo]).strip(); per = int(r[col_personas] or 0)
-            reglas = reglas_full_day.get(normalize_text(nm))
-            is_flex = reglas and len(reglas['flexibles']) > 1
-            if reglas and not is_flex:
-                for d in reglas['fijos']: 
-                    if d in dias_semana: capacidad_fija_por_dia[d] += per
-            elif is_flex:
-                equipos_flexibles.append({'eq': nm, 'per': per, 'dias_opt': reglas['fijos']})
-            else:
-                base = max(2, int(r[col_minimos] or 0)) if per >= 2 else per
-                for d in dias_semana: capacidad_fija_por_dia[d] += base
-
-        cap_libre_pre = {d: max(0, hard_limit - capacidad_fija_por_dia[d]) for d in dias_semana}
-        for item in equipos_flexibles:
-            best_day = None; max_l = -999
-            for d in item['dias_opt']:
-                if d in dias_semana and cap_libre_pre[d] > max_l:
-                    max_l = cap_libre_pre[d]; best_day = d
-            if best_day:
-                full_day_asignacion[normalize_text(item['eq'])] = best_day
-                cap_libre_pre[best_day] -= item['per']
-
-        # Loop Diario
-        for dia_idx, dia in enumerate(dias_semana):
-            teams = []
-            for _, r in df_piso.iterrows():
-                nm = str(r[col_equipo]).strip(); per = int(r[col_personas] or 0)
-                mini = int(r[col_minimos] or 0)
-                reglas = reglas_full_day.get(normalize_text(nm))
-                is_fd = False
-                if reglas:
-                    is_flex = len(reglas['flexibles']) > 1
-                    if not is_flex and dia in reglas['fijos']: is_fd = True
-                    elif is_flex and full_day_asignacion.get(normalize_text(nm)) == dia: is_fd = True
-                
-                teams.append({
-                    'eq': nm, 'per': per, 'min': max(2, mini) if max(2, mini) <= per else per,
-                    'asig': 0, 'is_fd': is_fd
+                # CORRECCIÓN AQUÍ: Usar piso_str en lugar de str(piso_raw)
+                rows.append({
+                    "piso": piso_str,  # <--- ANTES DECÍA: str(piso_raw)
+                    "equipo": t['eq'], 
+                    "dia": dia, 
+                    "cupos": int(t['asig']), 
+                    "pct": pct
                 })
+                final_asig_sum += t['asig']
 
-            # A. Asignar
-            used = 0
-            fd_teams = [t for t in teams if t['is_fd']]
-            norm_teams = [t for t in teams if not t['is_fd']]
-            
-            for t in fd_teams:
-                t['asig'] = t['per']; used += t['asig']
+        # E. Insertar Cupos Libres
+        remanente = cap_total_real - final_asig_sum
+        if remanente < RESERVA_OBLIGATORIA: 
+            remanente = RESERVA_OBLIGATORIA
+        
+        pct_lib = round(remanente/cap_total_real*100, 1)
+        
+        # CORRECCIÓN AQUÍ TAMBIÉN
+        rows.append({
+            "piso": piso_str, # <--- ANTES DECÍA: str(piso_raw)
+            "equipo": "Cupos libres", 
+            "dia": dia, 
+            "cupos": int(remanente), 
+            "pct": pct_lib
+        })
 
-            # B. Round Robin Normales
-            if norm_teams:
-                shift = dia_idx % len(norm_teams)
-                norm_teams = norm_teams[shift:] + norm_teams[:shift]
-                keep = True
-                while keep:
-                    keep = False
-                    for t in norm_teams:
-                        if t['asig'] < t['per']:
-                            t['asig'] += 1; used += 1; keep = True
-                    # Freno de emergencia
-                    if used > hard_limit + 50: break
-
-            # C. LA EJECUCIÓN (Corte Estricto)
-            # Si la suma se pasa del límite (Total - 2), cortamos.
-            total_asig = sum(t['asig'] for t in teams)
-            exceso = total_asig - hard_limit
-            
-            if exceso > 0:
-                while exceso > 0:
-                    # Candidatos: Equipos con cupos > 0
-                    candidatos = [t for t in teams if t['asig'] > 0]
-                    if not candidatos: break
-                    
-                    # Cortar al que más tiene para ser equitativos
-                    candidatos.sort(key=lambda x: x['asig'], reverse=True)
-                    
-                    candidatos[0]['asig'] -= 1
-                    total_asig -= 1
-                    exceso -= 1
-
-            # D. Guardar Resultados (Equipos)
-            final_asig_sum = 0
-            for t in teams:
-                if t['asig'] > 0:
-                    pct = round(t['asig']/t['per']*100, 1) if t['per'] else 0
-                    # Usamos el nombre original del piso para la tabla
-                    rows.append({"piso": str(piso_raw), "equipo": t['eq'], "dia": dia, "cupos": int(t['asig']), "pct": pct})
-                    final_asig_sum += t['asig']
-
-            # E. Insertar Cupos Libres (El Relleno)
-            # Aquí está la clave: Calculamos lo que falta para llegar al Total Real
-            remanente = cap_total_real - final_asig_sum
-            
-            # Como el corte aseguró que final_asig_sum <= (Total - 2),
-            # el remanente es matemáticamente >= 2.
-            if remanente < RESERVA_OBLIGATORIA: 
-                remanente = RESERVA_OBLIGATORIA
-            
-            pct_lib = round(remanente/cap_total_real*100, 1)
-            rows.append({"piso": str(piso_raw), "equipo": "Cupos libres", "dia": dia, "cupos": int(remanente), "pct": pct_lib})
-
-            # F. Reporte de Déficit
-            for t in teams:
-                if t['asig'] < t['per']:
-                    cause = "Falta capacidad física (Prioridad Reserva)"
-                    if t['asig'] < t['min']: cause = "No alcanzó el mínimo requerido"
-                    deficit_report.append({
-                        "piso": str(piso_raw), "equipo": t['eq'], "dia": dia, 
-                        "dotacion": t['per'], "minimo": t['min'], "asignado": t['asig'], 
-                        "deficit": t['per'] - t['asig'], "causa": cause
-                    })
-
-    return rows, deficit_report
+        # F. Reporte de Déficit
+        for t in teams:
+            if t['asig'] < t['per']:
+                cause = "Falta capacidad física (Prioridad Reserva)"
+                if t['asig'] < t['min']: cause = "No alcanzó el mínimo requerido"
+                deficit_report.append({
+                    "piso": piso_str, # <--- ANTES DECÍA: str(piso_raw)
+                    "equipo": t['eq'], "dia": dia, 
+                    "dotacion": t['per'], "minimo": t['min'], "asignado": t['asig'], 
+                    "deficit": t['per'] - t['asig'], "causa": cause
+                })
