@@ -11,6 +11,15 @@ def normalize_text(text):
         text = text.replace(bad, good)
     return re.sub(r'\s+', ' ', text)
 
+def extract_number(text):
+    """Extrae el primer número entero de un texto o número. Ej: 'Piso 1' -> '1'."""
+    if pd.isna(text): return None
+    text_str = str(text)
+    nums = re.findall(r'\d+', text_str)
+    if nums:
+        return str(int(nums[0])) # Retorna string sin ceros a la izquierda ('01' -> '1')
+    return None
+
 def parse_days_from_text(text):
     """Detecta días fijos y flexibles."""
     if pd.isna(text): return {'fijos': set(), 'flexibles': []}
@@ -23,7 +32,6 @@ def parse_days_from_text(text):
             if key in normalized_option: all_days.add(val)
     return {'fijos': all_days, 'flexibles': options}
 
-# AHORA RECIBIMOS "df_capacidades" COMO ARGUMENTO
 def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, cupos_reserva=2, ignore_params=False):
     rows = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
@@ -42,21 +50,21 @@ def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, c
     
     if not (col_piso and col_equipo and col_personas and col_minimos): return [], []
 
-    # 3. PROCESAR CAPACIDADES (DESDE LA HOJA NUEVA)
+    # 3. PROCESAR CAPACIDADES (NORMALIZACIÓN ROBUSTA)
     capacidad_pisos = {}
     RESERVA_OBLIGATORIA = 2 
 
     if not df_capacidades.empty:
-        # Asumimos col 0 es Piso y col 1 es Cantidad
-        for _, row in df_capacidades.iterrows():
+        # Intentar detectar columnas de la hoja Capacidades (A y B generalmente)
+        # Asumimos que la primera columna tiene el nombre del piso y la segunda el total
+        for i, row in df_capacidades.iterrows():
             try:
-                # Limpiamos el piso (ej: "Piso 1" -> "1", o 1 -> "1")
-                raw_piso = str(row.iloc[0])
-                num_piso = re.findall(r'\d+', raw_piso)
-                if num_piso:
-                    key_piso = str(int(num_piso[0]))
-                    val_cap = int(row.iloc[1])
-                    capacidad_pisos[key_piso] = val_cap
+                raw_piso = row.iloc[0] # Columna A (Ej: "Piso 1")
+                raw_cap = row.iloc[1]  # Columna B (Ej: 38)
+                
+                piso_key = extract_number(raw_piso)
+                if piso_key and pd.notna(raw_cap):
+                    capacidad_pisos[piso_key] = int(raw_cap)
             except:
                 continue
 
@@ -74,18 +82,22 @@ def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, c
                     if v: reglas_full_day[normalize_text(nm)] = parse_days_from_text(v)
 
     # --- ALGORITMO ---
-    for piso_raw in equipos_df[col_piso].dropna().unique():
-        piso_str = str(int(piso_raw)) if isinstance(piso_raw, (int, float)) else str(piso_raw)
-        
-        # 1. Definir Techo Físico (Prioridad: Hoja Capacidades)
+    pisos_unicos = equipos_df[col_piso].dropna().unique()
+
+    for piso_raw in pisos_unicos:
+        # Normalizar el piso actual del ciclo (Ej: 1.0 -> "1")
+        piso_str = extract_number(piso_raw)
+        if not piso_str: continue 
+
+        # 1. Definir Techo Físico
         if piso_str in capacidad_pisos:
             cap_total_real = capacidad_pisos[piso_str]
         else:
-            # Fallback: Suma de personas + reserva (para evitar crash)
+            # Fallback: Suma de personas + reserva (solo si falla el excel)
             df_temp = equipos_df[equipos_df[col_piso] == piso_raw]
             cap_total_real = int(df_temp[col_personas].sum()) + RESERVA_OBLIGATORIA
 
-        # 2. LA GUILLOTINA (Límite estricto para equipos)
+        # 2. LA GUILLOTINA: Límite estricto para equipos
         hard_limit = max(0, cap_total_real - RESERVA_OBLIGATORIA)
         
         df_piso = equipos_df[equipos_df[col_piso] == piso_raw].copy()
@@ -153,11 +165,15 @@ def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, c
                 while keep:
                     keep = False
                     for t in norm_teams:
-                        if t['asig'] < t['per']:
+                        # Solo asignamos si hay espacio en el hard_limit
+                        if used < hard_limit and t['asig'] < t['per']:
                             t['asig'] += 1; used += 1; keep = True
-                    if used > hard_limit + 50: break
+                    
+                    # Freno de emergencia si ya llenamos el hard_limit
+                    if used >= hard_limit:
+                        break
 
-            # C. CORTE ESTRICTO
+            # C. CORTE ESTRICTO FINAL (Por si acaso Full Day se pasó)
             total_asig = sum(t['asig'] for t in teams)
             exceso = total_asig - hard_limit
             
@@ -165,31 +181,37 @@ def compute_distribution_from_excel(equipos_df, parametros_df, df_capacidades, c
                 while exceso > 0:
                     candidatos = [t for t in teams if t['asig'] > 0]
                     if not candidatos: break
+                    # Prioridad de corte: Quitar al que más tiene asignado
                     candidatos.sort(key=lambda x: x['asig'], reverse=True)
                     candidatos[0]['asig'] -= 1
                     exceso -= 1
             
-            # D. Guardar
-            final_asig_sum = 0
+            # Recalcular total asignado tras el corte
+            total_asig = sum(t['asig'] for t in teams)
+
+            # D. Guardar Resultados
             for t in teams:
                 if t['asig'] > 0:
                     pct = round(t['asig']/t['per']*100, 1) if t['per'] else 0
-                    rows.append({"piso": f"Piso {piso_str}", "equipo": t['eq'], "dia": dia, "cupos": int(t['asig']), "pct": pct})
-                    final_asig_sum += t['asig']
+                    # Usamos piso_raw para que se vea igual que en el Excel ("Piso 1" o "1")
+                    rows.append({"piso": str(piso_raw), "equipo": t['eq'], "dia": dia, "cupos": int(t['asig']), "pct": pct})
             
-            # E. Insertar Cupos Libres (Remanente Real)
-            remanente = cap_total_real - final_asig_sum
+            # E. Insertar Cupos Libres (Relleno hasta el Total Real)
+            remanente = cap_total_real - total_asig
+            
+            # Seguridad: Si el remanente es menor a 2, algo raro pasó, forzamos 2
             if remanente < RESERVA_OBLIGATORIA: remanente = RESERVA_OBLIGATORIA
             
             pct_lib = round(remanente/cap_total_real*100, 1)
-            rows.append({"piso": f"Piso {piso_str}", "equipo": "Cupos libres", "dia": dia, "cupos": int(remanente), "pct": pct_lib})
+            rows.append({"piso": str(piso_raw), "equipo": "Cupos libres", "dia": dia, "cupos": int(remanente), "pct": pct_lib})
 
             # F. Reporte Déficit
             for t in teams:
                 if t['asig'] < t['per']:
-                    cause = "Reserva de espacio libre priorizada" if t['asig'] < t['min'] else "Falta capacidad física"
+                    cause = "Falta espacio físico (Reserva priorizada)"
+                    if t['asig'] < t['min']: cause = "No alcanzó el mínimo requerido"
                     deficit_report.append({
-                        "piso": f"Piso {piso_str}", "equipo": t['eq'], "dia": dia, 
+                        "piso": str(piso_raw), "equipo": t['eq'], "dia": dia, 
                         "dotacion": t['per'], "minimo": t['min'], "asignado": t['asig'], 
                         "deficit": t['per'] - t['asig'], "causa": cause
                     })
