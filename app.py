@@ -1477,70 +1477,86 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     elif opcion_reserva == "📋 Mis Reservas y Listados":
         
-        # --- SECCION 1: BUSCADOR PARA ANULAR ---
+                # --- SECCION 1: BUSCADOR PARA ANULAR ---
         st.subheader("Buscar y Cancelar mis reservas")
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
-        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
 
-if q:
-    dp = list_reservations_df(conn)
-    ds = get_room_reservations_df(conn)
+        if q:
+            dp = list_reservations_df(conn)
+            ds = get_room_reservations_df(conn)
 
-    # Blindaje: asegurar columnas esperadas (por si vienen con otros nombres)
-    def ensure_cols(df):
-        if df is None or df.empty:
-            return df
-        df = df.copy()
-        df.columns = [str(c).strip() for c in df.columns]  # quita espacios raros
+            # Blindaje: asegurar columnas esperadas (por si vienen con otros nombres)
+            def ensure_cols(df):
+                if df is None or df.empty:
+                    return df
+                df = df.copy()
+                df.columns = [str(c).strip() for c in df.columns]  # quita espacios raros
 
-        rename_map = {}
-        if "user_name" not in df.columns:
-            for c in df.columns:
-                if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
-                    rename_map[c] = "user_name"
-                    break
+                rename_map = {}
+                if "user_name" not in df.columns:
+                    for c in df.columns:
+                        if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
+                            rename_map[c] = "user_name"
+                            break
 
-        if "user_email" not in df.columns:
-            for c in df.columns:
-                if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
-                    rename_map[c] = "user_email"
-                    break
+                if "user_email" not in df.columns:
+                    for c in df.columns:
+                        if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
+                            rename_map[c] = "user_email"
+                            break
 
-        return df.rename(columns=rename_map)
+                return df.rename(columns=rename_map)
 
-    dp = ensure_cols(dp)
-    ds = ensure_cols(ds)
+            dp = ensure_cols(dp)
+            ds = ensure_cols(ds)
 
-    # Si aún faltan columnas, mostramos error claro y no rompemos la app
-    required = {"user_name", "user_email"}
-    if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
-       (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
-        st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
-        st.stop()
+            # Si aún faltan columnas, mostramos error claro y no rompemos la app
+            required = {"user_name", "user_email"}
+            if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
+               (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
+                st.error(f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}")
+                st.stop()
 
-    ql = q.strip().lower()
+            ql = q.strip().lower()
 
-    # Evitar .str sobre NaN
-    if dp is None or dp.empty:
-        mp = dp
-    else:
-        mp = dp[
-            dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-            dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-        ]
+            # Evitar .str sobre NaN
+            if dp is None or dp.empty:
+                mp = dp
+            else:
+                mp = dp[
+                    dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+                    dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+                ]
 
-    if ds is None or ds.empty:
-        ms = ds
-    else:
-        ms = ds[
-            ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-            ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-        ]
+            if ds is None or ds.empty:
+                ms = ds
+            else:
+                ms = ds[
+                    ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
+                    ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
+                ]
 
-    if mp.empty and ms.empty:
-        st.warning("No encontré reservas con esos datos.")
-    else:
-        if not mp.empty:
+            if (mp is None or mp.empty) and (ms is None or ms.empty):
+                st.warning("No encontré reservas con esos datos.")
+            else:
+                if mp is not None and not mp.empty:
+                    st.markdown("#### 🪑 Tus Puestos")
+                    for idx, r in mp.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
+                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                                confirm_delete_dialog(conn, r['user_name'], r['reservation_date'], r['team_area'], r['piso'])
+
+                if ms is not None and not ms.empty:
+                    st.markdown("#### 🏢 Tus Salas")
+                    for idx, r in ms.iterrows():
+                        with st.container(border=True):
+                            c1, c2 = st.columns([5, 1])
+                            c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
+                            if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                                confirm_delete_room_dialog(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time'])
+
             st.markdown("#### 🪑 Tus Puestos")
             for idx, r in mp.iterrows():
                 with st.container(border=True):
@@ -2736,6 +2752,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
