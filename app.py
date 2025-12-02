@@ -1241,9 +1241,20 @@ if menu == "Vista pública":
         with t2:
             st.subheader("Descarga de Planos")
             c1, c2 = st.columns(2)
-            p_sel = c1.selectbox("Selecciona Piso", pisos_disponibles)
+            
+            # Aseguramos que la lista no tenga valores nulos
+            pisos_clean = [p for p in pisos_disponibles if p is not None]
+            if not pisos_clean: pisos_clean = ["Piso 1"]
+            
+            p_sel = c1.selectbox("Selecciona Piso", pisos_clean)
             ds = c2.selectbox("Selecciona Día", ["Todos (Lunes a Viernes)"] + ORDER_DIAS)
-            pn = p_sel.replace("Piso ", "").strip()
+            
+            # Blindaje: Convertir a string antes de reemplazar
+            if p_sel:
+                pn = str(p_sel).replace("Piso ", "").strip()
+            else:
+                pn = "1" # Fallback por defecto
+                
             st.write("---")
             
             if ds == "Todos (Lunes a Viernes)":
@@ -1605,7 +1616,6 @@ elif menu == "Administrador":
                 re = settings.get("admin_email","")
                 if re and em_chk.lower()==re.lower():
                     t = generate_token()
-                    # Ya no usamos ensure_reset_table porque la DB está lista
                     save_reset_token(conn, t, (datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).isoformat())
                     send_reservation_email(re, "Token", f"Token: {t}"); st.success("Enviado.")
                 else: st.error("Email no coincide.")
@@ -1788,7 +1798,6 @@ elif menu == "Administrador":
                     elif 'deficit_report' in st.session_state:
                         del st.session_state['deficit_report']
                     st.success("¡Guardado correctamente!")
-                    st.balloons()
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
 
@@ -2665,14 +2674,5 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
-
-
-
-
-
-
-
-
-
 
 
