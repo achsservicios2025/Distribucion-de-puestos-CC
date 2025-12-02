@@ -1205,7 +1205,7 @@ if menu == "Vista pública":
             pisos_cal = sort_floors(pisos_disponibles)
             
             for piso_cal in pisos_cal:
-                st.markdown(f"### 📅 {piso_cal}")
+                st.markdown(f"### 📅Piso {piso_cal}")
                 
                 # Obtener reservas de este piso en el mes seleccionado
                 reservas_piso = []
@@ -1829,72 +1829,78 @@ elif menu == "Administrador":
         # -----------------------------------------------------------
         # ZONA DE RESULTADOS
         # -----------------------------------------------------------
-        if st.session_state.get('proposal_rows') is not None:
-            st.divider()
-            
-            # Selector de opciones ideales
-            if st.session_state.get('ideal_options'):
-                st.info("Se han generado 3 opciones ideales. Elige 1:")
-                opts = st.session_state['ideal_options']
-                
-                n_opt = st.selectbox(
-                    "Selecciona opción:", 
-                    range(len(opts)), 
-                    format_func=lambda x: f"Opción {x+1}",
-                    key="sel_ideal_opt_unique"
-                )
-                
-                if n_opt != st.session_state.get('selected_ideal_option', 0):
-                    st.session_state['selected_ideal_option'] = n_opt
-                    st.session_state['proposal_rows'] = opts[n_opt]['rows']
-                    st.session_state['proposal_deficit'] = opts[n_opt]['deficit']
-                    st.rerun()
+        # 1. BOTÓN REGENERAR (Equilibrada)
+    if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
+        with st.spinner("Buscando la distribución más equilibrada..."):
+            rows, deficit, meta = generate_balanced_distribution(
+                df_eq_s, df_pa_s, df_cap_s,
+                ignore_params=ign_s,
+                num_attempts=80,   # puedes subirlo si quieres
+                seed=None
+            )
+
+            st.session_state["proposal_rows"] = rows
+            st.session_state["proposal_deficit"] = deficit
+            st.session_state["ideal_options"] = None
+            st.session_state["last_balance_meta"] = meta
+
+            if meta:
+                st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
+
+    st.rerun()
 
             # --- PANEL DE ACCIONES ---
-            st.markdown("### Panel de Control")
-            c_regen, c_opt, c_save = st.columns([1, 1])
-            
-            # Recuperar datos de sesión
-            df_eq_s = st.session_state.get('excel_equipos', pd.DataFrame())
-            df_pa_s = st.session_state.get('excel_params', pd.DataFrame())
-            df_cap_s = st.session_state.get('excel_caps', pd.DataFrame())
-            ign_s = st.session_state.get('ignore_params', False)
+    st.markdown("### Panel de Control")
+    c_regen, c_opt, c_save = st.columns([1, 1])
 
-            # 1. BOTÓN REGENERAR (Key única v3)
-            if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
-                with st.spinner("Buscando la distribución más equilibrada..."):
-                    rows, deficit, meta = generate_balanced_distribution(
-                        df_eq_s, df_pa_s, df_cap_s,
-                            ignore_params=ign_s,
-                            num_attempts=80,   # puedes subir a 150 si quieres más “calidad”
-                            seed=None
-                        )
-                        st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                        st.session_state['ideal_options'] = None
-                        st.session_state['last_balance_meta'] = meta
-                    st.toast(f"Equilibrado listo ✅ (score: {st.session_state['last_balance_meta']['score']:.4f})", icon="⚖️")
-                st.rerun()
+    # Recuperar datos de sesión
+    df_eq_s = st.session_state.get("excel_equipos", pd.DataFrame())
+    df_pa_s = st.session_state.get("excel_params", pd.DataFrame())
+    df_cap_s = st.session_state.get("excel_caps", pd.DataFrame())
+    ign_s = st.session_state.get("ignore_params", False)
 
-            # 2. BOTÓN GUARDAR (Key única v3)
-            if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
-                try:
-                    clear_distribution(conn)
-                    insert_distribution(conn, st.session_state['proposal_rows'])
-                    if st.session_state.get('proposal_deficit'):
-                        st.session_state['deficit_report'] = st.session_state['proposal_deficit']
-                    elif 'deficit_report' in st.session_state:
-                        del st.session_state['deficit_report']
-                    st.success("¡Guardado correctamente!")
-                except Exception as e:
-                    st.error(f"Error al guardar: {e}")
+    # 1. BOTÓN REGENERAR (Equilibrada)
+    if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
+        with st.spinner("Buscando la distribución más equilibrada..."):
+            rows, deficit, meta = generate_balanced_distribution(
+                df_eq_s, df_pa_s, df_cap_s,
+                ignore_params=ign_s,
+                num_attempts=80,
+                seed=None
+            )
 
-meta = st.session_state.get("last_balance_meta")
-if meta:
-    st.caption(
-        f"⚖️ Equidad score: {meta['score']:.4f} | intentos: {meta['attempts']} | seed: {meta['seed']}"
-    )
-            
+            st.session_state["proposal_rows"] = rows
+            st.session_state["proposal_deficit"] = deficit
+            st.session_state["ideal_options"] = None
+            st.session_state["last_balance_meta"] = meta
+
+    if meta:
+        st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
+
+    st.rerun()
+
+    # 2. BOTÓN GUARDAR
+    if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
+        try:
+            clear_distribution(conn)
+            insert_distribution(conn, st.session_state["proposal_rows"])
+
+            if st.session_state.get("proposal_deficit"):
+                st.session_state["deficit_report"] = st.session_state["proposal_deficit"]
+            elif "deficit_report" in st.session_state:
+                del st.session_state["deficit_report"]
+
+            st.success("¡Guardado correctamente!")
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
+
+    # Mostrar meta de la última equilibrada (si existe)
+    meta = st.session_state.get("last_balance_meta")
+    if meta:
+        st.caption(
+            f"⚖️ Equidad score: {meta['score']:.4f} | intentos: {meta['attempts']} | seed: {meta['seed']}"
+        )
+
             # --- TABLAS ---
             t_view, t_def = st.tabs(["📊 Tabla de Distribución", "🚨 Reporte de Conflictos"])
             
@@ -2784,6 +2790,7 @@ if meta:
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
