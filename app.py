@@ -18,7 +18,6 @@ import base64
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE LA COMPATIBILIDAD CON ST_CANVAS)
 # ---------------------------------------------------------
-# NOTA: ESTE PARCHE ES EL QUE PERMITE QUE PIL IMAGE FUNCIONE EN EL CANVAS
 import streamlit.elements.lib.image_utils
 
 if hasattr(streamlit.elements.lib.image_utils, "image_to_url"):
@@ -231,7 +230,6 @@ def apply_sorting_to_df(df):
 # FUNCIONES DE DISTRIBUCIÓN CORREGIDAS
 # ---------------------------------------------------------
 
-# 1. Agregamos el argumento df_capacidades
 def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strategy="random", ignore_params=False):
     """
     Genera una propuesta basada en una estrategia de ordenamiento.
@@ -261,7 +259,14 @@ def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strateg
         eq_proc, pa_proc, df_capacidades, 2, ignore_params=ignore_params
     )
     
-    return rows, filter_minimum_deficits(deficit_report)
+    final_deficits = filter_minimum_deficits(deficit_report)
+
+    # Si el usuario pidió ignorar reglas, forzamos que la lista de conflictos esté vacía.
+    # Esto hará que el sistema muestre "Distribución perfecta" en lugar de errores.
+    if ignore_params:
+        final_deficits = []
+
+    return rows, final_deficits
 
 # 2. Actualizamos también la función de ideales
 def generate_ideal_distributions(df_equipos, df_parametros, df_capacidades, num_options=3):
@@ -2690,6 +2695,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
