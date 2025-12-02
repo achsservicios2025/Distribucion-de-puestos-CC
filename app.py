@@ -1431,7 +1431,10 @@ elif menu == "Reservas":
                         elif disponibles <= 0:
                             st.error("Lo sentimos, el cupo se acaba de agotar.")
                         else:
-                            add_reservation(conn, area_equipo, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
+                            pi_norm = str(pi).strip()
+                            if not pi_norm.lower().startswith("piso"):
+                                pi_norm = f"Piso {pi_norm}"
+                            add_reservation(conn, area_equipo, em, pi_norm, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
                             msg = f"✅ Reserva Confirmada:\n\n- Área/Equipo: {area_equipo}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
                             st.success(msg)
                             
@@ -2732,5 +2735,6 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
