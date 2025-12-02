@@ -797,6 +797,11 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
 
 # --- GENERADORES DE PDF ---
 def create_merged_pdf(piso_sel, conn, global_logo_path):
+    # Blindaje: piso_sel puede venir None / NaN / int, etc.
+    if piso_sel is None or (isinstance(piso_sel, float) and pd.isna(piso_sel)):
+        piso_sel = "Piso 1"
+    piso_sel = str(piso_sel)
+
     p_num = piso_sel.replace("Piso ", "").strip()
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
@@ -808,23 +813,26 @@ def create_merged_pdf(piso_sel, conn, global_logo_path):
     for dia in ORDER_DIAS:
         subset = df[(df['piso'] == piso_sel) & (df['dia'] == dia)]
         current_seats = dict(zip(subset['equipo'], subset['cupos']))
-        
+
         day_config = base_config.copy()
         if not day_config.get("subtitle_text"):
             day_config["subtitle_text"] = f"Día: {dia}"
         else:
-             if "Día:" not in str(day_config.get("subtitle_text","")):
-                  day_config["subtitle_text"] = f"Día: {dia}"
+            if "Día:" not in str(day_config.get("subtitle_text","")):
+                day_config["subtitle_text"] = f"Día: {dia}"
 
         img_path = generate_colored_plan(piso_sel, dia, current_seats, "PNG", day_config, global_logo_path)
-        
+
         if img_path and Path(img_path).exists():
             found_any = True
             pdf.add_page()
-            try: pdf.image(str(img_path), x=10, y=10, w=190)
-            except: pass
-            
-    if not found_any: return None
+            try:
+                pdf.image(str(img_path), x=10, y=10, w=190)
+            except:
+                pass
+
+    if not found_any:
+        return None
     return pdf.output(dest='S').encode('latin-1')
 
 def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
@@ -2728,6 +2736,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
