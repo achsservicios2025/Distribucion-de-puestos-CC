@@ -827,23 +827,30 @@ def create_merged_pdf(piso_sel, conn, global_logo_path):
     if not found_any: return None
     return pdf.output(dest='S').encode('latin-1')
 
+# --- EN app.py ---
+
 def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=Path("static/logo.png"), deficit_data=None):
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
     
-    # --- BLINDAJE ANTI-CRASH ---
+    # 1. Copia de seguridad
     df_print = distrib_df.copy()
 
-    # 1. Buscar columna piso
+    # 2. Convertir PISO a texto simple (para que "2" sea texto y no número conflictivo)
+    # Buscamos la columna sin importar mayúsculas
     col_piso = next((c for c in df_print.columns if c.lower().strip() == "piso"), None)
     
     if col_piso:
+        # Convertimos todo a texto. Si era 2, queda "2". Si era 2.0, queda "2.0".
         df_print[col_piso] = df_print[col_piso].astype(str)
         
-        # Ahora reemplazamos la palabra "nan" por guiones o lo que queramos
-        df_print[col_piso] = df_print[col_piso].replace({"nan": "-", "None": "-", "<NA>": "-"})
+        # Opcional: Quitamos el ".0" si aparece (para que "2.0" se vea "2")
+        df_print[col_piso] = df_print[col_piso].apply(lambda x: x.replace(".0", "") if x.endswith(".0") else x)
+        
+        # Solo si es realmente nulo ponemos guion, sino dejamos el valor
+        df_print[col_piso] = df_print[col_piso].replace("nan", "-")
 
-    # --- PÁGINA 1: DISTRIBUCIÓN DIARIA ---
+    # --- PÁGINA 1 ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     if logo_path.exists():
@@ -853,14 +860,10 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
     pdf.cell(0, 10, clean_pdf_text("Informe de Distribución"), ln=True, align='C')
     pdf.ln(6)
 
-    # Título
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, clean_pdf_text("1. Detalle de Distribución Diaria"), ln=True)
-
-    # Tabla
+    # Tabla Diaria
     pdf.set_font("Arial", 'B', 9)
     widths = [30, 60, 25, 25, 25]
-    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib Diario"] 
+    headers = ["Piso", "Equipo", "Día", "Cupos", "%Distrib"] 
     for w, h in zip(widths, headers): pdf.cell(w, 6, clean_pdf_text(h), 1)
     pdf.ln()
 
@@ -872,75 +875,65 @@ def generate_full_pdf(distrib_df, semanal_df, out_path="reporte.pdf", logo_path=
             if k.lower() in row: return str(row[k.lower()])
         return ""
 
-    # Usamos df_print que ya tiene el piso como texto seguro
-    # No intentamos ordenar de nuevo para evitar que se rompa otra vez
+    # Imprimir filas
     for _, r in df_print.iterrows():
-        # Como ya limpiamos arriba, aquí tomamos el valor directo
+        # Tomamos el piso directo (ya está limpio como texto "2")
         piso_val = r[col_piso] if col_piso else "-"
         
         pdf.cell(widths[0], 6, clean_pdf_text(piso_val), 1)
         pdf.cell(widths[1], 6, clean_pdf_text(get_val(r, ["Equipo", "equipo"])[:40]), 1)
         pdf.cell(widths[2], 6, clean_pdf_text(get_val(r, ["Día", "dia", "Dia"])), 1)
-        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos", "Cupos asignados"])), 1)
+        pdf.cell(widths[3], 6, clean_pdf_text(get_val(r, ["Cupos", "cupos"])), 1)
         pdf.cell(widths[4], 6, clean_pdf_text(f"{get_val(r, ['%Distrib', 'pct'])}%"), 1)
         pdf.ln()
 
     # --- PÁGINA 2: SEMANAL ---
     pdf.add_page() 
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal por Equipo"), ln=True)
+    pdf.cell(0, 10, clean_pdf_text("2. Resumen de Uso Semanal"), ln=True)
     
     try:
         col_cupos = "Cupos" if "Cupos" in df_print.columns else "cupos"
         col_equipo = "Equipo" if "Equipo" in df_print.columns else "equipo"
         
-        weekly_stats = df_print.groupby(col_equipo)[col_cupos].sum().reset_index()
-        weekly_stats.columns = ["Equipo", "Total Semanal"]
+        stats = df_print.groupby(col_equipo)[col_cupos].sum().reset_index()
+        stats.columns = ["Equipo", "Total Semanal"]
         
         # Filtro cupos libres
-        weekly_stats = weekly_stats[weekly_stats["Equipo"] != "Cupos libres"]
+        stats = stats[stats["Equipo"] != "Cupos libres"]
 
-        dias_habiles = 5
-        weekly_stats["Promedio Cupo Semanal"] = (weekly_stats["Total Semanal"] / dias_habiles).round(2)
+        # Cálculos
+        stats["Promedio"] = (stats["Total Semanal"] / 5).round(2)
         
         team_dots = infer_team_dotacion_map(semanal_df)
-        weekly_stats["Dotación"] = weekly_stats["Equipo"].map(team_dots).fillna(0).astype(int)
+        stats["Dotación"] = stats["Equipo"].map(team_dots).fillna(0).astype(int)
         
-        weekly_stats["% Uso Semanal"] = weekly_stats.apply(
+        stats["% Uso"] = stats.apply(
             lambda x: (x["Total Semanal"] / (x["Dotación"] * 5) * 100) if x["Dotación"] > 0 else 0.0,
             axis=1
         ).round(2)
         
-        weekly_stats = weekly_stats.sort_values("Promedio Cupo Semanal", ascending=False)
+        stats = stats.sort_values("Promedio", ascending=False)
         
-        # Tabla Semanal
+        # Tabla
         pdf.set_font("Arial", 'B', 9)
         w_wk = [80, 50, 40]
-        h_wk = ["Equipo", "Promedio Cupo Semanal", "% Uso Semanal"]
+        h_wk = ["Equipo", "Promedio Diario", "% Uso Semanal"]
         
         pdf.set_x(25)
         for w, h in zip(w_wk, h_wk): pdf.cell(w, 6, clean_pdf_text(h), 1)
         pdf.ln()
 
         pdf.set_font("Arial", '', 9)
-        for _, row in weekly_stats.iterrows():
+        for _, row in stats.iterrows():
             pdf.set_x(25)
             pdf.cell(w_wk[0], 6, clean_pdf_text(str(row["Equipo"])[:40]), 1)
-            pdf.cell(w_wk[1], 6, clean_pdf_text(str(row["Promedio Cupo Semanal"])), 1)
-            pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['% Uso Semanal']:.2f}%"), 1)
+            pdf.cell(w_wk[1], 6, clean_pdf_text(str(row["Promedio"])), 1)
+            pdf.cell(w_wk[2], 6, clean_pdf_text(f"{row['% Uso']:.2f}%"), 1)
             pdf.ln()
 
     except Exception as e:
-        pdf.set_font("Arial", 'I', 9)
-        pdf.cell(0, 6, clean_pdf_text(f"Error resumen semanal: {str(e)}"), ln=True)
-
-    # --- GLOSARIO ---
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, clean_pdf_text("Glosario:"), ln=True)
-    pdf.set_font("Arial", '', 9)
-    pdf.set_x(10)
-    pdf.multi_cell(185, 6, clean_pdf_text("1. El equipo 'Cupos libres' se excluye del resumen semanal.\n2. % Uso Semanal = (Cupos Asignados / (Dotación * 5)) * 100."))
+        pdf.cell(0, 6, clean_pdf_text(f"Error resumen: {str(e)}"), ln=True)
 
     return pdf.output(dest='S').encode('latin-1')
 # --- DIALOGOS MODALES ---
@@ -2671,6 +2664,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
