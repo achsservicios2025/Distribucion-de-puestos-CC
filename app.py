@@ -1458,140 +1458,140 @@ elif menu == "Administrador":
             st.info("Sube y procesa un Excel para generar una propuesta.")
 
     with t2:
-    st.info("Editor de Zonas - Versión Profesional")
-    zonas = load_zones()
+        st.info("Editor de Zonas - Versión Profesional")
+        zonas = load_zones()
 
-    df_d = read_distribution_df(conn)
-    pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
+        df_d = read_distribution_df(conn)
+        pisos_list = sort_floors(df_d["piso"].unique()) if not df_d.empty else ["Piso 1"]
 
-    col_left, col_right = st.columns([2, 1])
+        col_left, col_right = st.columns([2, 1])
 
-    # ---------- helpers ----------
-    def norm_piso(x):
-        s = str(x).strip()
-        if not s.lower().startswith("piso"):
-            s = f"Piso {s}"
-        return s
+        # ---------- helpers ----------
+        def norm_piso(x):
+            s = str(x).strip()
+            if not s.lower().startswith("piso"):
+                s = f"Piso {s}"
+            return s
 
-    # limpiar nulos
-    pisos_list_clean = [norm_piso(p) for p in pisos_list if p is not None and str(p).strip() != ""]
-    if not pisos_list_clean:
-        pisos_list_clean = ["Piso 1"]
+        # limpiar nulos
+        pisos_list_clean = [norm_piso(p) for p in pisos_list if p is not None and str(p).strip() != ""]
+        if not pisos_list_clean:
+            pisos_list_clean = ["Piso 1"]
 
-    with col_left:
-        p_sel = st.selectbox("Piso", pisos_list_clean, key="editor_piso")
-        p_sel = norm_piso(p_sel)
+        with col_left:
+            p_sel = st.selectbox("Piso", pisos_list_clean, key="editor_piso")
+            p_sel = norm_piso(p_sel)
 
-        p_num = p_sel.replace("Piso", "").strip() or "1"
+            p_num = p_sel.replace("Piso", "").strip() or "1"
 
-        # buscar archivo plano
-        file_candidates = [
-            PLANOS_DIR / f"piso{p_num}.png",
-            PLANOS_DIR / f"piso{p_num}.jpg",
-            PLANOS_DIR / f"Piso{p_num}.png",
-            PLANOS_DIR / f"Piso{p_num}.jpg",
-        ]
-        pim = next((p for p in file_candidates if p.exists()), None)
+            # buscar archivo plano
+            file_candidates = [
+                PLANOS_DIR / f"piso{p_num}.png",
+                PLANOS_DIR / f"piso{p_num}.jpg",
+                PLANOS_DIR / f"Piso{p_num}.png",
+                PLANOS_DIR / f"Piso{p_num}.jpg",
+            ]
+            pim = next((p for p in file_candidates if p.exists()), None)
 
-        if not pim:
-            st.error(f"❌ No se encontró el plano para {p_sel}")
-            st.info("💡 Revisa que exista en /planos como piso1.png / piso1.jpg / Piso1.png")
-        else:
-            existing_zones = zonas.get(p_sel, []) or []
-
-            selected_team = st.session_state.get(f"team_{p_sel}", "")
-            selected_color = st.session_state.get(f"color_{p_sel}", "#00A04A") or "#00A04A"
-
-            st.success(f"✅ Plano cargado: {pim.name}")
-
-            if selected_team:
-                st.info(f"🎨 Equipo seleccionado: **{selected_team}** | Color: **{selected_color}**")
+            if not pim:
+                st.error(f"❌ No se encontró el plano para {p_sel}")
+                st.info("💡 Revisa que exista en /planos como piso1.png / piso1.jpg / Piso1.png")
             else:
-                st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
+                existing_zones = zonas.get(p_sel, []) or []
 
-            editor_result = zone_editor(
-                img_path=str(pim),
-                existing_zones=existing_zones,
-                selected_team=selected_team,
-                selected_color=selected_color,
-                width=640,
-                key=f"zone_editor_{p_sel}"
-            )
+                selected_team = st.session_state.get(f"team_{p_sel}", "")
+                selected_color = st.session_state.get(f"color_{p_sel}", "#00A04A") or "#00A04A"
 
-            # Botones auxiliares
-            b1, b2 = st.columns(2)
-            if b1.button("🔄 Recargar Zonas", key=f"reload_{p_sel}"):
-                st.rerun()
+                st.success(f"✅ Plano cargado: {pim.name}")
 
-            if b2.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
-                zonas[p_sel] = []
-                if save_zones(zonas):
-                    st.success("✅ Todas las zonas eliminadas")
+                if selected_team:
+                    st.info(f"🎨 Equipo seleccionado: **{selected_team}** | Color: **{selected_color}**")
+                else:
+                    st.warning("⚠️ Selecciona un equipo y color en el panel derecho antes de dibujar")
+
+                editor_result = zone_editor(
+                    img_path=str(pim),
+                    existing_zones=existing_zones,
+                    selected_team=selected_team,
+                    selected_color=selected_color,
+                    width=640,
+                    key=f"zone_editor_{p_sel}"
+                )
+
+                # Botones auxiliares
+                b1, b2 = st.columns(2)
+                if b1.button("🔄 Recargar Zonas", key=f"reload_{p_sel}"):
                     st.rerun()
-                else:
-                    st.error("❌ Error al eliminar las zonas")
 
-            # ---- aceptar respuesta flexible del componente ----
-            zonas_component = None
-            action = "manual"
-
-            if editor_result:
-                if isinstance(editor_result, dict):
-                    zonas_component = editor_result.get("zones")
-                    action = editor_result.get("action", "manual")
-                elif isinstance(editor_result, list):
-                    zonas_component = editor_result
-                else:
-                    zonas_component = None
-
-            if isinstance(zonas_component, list):
-                zonas[p_sel] = zonas_component
-                if save_zones(zonas):
-                    st.success(f"✅ {len(zonas_component)} zonas guardadas.")
-                    if action == "manual":
+                if b2.button("🗑️ Limpiar Todas", key=f"clear_all_{p_sel}"):
+                    zonas[p_sel] = []
+                    if save_zones(zonas):
+                        st.success("✅ Todas las zonas eliminadas")
                         st.rerun()
-                else:
-                    st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
+                    else:
+                        st.error("❌ Error al eliminar las zonas")
 
-            st.info(
-                "💡 Instrucciones: 1) Selecciona equipo/color a la derecha. "
-                "2) Dibuja zonas. 3) Guarda desde el componente."
-            )
+                # ---- aceptar respuesta flexible del componente ----
+                zonas_component = None
+                action = "manual"
 
-    with col_right:
-        st.subheader("🎨 Configuración de Zonas")
+                if editor_result:
+                    if isinstance(editor_result, dict):
+                        zonas_component = editor_result.get("zones")
+                        action = editor_result.get("action", "manual")
+                    elif isinstance(editor_result, list):
+                        zonas_component = editor_result
+                    else:
+                        zonas_component = None
 
-        # Día referencia
-        d_sel = st.selectbox("Día Ref.", ORDER_DIAS, key=f"dia_ref_{p_sel}")
+                if isinstance(zonas_component, list):
+                    zonas[p_sel] = zonas_component
+                    if save_zones(zonas):
+                        st.success(f"✅ {len(zonas_component)} zonas guardadas.")
+                        if action == "manual":
+                            st.rerun()
+                    else:
+                        st.error("❌ Error al guardar las zonas. Intenta nuevamente.")
 
-        current_seats_dict = {}
-        eqs = [""]
+                st.info(
+                    "💡 Instrucciones: 1) Selecciona equipo/color a la derecha. "
+                    "2) Dibuja zonas. 3) Guarda desde el componente."
+                )
 
-        if not df_d.empty:
-            subset = df_d[(df_d["piso"] == p_sel) & (df_d["dia"] == d_sel)]
-            current_seats_dict = dict(zip(subset["equipo"], subset["cupos"]))
-            eqs += sorted(subset["equipo"].unique().tolist())
+        with col_right:
+            st.subheader("🎨 Configuración de Zonas")
 
-        # salas por piso
-        if "1" in p_sel:
-            eqs += ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
-        elif "2" in p_sel:
-            eqs += ["Sala Reuniones - Piso 2"]
-        elif "3" in p_sel:
-            eqs += ["Sala Reuniones - Piso 3"]
+            # Día referencia
+            d_sel = st.selectbox("Día Ref.", ORDER_DIAS, key=f"dia_ref_{p_sel}")
 
-        tn = st.selectbox("Equipo / Sala", eqs, key=f"team_{p_sel}")
-        tc = st.color_picker("Color", "#00A04A", key=f"color_{p_sel}")
+            current_seats_dict = {}
+            eqs = [""]
 
-        if tn and tn in current_seats_dict:
-            st.info(f"📊 Cupos: {current_seats_dict[tn]}")
+            if not df_d.empty:
+                subset = df_d[(df_d["piso"] == p_sel) & (df_d["dia"] == d_sel)]
+                current_seats_dict = dict(zip(subset["equipo"], subset["cupos"]))
+                eqs += sorted(subset["equipo"].unique().tolist())
 
-        st.markdown("---")
+            # salas por piso
+            if "1" in p_sel:
+                eqs += ["Sala Grande - Piso 1", "Sala Pequeña - Piso 1"]
+            elif "2" in p_sel:
+                eqs += ["Sala Reuniones - Piso 2"]
+            elif "3" in p_sel:
+                eqs += ["Sala Reuniones - Piso 3"]
 
-        if zonas.get(p_sel):
-            st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
-        else:
-            st.warning("ℹ️ No hay zonas guardadas para este piso aún.")
+            tn = st.selectbox("Equipo / Sala", eqs, key=f"team_{p_sel}")
+            tc = st.color_picker("Color", "#00A04A", key=f"color_{p_sel}")
+
+            if tn and tn in current_seats_dict:
+                st.info(f"📊 Cupos: {current_seats_dict[tn]}")
+
+            st.markdown("---")
+
+            if zonas.get(p_sel):
+                st.success(f"✅ {len(zonas[p_sel])} zonas guardadas para {p_sel}")
+            else:
+                st.warning("ℹ️ No hay zonas guardadas para este piso aún.")
 
     with t3:
         st.subheader("Generar Reportes de Distribución")
@@ -2100,6 +2100,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
