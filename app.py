@@ -2204,18 +2204,13 @@ elif menu == "Administrador":
             # fondo a tamaño canvas
             bg_img = pil_img.resize((canvas_w, canvas_h))
 
-            # ✅ streamlit-drawable-canvas (tu versión) espera bytes/URL, no PIL:
-            import io
-            buf = io.BytesIO()
-            bg_img.save(buf, format="PNG")
-            bg_bytes = buf.getvalue()
-
             # ✅ centrar canvas con columnas espaciadoras
             max_w = 1400
             use_w = min(canvas_w, max_w)
             use_h = int(canvas_h * (use_w / canvas_w))
 
             if use_w != canvas_w:
+                import io
                 bg_img2 = bg_img.resize((use_w, use_h))
                 buf2 = io.BytesIO()
                 bg_img2.save(buf2, format="PNG")
@@ -2223,6 +2218,8 @@ elif menu == "Administrador":
 
             left_pad, mid, right_pad = st.columns([2, 8, 2])
             with mid:
+                selected_color = st.session_state.get("zones_color_"+p_sel, "#00A04A")
+                fill_rgba = hex_to_rgba(selected_color, 0.30)
                 canvas_result = st_canvas(
                     fill_color=fill_rgba,
                     stroke_width=2,
@@ -3032,6 +3029,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
