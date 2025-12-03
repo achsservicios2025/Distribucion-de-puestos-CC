@@ -2060,20 +2060,35 @@ elif menu == "Administrador":
         st.markdown("### 📊 Informes de Distribución")
         rf = st.selectbox("Formato Reporte", ["Excel (XLSX)", "PDF"], key="report_format")
         if st.button("Generar Reporte de Distribución", key="gen_dist_report"):
-            df_raw = read_distribution_df(conn); df_raw = apply_sorting_to_df(df_raw)
-            st.session_state['rd'] = generate_full_pdf(df_raw, st.session_state.get("excel_equipos", df_raw), logo_path=Path(global_logo_path), deficit_data=d_data)
+            df_raw = read_distribution_df(conn)
+            df_raw = apply_sorting_to_df(df_raw)
+
+            # ✅ calcular d_data ANTES de usarlo
+            raw_deficits_pdf = st.session_state.get('deficit_report') or st.session_state.get('proposal_deficit') or []
+            d_data = filter_minimum_deficits(raw_deficits_pdf)
+
             if "Excel" in rf:
                 b = BytesIO()
-                with pd.ExcelWriter(b, engine='openpyxl') as w: 
+                with pd.ExcelWriter(b, engine='openpyxl') as w:
                     df_raw.to_excel(w, index=False, sheet_name='Distribución')
-                st.session_state['rd'] = b.getvalue(); st.session_state['rn'] = "distribucion.xlsx"; st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+                st.session_state['rd'] = b.getvalue()
+                st.session_state['rn'] = "distribucion.xlsx"
+                st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
             else:
                 df = df_raw.rename(columns={"piso":"Piso","equipo":"Equipo","dia":"Día","cupos":"Cupos","pct":"%Distrib"})
-                raw_deficits_pdf = st.session_state.get('deficit_report') or st.session_state.get('proposal_deficit') or []
-                d_data = filter_minimum_deficits(raw_deficits_pdf)
                 df_eq_pdf = st.session_state.get("excel_equipos", pd.DataFrame())
-                st.session_state['rd'] = generate_full_pdf(df, df_eq_pdf, logo_path=Path(global_logo_path), deficit_data=d_data)
-                st.session_state['rn'] = "reporte_distribucion.pdf"; st.session_state['rm'] = "application/pdf"
+
+                st.session_state['rd'] = generate_full_pdf(
+                    df,
+                    df_eq_pdf,
+                    logo_path=Path(global_logo_path),
+                    deficit_data=d_data
+                )
+                st.session_state['rn'] = "reporte_distribucion.pdf"
+                st.session_state['rm'] = "application/pdf"
+
             st.success("✅ Reporte generado")
         if 'rd' in st.session_state: st.download_button("📥 Descargar Reporte de Distribución", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="dl_dist_report")
         
@@ -2541,6 +2556,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
