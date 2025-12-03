@@ -620,6 +620,30 @@ def filter_minimum_deficits(deficit_list):
             filtered.append(fixed)
     return filtered
 
+def recompute_pct(rows):
+    df = pd.DataFrame(rows)
+    if df.empty or not {"piso","dia","equipo","cupos"}.issubset(df.columns):
+        return rows
+
+    df["cupos"] = pd.to_numeric(df["cupos"], errors="coerce").fillna(0).astype(int)
+
+    # total por piso/día sin cupos libres
+    base = df[df["equipo"].str.lower() != "cupos libres"].groupby(["piso","dia"])["cupos"].sum()
+    base = base.rename("total").reset_index()
+
+    df = df.merge(base, on=["piso","dia"], how="left")
+    df["total"] = df["total"].fillna(0)
+
+    def calc_pct(r):
+        if str(r["equipo"]).lower() == "cupos libres":
+            return 0
+        if r["total"] <= 0:
+            return 0
+        return round((r["cupos"] / r["total"]) * 100, 2)
+
+    df["pct"] = df.apply(calc_pct, axis=1)
+    return df.to_dict("records")
+
 def infer_team_dotacion_map(df):
     """Intenta inferir la dotación total por equipo usando la data disponible."""
     if df is None or df.empty:
@@ -1767,8 +1791,11 @@ elif menu == "Administrador":
             # 2) GUARDAR
             if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
                 try:
+                    rows_fixed = recompute_pct(st.session_state["proposal_rows"])
+                    st.session_state["proposal_rows"] = rows_fixed
+
                     clear_distribution(conn)
-                    insert_distribution(conn, st.session_state["proposal_rows"])
+                    insert_distribution(conn, rows_fixed)
 
                     if st.session_state.get("proposal_deficit"):
                         st.session_state["deficit_report"] = st.session_state["proposal_deficit"]
@@ -2451,6 +2478,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
