@@ -735,9 +735,17 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                     }});
                 }}
                 
+                function hexToRgba(hex, alpha=0.25){
+                    hex = (hex || "#00A04A").replace("#","");
+                    const r = parseInt(hex.substring(0,2),16);
+                    const g = parseInt(hex.substring(2,4),16);
+                    const b = parseInt(hex.substring(4,6),16);
+                    return `rgba(${r},${g},${b},${alpha})`;
+                }
+
                 function drawRectangle(rect) {{
-                    ctx.strokeStyle = rect.color || selectedColor;
-                    ctx.lineWidth = 3;
+                    ctx.fillStyle = hexToRgba(rect.color || selectedColor, 0.25);
+                    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
                     ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
                     
                     // Relleno semitransparente
@@ -813,13 +821,7 @@ def create_enhanced_drawing_component(img_path, existing_zones, selected_team=""
                         
                         rectangles.push(newRect);
                         updateZonesList();
-                        
-                        // Auto-guardar después de dibujar
-                        setTimeout(() => {{
-                            const zonesData = JSON.stringify(rectangles);
-                            localStorage.setItem('zones_auto_' + '{p_sel}', zonesData);
-                        }}, 100);
-                    }}
+                        emitZones('auto'); // ✅ auto-guardar real hacia Streamlit
                     
                     currentRect = null;
                     isDrawing = false;
@@ -1090,6 +1092,13 @@ def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
 # --- UTILS TOKENS ---
 def generate_token(): return uuid.uuid4().hex[:8].upper()
 
+def safe_clear_cache(fn):
+    """Limpia cache de funciones @st.cache_data si existe; si no, no hace nada."""
+    try:
+        fn.clear()
+    except Exception:
+        pass
+        
 # ---------------------------------------------------------
 # INICIO APP
 # ---------------------------------------------------------
@@ -2562,7 +2571,7 @@ elif menu == "Administrador":
                     if ws:
                         ws.clear()
                         ws.append_row(["user_name", "user_email", "piso", "reservation_date", "team_area", "created_at"])
-                        list_reservations_df.clear()
+                        safe_clear_cache(list_reservations_df)
                         st.success("✅ Todas las reservas de puestos eliminadas")
                         st.rerun()
             else:
@@ -2605,7 +2614,7 @@ elif menu == "Administrador":
                     if ws:
                         ws.clear()
                         ws.append_row(["user_name", "user_email", "piso", "room_name", "reservation_date", "start_time", "end_time", "created_at"])
-                        get_room_reservations_df.clear()
+                        safe_clear_cache(get_room_reservations_df)
                         st.success("✅ Todas las reservas de salas eliminadas")
                         st.rerun()
             else:
@@ -2660,7 +2669,7 @@ elif menu == "Administrador":
                     if ws:
                         ws.clear()
                         ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
-                        read_distribution_df.clear()
+                        safe_clear_cache(read_distribution_df)
                         st.success("✅ Toda la distribución eliminada")
                         st.rerun()
             else:
@@ -2734,6 +2743,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
