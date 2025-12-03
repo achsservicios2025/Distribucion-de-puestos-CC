@@ -1513,15 +1513,17 @@ elif menu == "Administrador":
                     
                     # 4 . Calcular
                     if ignore_params:
-                        # Generamos opciones ideales
-                        dists = generate_ideal_distributions(df_eq, df_pa, df_cap, num_options=3)
-                        st.session_state['ideal_options'] = dists
-                        st.session_state['selected_ideal_option'] = 0
-                        st.session_state['proposal_rows'] = dists[0]['rows']
-                        st.session_state['proposal_deficit'] = dists[0]['deficit']
-                        st.toast("✅ Opciones ideales generadas.")
+                        # ✅ Ideal matemáticamente correcto con mínimos diarios escalados
+                        rows, deficit = generate_distribution_math_correct(
+                            df_eq,
+                            df_cap,
+                            cupos_libres_diarios=2,
+                            min_dotacion_para_garantia=3
+                        )   
+                        st.session_state['proposal_rows'] = rows
+                        st.session_state['proposal_deficit'] = deficit
+                        st.toast("✅ Distribución ideal (matemática) generada.")
                     else:
-                        # Modo Normal
                         rows, deficit = get_distribution_proposal(df_eq, df_pa, df_cap, strategy="random", ignore_params=False)
                         st.session_state['proposal_rows'] = rows
                         st.session_state['proposal_deficit'] = deficit
@@ -2252,6 +2254,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
