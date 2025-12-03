@@ -779,7 +779,6 @@ def generate_full_pdf(
         * si no viene o viene vacío, se recalcula SOLO desde los cupos del mismo piso/día
           para que la suma por piso/día sea 100% (incluyendo Cupos libres)
     - Incluye Reporte de Déficit si existe.
-    - Glosario reducido (sin los 2 puntos que pediste quitar).
     """
     pdf = FPDF()
     pdf.set_auto_page_break(True, 15)
@@ -1029,7 +1028,7 @@ def generate_full_pdf(
         0, 6,
         _clean_text(
             "1. % Distribución Diario = (Cupos del equipo en el día / Total cupos del piso en ese día) * 100.\n"
-            "2. Promedio Diario = (Total Semanal / 5).`
+            "2. Promedio Diario = (Total Semanal / 5)."
             "3. % Uso Semanal = (Cupos del equipo en la semana / (Dotación * 5)) * 100 (si hay dotación disponible).\n"
             "4. Déficit = Máximo(0, Mínimo requerido - Asignado)."
         )
@@ -2556,6 +2555,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
