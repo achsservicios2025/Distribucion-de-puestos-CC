@@ -2204,38 +2204,22 @@ elif menu == "Administrador":
             # fondo a tamaño canvas
             bg_img = pil_img.resize((canvas_w, canvas_h))
 
-            # zonas existentes
-            zonas_all = load_zones() or {}
-            existing_zones = zonas_all.get(p_sel, []) or []
-
-            # objetos iniciales en canvas (re-escalados)
-            init_objects = []
-            for z in existing_zones:
-                try:
-                    init_objects.append({
-                        "type": "rect",
-                        "left": float(z.get("left", 0)) * scale,
-                        "top": float(z.get("top", 0)) * scale,
-                        "width": float(z.get("width", 0)) * scale,
-                        "height": float(z.get("height", 0)) * scale,
-                        "fill": z.get("fill", hex_to_rgba(z.get("color", "#00A04A"), 0.30)),
-                        "stroke": z.get("stroke", z.get("color", "#00A04A")),
-                        "strokeWidth": z.get("strokeWidth", 2),
-                    })
-                except Exception:
-                    continue
-
-            # colores actuales
-            fill_rgba = hex_to_rgba(selected_color, 0.30)
-
-            st_canvas_key = f"canvas_{p_sel}"
+            # ✅ streamlit-drawable-canvas (tu versión) espera bytes/URL, no PIL:
+            import io
+            buf = io.BytesIO()
+            bg_img.save(buf, format="PNG")
+            bg_bytes = buf.getvalue()
 
             # ✅ centrar canvas con columnas espaciadoras
             max_w = 1400
             use_w = min(canvas_w, max_w)
             use_h = int(canvas_h * (use_w / canvas_w))
 
-            bg_to_use = bg_img.resize((use_w, use_h)) if use_w != canvas_w else bg_img
+            if use_w != canvas_w:
+                bg_img2 = bg_img.resize((use_w, use_h))
+                buf2 = io.BytesIO()
+                bg_img2.save(buf2, format="PNG")
+                bg_bytes = buf2.getvalue()
 
             left_pad, mid, right_pad = st.columns([2, 8, 2])
             with mid:
@@ -2243,7 +2227,7 @@ elif menu == "Administrador":
                     fill_color=fill_rgba,
                     stroke_width=2,
                     stroke_color=selected_color,
-                    background_image=bg_to_use,  # PIL Image (PNG/JPG) ✅
+                    background_image=bg_bytes,   # ✅ bytes PNG
                     update_streamlit=True,
                     height=use_h,
                     width=use_w,
@@ -3048,6 +3032,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
