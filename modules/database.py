@@ -5,6 +5,7 @@ from gspread.exceptions import WorksheetNotFound, APIError
 import pandas as pd
 import datetime
 import time
+import re
 
 # --- CONFIGURACIÓN DE CONEXIÓN ---
 SCOPES = [
@@ -12,20 +13,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# -----------------------------
+# Helpers
+# -----------------------------
 def _to_plain(v):
     """Convierte tipos raros (numpy/pandas/datetime) a tipos simples serializables."""
     try:
-        # pandas Timestamp
         if hasattr(v, "to_pydatetime"):
             v = v.to_pydatetime()
     except Exception:
         pass
 
-    # datetime/date -> string
     if isinstance(v, (datetime.datetime, datetime.date)):
         return v.isoformat()
 
-    # numpy / pandas scalars -> python scalar
     try:
         import numpy as np
         if isinstance(v, (np.integer,)):
@@ -37,7 +38,6 @@ def _to_plain(v):
     except Exception:
         pass
 
-    # NaN -> ""
     try:
         if pd.isna(v):
             return ""
@@ -47,24 +47,69 @@ def _to_plain(v):
     return str(v) if not isinstance(v, (str, int, float, bool)) else v
 
 
+def _norm_piso(p):
+    """Normaliza piso a formato 'Piso X' (string)."""
+    if p is None:
+        return ""
+    s = str(p).strip()
+    if not s:
+        return ""
+    # si viene "1" o "Piso 1" o "piso1"
+    m = re.findall(r"\d+", s)
+    if m:
+        num = str(int(m[0]))
+        return f"Piso {num}"
+    # si no se puede, devolver la string tal cual
+    s_low = s.lower()
+    if s_low.startswith("piso"):
+        return "Piso " + s[4:].strip()
+    return s
+
+
+def _safe_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        s = str(x).strip().replace("%", "").replace(",", ".")
+        if s == "":
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def _safe_int(x, default=0):
+    try:
+        if x is None:
+            return default
+        s = str(x).strip().replace(",", ".")
+        if s == "":
+            return default
+        return int(float(s))
+    except Exception:
+        return default
+
+
 @st.cache_resource
 def get_conn():
     """Conecta a Google Sheets."""
     try:
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-            client = gspread.authorize(creds)
+        if "gcp_service_account" not in st.secrets:
+            st.error("Faltan secretos: gcp_service_account")
+            return None
 
-            if "sheets" in st.secrets and "sheet_name" in st.secrets["sheets"]:
-                sheet_name = st.secrets["sheets"]["sheet_name"]
-                return client.open(sheet_name)
-            else:
-                st.error("Falta la configuración 'sheet_name' en st.secrets")
-                return None
-        return None
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        client = gspread.authorize(creds)
+
+        if "sheets" not in st.secrets or "sheet_name" not in st.secrets["sheets"]:
+            st.error("Falta la configuración sheets.sheet_name en st.secrets")
+            return None
+
+        sheet_name = st.secrets["sheets"]["sheet_name"]
+        return client.open(sheet_name)
+
     except Exception as e:
-        print(f"Error conectando a Google Sheets: {e}")
         st.error(f"Error conectando a Google Sheets: {e}")
         return None
 
@@ -74,26 +119,31 @@ def get_worksheet(conn, sheet_name):
     if conn is None:
         return None
 
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             return conn.worksheet(sheet_name)
+
         except WorksheetNotFound:
+            # crear y luego leer
             try:
                 time.sleep(1)
-                return conn.add_worksheet(title=sheet_name, rows=100, cols=20)
-            except APIError:
-                time.sleep(1)
-                if conn:
+                return conn.add_worksheet(title=sheet_name, rows=200, cols=40)
+            except Exception:
+                try:
                     return conn.worksheet(sheet_name)
+                except Exception:
+                    return None
+
         except APIError as e:
-            if "429" in str(e):
+            # anti 429
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 time.sleep(2 * (attempt + 1))
                 continue
-            print(f"Error API (get_worksheet): {e}")
             return None
-        except Exception as e:
-            print(f"Error inesperado (get_worksheet): {e}")
+
+        except Exception:
             return None
+
     return None
 
 
@@ -109,112 +159,33 @@ def init_db(conn):
         "settings": ["key", "value", "updated_at"],
         "reset_tokens": ["token", "created_at", "expires_at", "used"]
     }
+
     for name, headers in sheets_config.items():
         ws = get_worksheet(conn, name)
         if ws:
             try:
-                if not ws.row_values(1):
+                first = ws.row_values(1)
+                if not first:
                     ws.append_row(headers)
             except Exception:
                 pass
         time.sleep(0.2)
 
 
-# --- FUNCIONES DE LECTURA (CON CACHÉ Y LIMPIEZA) ---
-
+# -----------------------------
+# READS (cache)
+# -----------------------------
 @st.cache_data(ttl=60, show_spinner=False)
 def read_distribution_df(_conn):
     ws = get_worksheet(_conn, "distribution")
     if ws is None:
         return pd.DataFrame()
-
     try:
         data = ws.get_all_records()
-        return pd.DataFrame(data)
-    except Exception as e:
-        print(f"Error leyendo distribution: {e}")
+        df = pd.DataFrame(data)
+        return df
+    except Exception:
         return pd.DataFrame()
-
-
-def insert_distribution(conn, rows):
-    ws = get_worksheet(conn, "distribution")
-    if ws is None:
-        return
-
-    try:
-        ws.clear()
-        ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
-
-        data = []
-        now = datetime.datetime.now().isoformat()
-        for r in rows:
-            data.append([
-                _to_plain(r.get('Piso', r.get('piso', ''))),
-                _to_plain(r.get('Equipo', r.get('equipo', ''))),
-                _to_plain(r.get('Día', r.get('dia', ''))),
-                _to_plain(r.get('Cupos', r.get('cupos', 0))),
-                _to_plain(r.get('%Distrib', r.get('pct', 0))),
-                _to_plain(now)
-            ])
-
-        if data:
-            ws.append_rows(data)
-
-        read_distribution_df.clear()
-        st.cache_data.clear()
-    except Exception as e:
-        st.error(f"Error guardando distribución: {e}")
-
-
-def clear_distribution(conn):
-    ws = get_worksheet(conn, "distribution")
-    if ws is None:
-        return
-    try:
-        ws.clear()
-        read_distribution_df.clear()
-    except Exception:
-        pass
-
-
-# --- RESERVAS PUESTOS ---
-
-def add_reservation(conn, name, email, piso, date_str, area, created_at):
-    ws = get_worksheet(conn, "reservations")
-    if ws is None:
-        return
-
-    try:
-        ws.append_row([
-            _to_plain(name),
-            _to_plain(email),
-            _to_plain(piso),
-            _to_plain(date_str),
-            _to_plain(area),
-            _to_plain(created_at),
-        ])
-        list_reservations_df.clear()
-    except Exception as e:
-        st.error(f"Error al reservar: {e}")
-
-
-def user_has_reservation(conn, email, date_str):
-    ws = get_worksheet(conn, "reservations")
-    if ws is None:
-        return False
-
-    try:
-        records = ws.get_all_records()
-        df = pd.DataFrame(records)
-        if df.empty:
-            return False
-        match = df[
-            (df['user_email'].astype(str) == str(email)) &
-            (df['reservation_date'].astype(str) == str(date_str))
-        ]
-        return not match.empty
-    except Exception:
-        return False
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -228,13 +199,148 @@ def list_reservations_df(_conn):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_room_reservations_df(_conn):
+    ws = get_worksheet(_conn, "room_reservations")
+    if ws is None:
+        return pd.DataFrame()
+    try:
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_settings(_conn):
+    ws = get_worksheet(_conn, "settings")
+    if ws is None:
+        return {}
+    try:
+        recs = ws.get_all_records()
+        out = {}
+        for r in recs:
+            k = str(r.get("key", "")).strip()
+            v = str(r.get("value", "")).strip()
+            if k:
+                out[k] = v
+        return out
+    except Exception:
+        return {}
+
+
+# -----------------------------
+# WRITES / MUTATIONS
+# -----------------------------
+def insert_distribution(conn, rows):
+    """
+    Guarda distribution.
+    Acepta rows dict con claves:
+    - piso/Piso, equipo/Equipo, dia/Día, cupos/Cupos, pct/%Distrib
+    Normaliza piso a 'Piso X'.
+    """
+    ws = get_worksheet(conn, "distribution")
+    if ws is None:
+        return
+
+    try:
+        ws.clear()
+        ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        data = []
+
+        for r in rows or []:
+            piso = r.get("piso", r.get("Piso", ""))
+            equipo = r.get("equipo", r.get("Equipo", ""))
+            dia = r.get("dia", r.get("Día", r.get("Dia", "")))
+            cupos = r.get("cupos", r.get("Cupos", 0))
+            pct = r.get("pct", r.get("%Distrib", r.get("Porcentaje", 0)))
+
+            piso_norm = _norm_piso(piso)
+            equipo_s = str(equipo).strip()
+            dia_s = str(dia).strip()
+
+            cupos_i = _safe_int(cupos, 0)
+            pct_f = _safe_float(pct, 0.0)
+
+            data.append([
+                _to_plain(piso_norm),
+                _to_plain(equipo_s),
+                _to_plain(dia_s),
+                _to_plain(cupos_i),
+                _to_plain(pct_f),
+                _to_plain(now)
+            ])
+
+        if data:
+            ws.append_rows(data, value_input_option="USER_ENTERED")
+
+        # limpiar caches
+        read_distribution_df.clear()
+        st.cache_data.clear()
+
+    except Exception as e:
+        st.error(f"Error guardando distribución: {e}")
+
+
+def clear_distribution(conn):
+    ws = get_worksheet(conn, "distribution")
+    if ws is None:
+        return
+    try:
+        ws.clear()
+        ws.append_row(["piso", "equipo", "dia", "cupos", "pct", "created_at"])
+        read_distribution_df.clear()
+    except Exception:
+        pass
+
+
+# -----------------------------
+# Reservas puestos
+# -----------------------------
+def add_reservation(conn, name, email, piso, date_str, area, created_at):
+    ws = get_worksheet(conn, "reservations")
+    if ws is None:
+        return
+    try:
+        ws.append_row([
+            _to_plain(name),
+            _to_plain(email),
+            _to_plain(_norm_piso(piso)),
+            _to_plain(date_str),
+            _to_plain(area),
+            _to_plain(created_at),
+        ], value_input_option="USER_ENTERED")
+        list_reservations_df.clear()
+    except Exception as e:
+        st.error(f"Error al reservar: {e}")
+
+
+def user_has_reservation(conn, email, date_str):
+    ws = get_worksheet(conn, "reservations")
+    if ws is None:
+        return False
+    try:
+        records = ws.get_all_records()
+        df = pd.DataFrame(records)
+        if df.empty:
+            return False
+        match = df[
+            (df["user_email"].astype(str) == str(email)) &
+            (df["reservation_date"].astype(str) == str(date_str))
+        ]
+        return not match.empty
+    except Exception:
+        return False
+
+
 def delete_reservation_from_db(conn, user_name, date_str, team_area):
     ws = get_worksheet(conn, "reservations")
     if ws is None:
         return False
-
     try:
         vals = ws.get_all_values()
+        # recorrer desde el final para borrar sin descalzar
         for i in range(len(vals) - 1, 0, -1):
             r = vals[i]
             if len(r) >= 5 and r[0] == str(user_name) and r[3] == str(date_str) and r[4] == str(team_area):
@@ -250,63 +356,50 @@ def count_monthly_free_spots(conn, identifier, date_obj):
     df = list_reservations_df(conn)
     if df.empty:
         return 0
-
     try:
         m_str = date_obj.strftime("%Y-%m")
         mask = (
-            ((df['user_email'].astype(str) == str(identifier)) | (df['user_name'].astype(str) == str(identifier))) &
-            (df['reservation_date'].astype(str).str.contains(m_str)) &
-            (df['team_area'] == 'Cupos libres')
+            ((df["user_email"].astype(str) == str(identifier)) | (df["user_name"].astype(str) == str(identifier))) &
+            (df["reservation_date"].astype(str).str.contains(m_str)) &
+            (df["team_area"].astype(str) == "Cupos libres")
         )
         return int(len(df[mask]))
     except Exception:
         return 0
 
 
-# --- SALAS ---
-
+# -----------------------------
+# Reservas salas
+# -----------------------------
 def add_room_reservation(conn, name, email, piso, room, date, start, end, created):
     ws = get_worksheet(conn, "room_reservations")
     if ws is None:
         return
-
     try:
         ws.append_row([
             _to_plain(name),
             _to_plain(email),
-            _to_plain(piso),
+            _to_plain(_norm_piso(piso)),
             _to_plain(room),
             _to_plain(date),
             _to_plain(start),
             _to_plain(end),
             _to_plain(created),
-        ])
+        ], value_input_option="USER_ENTERED")
         get_room_reservations_df.clear()
     except Exception as e:
         st.error(f"Error al reservar sala: {e}")
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def get_room_reservations_df(_conn):
-    ws = get_worksheet(_conn, "room_reservations")
-    if ws is None:
-        return pd.DataFrame()
-
-    try:
-        return pd.DataFrame(ws.get_all_records())
-    except Exception:
-        return pd.DataFrame()
 
 
 def delete_room_reservation_from_db(conn, user, date, room, start):
     ws = get_worksheet(conn, "room_reservations")
     if ws is None:
         return False
-
     try:
         vals = ws.get_all_values()
         for i in range(len(vals) - 1, 0, -1):
             r = vals[i]
+            # headers: user_name,user_email,piso,room_name,reservation_date,start_time,end_time,created_at
             if len(r) >= 6 and r[0] == str(user) and r[4] == str(date) and r[3] == str(room) and r[5] == str(start):
                 ws.delete_rows(i + 1)
                 get_room_reservations_df.clear()
@@ -316,46 +409,41 @@ def delete_room_reservation_from_db(conn, user, date, room, start):
         return False
 
 
-# --- SETTINGS & TOKENS ---
-
+# -----------------------------
+# Settings & Tokens
+# -----------------------------
 def save_setting(conn, key, value):
     ws = get_worksheet(conn, "settings")
     if ws is None:
         return
 
+    key_s = str(key).strip()
+    val_s = _to_plain(value)
+
     try:
-        cell = ws.find(key, in_column=1)
-        ws.update_cell(cell.row, 2, _to_plain(value))
+        cell = ws.find(key_s, in_column=1)
+        ws.update_cell(cell.row, 2, val_s)
+        ws.update_cell(cell.row, 3, datetime.datetime.now(datetime.timezone.utc).isoformat())
     except Exception:
         try:
-            ws.append_row([_to_plain(key), _to_plain(value), datetime.datetime.now().isoformat()])
+            ws.append_row([key_s, val_s, datetime.datetime.now(datetime.timezone.utc).isoformat()], value_input_option="USER_ENTERED")
         except Exception:
             pass
+
     get_all_settings.clear()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_all_settings(_conn):
-    ws = get_worksheet(_conn, "settings")
-    if ws is None:
-        return {}
-    try:
-        return {str(r['key']): str(r['value']) for r in ws.get_all_records()}
-    except Exception:
-        return {}
-
-
 def ensure_reset_table(conn):
-    if conn is None:
-        return
-    pass
+    # tu app lo llama, pero no lo usabas; lo dejo como no-op seguro
+    return
 
 
 def save_reset_token(conn, t, e):
     ws = get_worksheet(conn, "reset_tokens")
     if ws:
         try:
-            ws.append_row([_to_plain(t), datetime.datetime.now().isoformat(), _to_plain(e), 0])
+            ws.append_row([_to_plain(t), datetime.datetime.now(datetime.timezone.utc).isoformat(), _to_plain(e), 0],
+                          value_input_option="USER_ENTERED")
         except Exception:
             pass
 
@@ -366,23 +454,43 @@ def validate_and_consume_token(conn, t):
         return False, "Error de conexión"
 
     try:
-        cell = ws.find(t)
+        cell = ws.find(str(t))
         if not cell:
             return False, "Inválido"
+
         row = ws.row_values(cell.row)
-        if int(row[3]) == 1 or datetime.datetime.utcnow() > datetime.datetime.fromisoformat(row[2]):
+        # token, created_at, expires_at, used
+        if len(row) < 4:
+            return False, "Formato inválido"
+
+        used = int(_safe_int(row[3], 0))
+        expires_at = row[2]
+
+        # comparar en UTC
+        now = datetime.datetime.now(datetime.timezone.utc)
+        exp = datetime.datetime.fromisoformat(expires_at)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=datetime.timezone.utc)
+
+        if used == 1 or now > exp:
             return False, "Expirado"
+
         ws.update_cell(cell.row, 4, 1)
         return True, "OK"
+
     except Exception:
         return False, "Error"
 
 
+# -----------------------------
+# Borrado granular
+# -----------------------------
 def perform_granular_delete(conn, option):
     if conn is None:
         return "Error: No hay conexión."
 
     msg = []
+
     if "Reservas" in option or "TODO" in option:
         ws = get_worksheet(conn, "reservations")
         if ws:
@@ -409,3 +517,74 @@ def perform_granular_delete(conn, option):
     return ", ".join(msg) + "."
 
 
+# -----------------------------
+# NUEVO: borrado individual de distribution
+# -----------------------------
+def delete_distribution_row(conn, piso, equipo, dia):
+    """
+    Elimina una fila específica por (piso,equipo,dia).
+    Retorna True si eliminó al menos 1.
+    """
+    ws = get_worksheet(conn, "distribution")
+    if ws is None:
+        return False
+
+    piso_n = _norm_piso(piso)
+    equipo_s = str(equipo).strip()
+    dia_s = str(dia).strip()
+
+    try:
+        vals = ws.get_all_values()
+        if len(vals) <= 1:
+            return False
+
+        # detectar columnas por header (para no depender del orden)
+        header = [h.strip().lower() for h in vals[0]]
+        try:
+            i_p = header.index("piso")
+            i_e = header.index("equipo")
+            i_d = header.index("dia")
+        except ValueError:
+            # fallback al orden esperado
+            i_p, i_e, i_d = 0, 1, 2
+
+        deleted_any = False
+        for i in range(len(vals) - 1, 0, -1):
+            r = vals[i]
+            if len(r) <= max(i_p, i_e, i_d):
+                continue
+            if _norm_piso(r[i_p]) == piso_n and str(r[i_e]).strip() == equipo_s and str(r[i_d]).strip() == dia_s:
+                ws.delete_rows(i + 1)
+                deleted_any = True
+
+        if deleted_any:
+            read_distribution_df.clear()
+        return deleted_any
+
+    except Exception:
+        return False
+
+
+def delete_distribution_rows_by_indices(conn, indices):
+    """
+    Elimina varias filas por indices de DataFrame (0-based) asumiendo que
+    el DF proviene de read_distribution_df(). En Sheets, fila real = idx + 2 (por header).
+    """
+    ws = get_worksheet(conn, "distribution")
+    if ws is None:
+        return False
+
+    try:
+        if not indices:
+            return False
+
+        # borrar desde el final para no descalzar
+        for idx in sorted(set(indices), reverse=True):
+            # df index 0 -> sheet row 2
+            ws.delete_rows(int(idx) + 2)
+
+        read_distribution_df.clear()
+        return True
+
+    except Exception:
+        return False
