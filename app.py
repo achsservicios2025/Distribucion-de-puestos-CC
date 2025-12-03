@@ -2044,7 +2044,7 @@ elif menu == "Administrador":
                 equipos = ["(sin equipos cargados)"]
 
             # selector día (L-V) bajo piso y sobre equipo
-             dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+            dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
             dia_sel = st.selectbox("Día", dias_semana, key=f"zones_day_{p_sel}")
 
             equipo_sel = st.selectbox("Equipo", equipos, key=f"zones_team_{p_sel}")
@@ -2736,6 +2736,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
