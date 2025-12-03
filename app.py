@@ -368,13 +368,15 @@ def _cap_map_from_capacidades(df_cap: pd.DataFrame) -> dict:
         return {}
 
     out = {}
-    for _, r in df_cap.iterrows():
-        piso = str(r.get(col_piso, "")).strip()
-        if not piso:
-            continue
-        dia = str(r.get(col_dia, "")).strip() if col_dia else ""
-        try:
-            cap = int(float(str(r.get(col_cap, 0)).replace(",", ".")))
+        for _, r in df_cap.iterrows():
+            piso_raw = str(r.get(col_piso, "")).strip()
+            if not piso_raw or piso_raw.lower() == "nan":
+                continue
+            piso = piso_raw if piso_raw.lower().startswith("piso") else f"Piso {piso_raw}"
+
+            dia = str(r.get(col_dia, "")).strip() if col_dia else ""
+            if dia.lower() == "nan":
+                dia = ""
         except Exception:
             continue
         if cap <= 0:
@@ -383,13 +385,13 @@ def _cap_map_from_capacidades(df_cap: pd.DataFrame) -> dict:
         out[(piso, dia)] = cap
     return out
 
-def _min_daily_for_team(dotacion: int) -> int:
-    # ✅ Ajusta esta escala a tu criterio (esto es lo importante)
-    if dotacion >= 13: return 6
-    if dotacion >= 8:  return 4
-    if dotacion >= 5:  return 3
-    if dotacion >= 3:  return 2
-    return 0
+def _min_daily_for_team(dotacion: int, factor: float = 1.0) -> int:
+    if dotacion >= 13: base = 6
+    elif dotacion >= 8: base = 4
+    elif dotacion >= 5: base = 3
+    elif dotacion >= 3: base = 2
+    else: base = 0
+    return int(round(base * factor))
 
 def _largest_remainder_allocation(weights: dict, total: int) -> dict:
     """
@@ -423,7 +425,8 @@ def generate_distribution_math_correct(
     df_eq: pd.DataFrame,
     df_cap: pd.DataFrame,
     cupos_libres_diarios: int = 2,
-    min_dotacion_para_garantia: int = 3
+    min_dotacion_para_garantia: int = 3,
+    min_factor: float = 1.0
 ):
     """
     Genera distribución diaria por piso/día:
@@ -457,7 +460,7 @@ def generate_distribution_math_correct(
             teams = {k: v for k, v in dot.items() if int(v) >= min_dotacion_para_garantia}
 
             # mínimos diarios
-            mins = {t: _min_daily_for_team(int(v)) for t, v in teams.items()}
+            mins = {t: _min_daily_for_team(int(v), factor=min_factor) for t, v in teams.items()}
             sum_mins = sum(mins.values())
 
             if sum_mins > cap_rest:
@@ -496,47 +499,6 @@ def generate_distribution_math_correct(
 
     return rows, deficits
 
-    """
-    Genera varias distribuciones aleatorias y elige la más EQUITATIVA.
-
-    Python 3.9+ friendly: seed: Optional[int] = None
-    """
-    if seed is None:
-        seed = random.randint(1, 10_000_000)
-
-    dot_map = _build_dotacion_map(df_eq)
-
-    best_score = float("inf")
-    best_rows = None
-    best_def = None
-    best_meta = None
-
-    for i in range(num_attempts):
-        attempt_seed = int(seed) + i * 9973
-
-        # Shuffle reproducible
-        eq_shuffled = df_eq.sample(frac=1, random_state=attempt_seed).reset_index(drop=True)
-
-        rows, deficit = get_distribution_proposal(
-            eq_shuffled, df_pa, df_cap,
-            strategy="random",
-            ignore_params=ignore_params
-        )
-
-        def_clean = filter_minimum_deficits(deficit)
-        if ignore_params:
-            def_clean = []
-
-        score = _equity_score(rows, def_clean, dot_map)
-
-        if score < best_score:
-            best_score = score
-            best_rows = rows
-            best_def = def_clean
-            best_meta = {"score": best_score, "seed": attempt_seed, "attempts": num_attempts}
-
-    return best_rows, best_def, best_meta
-
 def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strategy="random", ignore_params=False):
     """
     Genera una propuesta basada en una estrategia de ordenamiento.
@@ -569,24 +531,76 @@ def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strateg
     final_deficits = filter_minimum_deficits(deficit_report)
 
     # Si el usuario pidió ignorar reglas, forzamos que la lista de conflictos esté vacía.
-    # Esto hará que el sistema muestre "Distribución perfecta" en lugar de errores.
     if ignore_params:
         final_deficits = []
 
     return rows, final_deficits
 
-# 2. Actualizamos también la función de ideales
-def generate_ideal_distributions(df_equipos, df_parametros, df_capacidades, num_options=3):
-    distributions = []
-    for i in range(num_options):
-        # Pasamos df_capacidades aquí también
-        rows, deficit = get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strategy="random", ignore_params=True)
-        distributions.append({
-            'rows': rows,
-            'deficit': deficit,
-            'option_num': i + 1
-        })
-    return distributions
+def generate_balanced_distribution(
+    df_eq: pd.DataFrame,
+    df_pa: pd.DataFrame,
+    df_cap: pd.DataFrame,
+    ignore_params: bool,
+    num_attempts: int = 80,
+    seed: Optional[int] = None
+):
+    if seed is None:
+        seed = random.randint(1, 10_000_000)
+
+    dot_map = _build_dotacion_map(df_eq)
+
+    best_score = float("inf")
+    best_rows, best_def, best_meta = None, None, None
+
+    if ignore_params:
+        rng = random.Random(seed)
+        factors = [0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15]
+
+        for i in range(num_attempts):
+            f = factors[i % len(factors)]
+            f = max(0.7, min(1.3, f + rng.uniform(-0.03, 0.03)))
+
+            rows, deficits = generate_distribution_math_correct(
+                df_eq, df_cap,
+                cupos_libres_diarios=2,
+                min_dotacion_para_garantia=3,
+                min_factor=f
+            )
+
+            def_clean = filter_minimum_deficits(deficits)
+            score = _equity_score(rows, def_clean, dot_map)
+
+            hard = sum(1 for d in (deficits or []) if "Capacidad insuficiente" in str(d.get("causa", "")))
+            score += hard * 10.0
+
+            if score < best_score:
+                best_score = score
+                best_rows = rows
+                best_def = def_clean
+                best_meta = {"score": best_score, "seed": seed, "attempts": num_attempts, "min_factor": f}
+
+        return best_rows, best_def, best_meta
+
+    for i in range(num_attempts):
+        attempt_seed = int(seed) + i * 9973
+        eq_shuffled = df_eq.sample(frac=1, random_state=attempt_seed).reset_index(drop=True)
+
+        rows, deficit = get_distribution_proposal(
+            eq_shuffled, df_pa, df_cap,
+            strategy="random",
+            ignore_params=False
+        )
+
+        def_clean = filter_minimum_deficits(deficit)
+        score = _equity_score(rows, def_clean, dot_map)
+
+        if score < best_score:
+            best_score = score
+            best_rows = rows
+            best_def = def_clean
+            best_meta = {"score": best_score, "seed": attempt_seed, "attempts": num_attempts}
+
+    return best_rows, best_def, best_meta
 
 def filter_minimum_deficits(deficit_list):
     """Recalcula los déficits únicamente cuando el mínimo no se cumple."""
@@ -2291,6 +2305,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
