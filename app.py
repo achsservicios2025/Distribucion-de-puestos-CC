@@ -2170,7 +2170,24 @@ elif menu == "Administrador":
 
                 st_canvas_key = f"canvas_{p_sel}"
 
+                import io
+                buf = io.BytesIO()
+                bg_img.save(buf, format="PNG")
+                bg_bytes = buf.getvalue()
+
                 canvas_result = st_canvas(
+                    fill_color=fill_rgba,
+                    stroke_width=2,
+                    stroke_color=selected_color,
+                    background_image=bg_bytes,
+                    update_streamlit=True,
+                    height=canvas_h,
+                    width=canvas_w,
+                    drawing_mode="rect",
+                    initial_drawing={"version": "4.4.0", "objects": init_objects},
+                    key=st_canvas_key,
+                )
+
                     fill_color=fill_rgba,
                     stroke_width=2,
                     stroke_color=selected_color,
@@ -2722,6 +2739,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
