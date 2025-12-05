@@ -22,15 +22,17 @@ import random
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
 # ---------------------------------------------------------
+from dataclasses import dataclass
+
+@dataclass
+class WidthConfig:
+    width: int
+
 try:
     import streamlit.elements.lib.image_utils as _img_utils
 
     if hasattr(_img_utils, "image_to_url"):
         _orig_image_to_url = _img_utils.image_to_url
-
-        @dataclass
-        class WidthConfig:
-            width: int
 
         def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
             if isinstance(image_data, str):
@@ -59,9 +61,7 @@ try:
         pass
 
 except Exception:
-    # Si Streamlit cambia internals, no bloquear la app
     pass
-
 
 def resolve_logo_source(raw_path: Optional[str], logo_b64: Optional[str]):
     """
@@ -3107,6 +3107,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
