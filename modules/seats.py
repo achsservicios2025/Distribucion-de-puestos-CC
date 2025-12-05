@@ -1,6 +1,8 @@
 import pandas as pd
-import math
 import re
+import random
+from typing import Any, Dict, List, Optional
+
 
 # ---------------------------------------------------------
 # Helpers de texto / normalización
@@ -30,7 +32,6 @@ def extract_clean_number_str(val):
 
     s = str(val).strip()
 
-    # Si es un float puro (ej: 1.0), convertirlo a int primero para quitar el decimal
     try:
         f = float(s)
         if f.is_integer():
@@ -38,7 +39,6 @@ def extract_clean_number_str(val):
     except Exception:
         pass
 
-    # Si es texto ("Piso 1"), buscar el primer dígito
     nums = re.findall(r"\d+", s)
     if nums:
         return str(int(nums[0]))
@@ -46,18 +46,19 @@ def extract_clean_number_str(val):
     return None
 
 
-def parse_days_from_text(text):
+# ---------------------------------------------------------
+# Día completo: parseo con la semántica EXACTA pedida
+# ---------------------------------------------------------
+def parse_full_day_rule(text: Any) -> Dict[str, Any]:
     """
-    Soporta cosas tipo:
-    - "Lunes"
-    - "Lunes o Miércoles"
-    - "Martes, o Jueves"
-    Devuelve:
-    - fijos: set de días encontrados normalizados (Lunes..Viernes)
-    - flexibles: lista de opciones originales (solo para detectar si venía como "A o B")
+    Regla textual:
+      - "Lunes, Miércoles" => fixed en ambos días
+      - "Lunes o Miércoles" / "Lunes, o Miércoles" => choice (elige 1)
     """
-    if pd.isna(text):
-        return {"fijos": set(), "flexibles": []}
+    if pd.isna(text) or str(text).strip() == "":
+        return {"type": "none", "days": []}
+
+    raw = str(text).strip()
 
     mapa = {
         "lunes": "Lunes",
@@ -68,17 +69,121 @@ def parse_days_from_text(text):
         "viernes": "Viernes"
     }
 
-    # Si hay " o " o ", o " lo tratamos como opción flexible
-    options = re.split(r"\s+o\s+|,\s*o\s+", str(text), flags=re.IGNORECASE)
+    is_choice = re.search(r"(\s+o\s+|,\s*o\s+)", raw, flags=re.IGNORECASE) is not None
 
-    all_days = set()
-    for o in options:
-        norm = normalize_text(o)
+    if is_choice:
+        parts = re.split(r"\s+o\s+|,\s*o\s+", raw, flags=re.IGNORECASE)
+        days = []
+        for p in parts:
+            norm = normalize_text(p)
+            for k, v in mapa.items():
+                if k in norm:
+                    days.append(v)
+        # dedup preserve order
+        out, seen = [], set()
+        for d in days:
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+        return {"type": "choice", "days": out}
+
+    # fixed por comas (o un día solo)
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    days = []
+    for p in (parts if parts else [raw]):
+        norm = normalize_text(p)
         for k, v in mapa.items():
             if k in norm:
-                all_days.add(v)
+                days.append(v)
+    out, seen = [], set()
+    for d in days:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return {"type": "fixed", "days": out}
 
-    return {"fijos": all_days, "flexibles": options}
+
+# ---------------------------------------------------------
+# Saint-Laguë
+# ---------------------------------------------------------
+def saint_lague_allocate(
+    weights: Dict[str, int],
+    seats: int,
+    current: Optional[Dict[str, int]] = None,
+    caps: Optional[Dict[str, int]] = None,
+    rng: Optional[random.Random] = None
+) -> Dict[str, int]:
+    """
+    Asigna 'seats' unidades con método Sainte-Laguë.
+    - weights: dict equipo->peso (demanda restante)
+    - current: dict equipo->asignado actual (para calcular divisor 2a+1)
+    - caps: dict equipo->máximo adicional permitido (para no pasarse)
+    - rng: si hay empate, desempata con rng (controlado por variant_seed)
+    """
+    if seats <= 0 or not weights:
+        return {k: 0 for k in weights.keys()}
+
+    rng = rng or random.Random(0)
+    current = current or {k: 0 for k in weights.keys()}
+    alloc = {k: 0 for k in weights.keys()}
+
+    def quotient(k: str) -> float:
+        a = current.get(k, 0) + alloc.get(k, 0)
+        w = weights.get(k, 0)
+        if w <= 0:
+            return -1e18
+        return w / (2 * a + 1)
+
+    for _ in range(seats):
+        cand = []
+        for k, w in weights.items():
+            if w <= 0:
+                continue
+            if caps is not None and alloc[k] >= caps.get(k, 0):
+                continue
+            cand.append((quotient(k), k))
+        if not cand:
+            break
+
+        cand.sort(key=lambda x: x[0], reverse=True)
+        best_q = cand[0][0]
+        tied = [k for (q, k) in cand if abs(q - best_q) < 1e-12]
+
+        winner = tied[0] if len(tied) == 1 else rng.choice(tied)
+        alloc[winner] += 1
+
+    return alloc
+
+
+# ---------------------------------------------------------
+# Heurística para elegir día en reglas "o"
+# ---------------------------------------------------------
+def choose_flexible_day(
+    opts: List[str],
+    per: int,
+    hard_limit: int,
+    load_by_day: Dict[str, int],
+    mode: str,
+    rng: random.Random
+) -> Optional[str]:
+    """
+    mode:
+      - "holgura": maximiza holgura (hard_limit - (load + per))
+      - "equilibrar": manda al día con menor carga total (load)
+      - "aleatorio": aleatorio con seed
+    """
+    opts = [d for d in opts if d in load_by_day]
+    if not opts:
+        return None
+
+    if mode == "aleatorio":
+        return rng.choice(opts)
+
+    if mode == "equilibrar":
+        return min(opts, key=lambda d: (load_by_day[d], rng.random()))
+
+    # default holgura
+    return max(opts, key=lambda d: ((hard_limit - (load_by_day[d] + per)), rng.random()))
 
 
 # ---------------------------------------------------------
@@ -89,23 +194,35 @@ def compute_distribution_from_excel(
     parametros_df,
     df_capacidades,
     cupos_reserva=2,
-    ignore_params=False
+    ignore_params=False,
+    variant_seed: Optional[int] = None,
+    variant_mode: str = "holgura",
 ):
     """
+    Reglas exigidas:
+
+    - ignore_params=True:
+        * NO Día completo
+        * NO mínimos
+        * Solo Sainte-Laguë + reserva
+
+    - ignore_params=False:
+        * Día completo (fixed por comas, choice por "o" con variantes)
+        * mínimos hard
+        * remanente Sainte-Laguë
+
     Devuelve:
-      rows: lista dicts {piso,equipo,dia,cupos,pct}
-        - pct = %Distrib del piso ese día (share de cupos del día, no % de dotación)
-      deficit_report: lista dicts con causas + fórmula/explicación
+      rows, deficit_report, audit, score_obj
     """
+    rng = random.Random(variant_seed if variant_seed is not None else 0)
+
     rows = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     deficit_report = []
+    audit = {"variant_seed": variant_seed, "variant_mode": variant_mode, "full_day_choices": []}
 
-    # -----------------------------
-    # 1) Normalizar headers
-    # -----------------------------
     if equipos_df is None or equipos_df.empty:
-        return [], []
+        return [], [], audit, {"score": 1e18, "details": {}}
 
     equipos_df = equipos_df.copy()
     equipos_df.columns = [str(c).strip().lower() for c in equipos_df.columns]
@@ -122,45 +239,36 @@ def compute_distribution_from_excel(
     else:
         df_capacidades = df_capacidades.copy()
 
-    # -----------------------------
-    # 2) Buscar columnas clave
-    # -----------------------------
     col_piso = next((c for c in equipos_df.columns if "piso" in normalize_text(c)), None)
     col_equipo = next((c for c in equipos_df.columns if "equipo" in normalize_text(c)), None)
     col_personas = next((c for c in equipos_df.columns
-                         if "personas" in normalize_text(c) or "dotacion" in normalize_text(c) or "dotación" in normalize_text(c) or "total" in normalize_text(c)), None)
+                         if "personas" in normalize_text(c) or "dotacion" in normalize_text(c)
+                         or "dotación" in normalize_text(c) or "total" in normalize_text(c)), None)
     col_minimos = next((c for c in equipos_df.columns if "minimo" in normalize_text(c) or "mínimo" in normalize_text(c)), None)
 
     if not (col_piso and col_equipo and col_personas and col_minimos):
-        return [], []
+        return [], [], audit, {"score": 1e18, "details": {"error": "Faltan columnas clave"}}
 
-    # -----------------------------
-    # 3) Capacidades por piso
-    # -----------------------------
+    # Capacidades por piso
     capacidad_pisos = {}
     RESERVA_OBLIGATORIA = int(cupos_reserva) if cupos_reserva is not None else 2
-
     if not df_capacidades.empty:
         for _, row in df_capacidades.iterrows():
             try:
-                raw_piso = row.iloc[0]
-                raw_cap = row.iloc[1]
-                key_piso = extract_clean_number_str(raw_piso)
-
+                key_piso = extract_clean_number_str(row.iloc[0])
                 if key_piso is None:
                     continue
-
-                cap_val = int(float(str(raw_cap).replace(",", ".")))
+                cap_val = int(float(str(row.iloc[1]).replace(",", ".")))
                 if cap_val > 0:
                     capacidad_pisos[key_piso] = cap_val
             except Exception:
                 continue
 
-    # -----------------------------
-    # 4) Reglas día completo
-    # -----------------------------
+    # ---------------------------------------------------------
+    # Parámetros: SOLO si ignore_params=False
+    # ---------------------------------------------------------
     reglas_full_day = {}
-    if not ignore_params and not parametros_df.empty:
+    if (not ignore_params) and (not parametros_df.empty):
         col_param = next((c for c in parametros_df.columns
                           if "criterio" in normalize_text(c) or "parametro" in normalize_text(c) or "parámetro" in normalize_text(c)), None)
         col_valor = next((c for c in parametros_df.columns if "valor" in normalize_text(c)), None)
@@ -168,27 +276,27 @@ def compute_distribution_from_excel(
         if col_param and col_valor:
             for _, row in parametros_df.iterrows():
                 p = str(row.get(col_param, "")).strip().lower()
-                v = str(row.get(col_valor, "")).strip()
-
+                v = row.get(col_valor, "")
                 if "dia completo" in p or "día completo" in p:
                     nm = re.split(r"d[ií]a completo\s+", p)[-1].strip()
-                    if v:
-                        reglas_full_day[normalize_text(nm)] = parse_days_from_text(v)
+                    rule = parse_full_day_rule(v)
+                    if rule["type"] != "none" and len(rule["days"]) > 0:
+                        reglas_full_day[normalize_text(nm)] = rule
 
-    # -----------------------------
-    # Fórmulas (para conflictos y glosario)
-    # -----------------------------
-    FORMULA_EQUIDAD = "Asignación objetivo ≈ (Dotación_equipo / Dotación_total_piso) × Capacidad_día"
+    FORMULA_EQUIDAD = "Asignación objetivo ≈ (Dotación_equipo / Dotación_total_piso) × Capacidad_usable_día"
     EXPLICACION_EQUIDAD = (
-        "Distribución equitativa por proporción: cada equipo debería recibir cupos "
-        "proporcionales a su dotación dentro del piso. Matemáticamente:\n"
-        "Objetivo(eq,día) = (Dotación_eq / Σ Dotación_piso) × Capacidad_día.\n"
-        "Luego se ajusta por reglas (día completo, mínimos) y por límite físico del piso."
+        "Capacidad usable por día: Capacidad_usable = Capacidad_total - Reserva.\n"
+        "Si ignore_params=False: se aplican restricciones hard (día completo y mínimos) y el remanente se reparte "
+        "proporcionalmente con Sainte-Laguë sobre la demanda restante.\n"
+        "Si ignore_params=True: se deshabilitan parámetros y se hace solo reparto proporcional con Sainte-Laguë + reserva."
     )
 
-    # -----------------------------
-    # 5) Iterar pisos
-    # -----------------------------
+    # Score (menor es mejor)
+    total_sq_error = 0.0
+    total_deficit = 0
+    total_recortes_full_day = 0
+    n_eval = 0
+
     pisos_unicos = equipos_df[col_piso].dropna().unique()
 
     for piso_raw in pisos_unicos:
@@ -196,46 +304,35 @@ def compute_distribution_from_excel(
         if not piso_str:
             continue
 
-        # DF del piso: ojo, filtramos por igualdad exacta usando el valor original (piso_raw)
         df_piso = equipos_df[equipos_df[col_piso] == piso_raw].copy()
         if df_piso.empty:
             continue
 
-        # Capacidad real del piso
+        # Capacidad real
         if piso_str in capacidad_pisos:
             cap_total_real = int(capacidad_pisos[piso_str])
         else:
-            # fallback: suma dotación + reserva
             try:
                 cap_total_real = int(df_piso[col_personas].fillna(0).astype(float).sum()) + RESERVA_OBLIGATORIA
             except Exception:
                 cap_total_real = RESERVA_OBLIGATORIA
 
         cap_total_real = max(0, int(cap_total_real))
-
-        # Límite duro utilizable para equipos (sin reserva)
         hard_limit = max(0, cap_total_real - RESERVA_OBLIGATORIA)
 
-        # Pre-cálculo: asignación de flexibles (día completo con opciones)
-        full_day_asignacion = {}
-        capacidad_fija_por_dia = {d: 0 for d in dias_semana}
-        equipos_flexibles = []
-
-        # armamos lista equipos con dotación/min
+        # equipos_info
         equipos_info = []
         for _, r in df_piso.iterrows():
             nm = str(r.get(col_equipo, "")).strip()
             if not nm:
                 continue
 
-            # dotación
             try:
                 per = int(float(str(r.get(col_personas, 0)).replace(",", ".")))
             except Exception:
                 per = 0
             per = max(0, per)
 
-            # mínimo (lo mantengo como tú: min >=2 si per>=2, pero nunca > per)
             try:
                 mini_raw = int(float(str(r.get(col_minimos, 0)).replace(",", ".")))
             except Exception:
@@ -244,175 +341,273 @@ def compute_distribution_from_excel(
             mini = mini_raw
             if per >= 2:
                 mini = max(2, mini_raw)
-            mini = min(per, mini)  # nunca más que la dotación
+            mini = min(per, mini)
 
             equipos_info.append({"eq": nm, "per": per, "min": mini})
 
-            # reglas día completo?
-            reglas = reglas_full_day.get(normalize_text(nm))
-            if reglas:
-                is_flex = len(reglas["flexibles"]) > 1
-                if not is_flex:
-                    # fijo
-                    for d in reglas["fijos"]:
-                        if d in dias_semana:
-                            capacidad_fija_por_dia[d] += per
-                else:
-                    # flexible: decidir después
-                    equipos_flexibles.append({"eq": nm, "per": per, "dias_opt": reglas["fijos"]})
-            else:
-                # sin regla: reservar mínimo base todos los días
-                base = mini if per >= 2 else per
-                for d in dias_semana:
-                    capacidad_fija_por_dia[d] += base
+        # ---------------------------------------------------------
+        # SOLO si no ignoras parámetros:
+        # pre-asignar choice ("o") por piso
+        # ---------------------------------------------------------
+        full_day_choice_assignment = {}
+        if not ignore_params and reglas_full_day:
+            load_by_day = {d: 0 for d in dias_semana}
 
-        # asignar flexibles al día con más holgura pre-estimada
-        cap_libre_pre = {d: max(0, hard_limit - capacidad_fija_por_dia[d]) for d in dias_semana}
-        for item in equipos_flexibles:
-            best_day = None
-            max_l = -10**9
-            for d in item["dias_opt"]:
-                if d in dias_semana and cap_libre_pre[d] > max_l:
-                    max_l = cap_libre_pre[d]
-                    best_day = d
-            if best_day:
-                full_day_asignacion[normalize_text(item["eq"])] = best_day
-                cap_libre_pre[best_day] -= item["per"]
+            # fixed suman carga
+            for info in equipos_info:
+                nm_norm = normalize_text(info["eq"])
+                rule = reglas_full_day.get(nm_norm)
+                if rule and rule["type"] == "fixed":
+                    for d in rule["days"]:
+                        if d in dias_semana:
+                            load_by_day[d] += info["per"]
+
+            # choice se elige con heurística + seed
+            for info in equipos_info:
+                nm = info["eq"]
+                nm_norm = normalize_text(nm)
+                rule = reglas_full_day.get(nm_norm)
+                if rule and rule["type"] == "choice":
+                    chosen = choose_flexible_day(
+                        opts=rule["days"],
+                        per=info["per"],
+                        hard_limit=hard_limit,
+                        load_by_day=load_by_day,
+                        mode=variant_mode,
+                        rng=rng
+                    )
+                    if chosen:
+                        full_day_choice_assignment[nm_norm] = chosen
+                        load_by_day[chosen] += info["per"]
+                        audit["full_day_choices"].append({
+                            "piso": piso_str,
+                            "equipo": nm,
+                            "rule": " o ".join(rule["days"]),
+                            "chosen_day": chosen,
+                            "mode": variant_mode
+                        })
 
         # -----------------------------
         # Loop por día
         # -----------------------------
-        for dia_idx, dia in enumerate(dias_semana):
-            teams = []
+        for dia in dias_semana:
+            state = []
             for info in equipos_info:
                 nm = info["eq"]
-                per = info["per"]
-                mini = info["min"]
+                nm_norm = normalize_text(nm)
+                per = int(info["per"])
+                mini = int(info["min"])
 
-                reglas = reglas_full_day.get(normalize_text(nm))
-                is_fd = False
-                if reglas and not ignore_params:
-                    is_flex = len(reglas["flexibles"]) > 1
-                    if (not is_flex and dia in reglas["fijos"]) or (is_flex and full_day_asignacion.get(normalize_text(nm)) == dia):
-                        is_fd = True
+                # full-day SOLO si no ignoramos parámetros
+                is_full_day = False
+                if not ignore_params:
+                    rule = reglas_full_day.get(nm_norm)
+                    if rule:
+                        if rule["type"] == "fixed" and dia in rule["days"]:
+                            is_full_day = True
+                        elif rule["type"] == "choice" and full_day_choice_assignment.get(nm_norm) == dia:
+                            is_full_day = True
 
-                teams.append({
+                state.append({
                     "eq": nm,
                     "per": per,
                     "min": mini,
-                    "asig": 0,
-                    "is_fd": is_fd
+                    "full_day": is_full_day,
+                    "asig": 0
                 })
 
-            # A) Día completo primero
             used = 0
-            fd_teams = [t for t in teams if t["is_fd"]]
-            norm_teams = [t for t in teams if not t["is_fd"]]
 
-            for t in fd_teams:
-                t["asig"] = t["per"]
-                used += t["asig"]
+            # 1) Día completo (hard) SOLO si ignore_params=False
+            if not ignore_params:
+                for t in state:
+                    if t["full_day"] and t["per"] > 0:
+                        t["asig"] = t["per"]
+                        used += t["asig"]
 
-            # Si el día completo ya excede hard_limit, recortamos proporcionalmente desde los mayores
-            if used > hard_limit:
-                exceso = used - hard_limit
-                while exceso > 0:
-                    candidatos = [t for t in fd_teams if t["asig"] > 0]
-                    if not candidatos:
-                        break
-                    candidatos.sort(key=lambda x: x["asig"], reverse=True)
-                    candidatos[0]["asig"] -= 1
-                    used -= 1
-                    exceso -= 1
+                # si full-day excede capacidad => recorte + reporte imposible
+                if used > hard_limit:
+                    exceso = used - hard_limit
+                    total_recortes_full_day += exceso
 
-            # B) Round robin para normales (hasta hard_limit)
-            # (tu versión podía pasarse y luego recortar; acá evitamos pasarnos de entrada)
-            if norm_teams and used < hard_limit:
-                shift = dia_idx % len(norm_teams)
-                norm_teams = norm_teams[shift:] + norm_teams[:shift]
+                    fulls = [t for t in state if t["full_day"] and t["asig"] > 0]
+                    while exceso > 0 and fulls:
+                        fulls.sort(key=lambda x: x["asig"], reverse=True)
+                        fulls[0]["asig"] -= 1
+                        used -= 1
+                        exceso -= 1
+                        fulls = [t for t in fulls if t["asig"] > 0]
 
-                # repartimos 1 por vuelta mientras haya cupo y alguien tenga demanda
-                keep = True
-                while keep and used < hard_limit:
-                    keep = False
-                    for t in norm_teams:
-                        if used >= hard_limit:
-                            break
-                        if t["asig"] < t["per"]:
-                            t["asig"] += 1
-                            used += 1
-                            keep = True
+            # 2) Mínimos (hard) SOLO si ignore_params=False
+            if not ignore_params:
+                for t in state:
+                    if t["per"] <= 0:
+                        continue
+                    target_min = min(t["per"], t["min"])
+                    if t["asig"] < target_min:
+                        need = target_min - t["asig"]
+                        if used + need <= hard_limit:
+                            t["asig"] += need
+                            used += need
+                        else:
+                            give = max(0, hard_limit - used)
+                            if give > 0:
+                                t["asig"] += give
+                                used += give
+                            deficit = target_min - t["asig"]
+                            if deficit > 0:
+                                total_deficit += deficit
+                                deficit_report.append({
+                                    "piso": piso_str,
+                                    "equipo": t["eq"],
+                                    "dia": dia,
+                                    "dotacion": t["per"],
+                                    "minimo": t["min"],
+                                    "asignado": t["asig"],
+                                    "deficit": int(deficit),
+                                    "causa": "Restricciones hard (mínimos) no caben en capacidad usable",
+                                    "formula": FORMULA_EQUIDAD,
+                                    "explicacion": EXPLICACION_EQUIDAD
+                                })
 
-            # C) Total asignado del día (solo equipos)
-            total_asig = sum(t["asig"] for t in teams)
-            total_asig = min(total_asig, hard_limit)  # seguridad extra
+            # Remanente por Sainte-Laguë (siempre)
+            rem = max(0, hard_limit - used)
 
-            # D) Calcular %Distrib (share del día) y escribir filas
-            # %Distrib = cupos_equipo / total_asig_dia * 100 (excluye Cupos libres)
-            for t in teams:
+            weights = {}
+            caps = {}
+            current_for_divisor = {}
+            for t in state:
+                remaining_demand = max(0, t["per"] - t["asig"])
+                weights[t["eq"]] = remaining_demand
+                caps[t["eq"]] = remaining_demand
+                current_for_divisor[t["eq"]] = t["asig"]
+
+            alloc_extra = saint_lague_allocate(
+                weights=weights,
+                seats=rem,
+                current=current_for_divisor,
+                caps=caps,
+                rng=rng
+            )
+
+            for t in state:
+                t["asig"] += int(alloc_extra.get(t["eq"], 0))
+
+            total_asig = sum(t["asig"] for t in state)
+            total_asig = min(total_asig, hard_limit)
+
+            # Score proporción (siempre, porque mide “equidad” del reparto)
+            sum_per = sum(max(0, t["per"]) for t in state)
+            if sum_per > 0 and hard_limit > 0:
+                for t in state:
+                    if t["per"] <= 0:
+                        continue
+                    target = (t["per"] / sum_per) * hard_limit
+                    err = (t["asig"] - target)
+                    total_sq_error += err * err
+                    n_eval += 1
+
+            # Output rows + pct
+            for t in state:
                 if t["asig"] <= 0:
                     continue
-
                 pct = round((t["asig"] / total_asig * 100.0), 1) if total_asig > 0 else 0.0
-
                 rows.append({
-                    "piso": piso_str,         # "1", "2"...
+                    "piso": piso_str,
                     "equipo": t["eq"],
                     "dia": dia,
                     "cupos": int(t["asig"]),
-                    "pct": float(pct)         # %Distrib (share del día)
+                    "pct": float(pct)
                 })
 
-            # E) Cupos libres = capacidad total real - cupos_asignados_equipo
-            remanente = cap_total_real - total_asig
-            remanente = max(0, int(remanente))
-
-            # pct de cupos libres como share de capacidad total del piso
-            pct_lib = round((remanente / cap_total_real * 100.0), 1) if cap_total_real > 0 else 0.0
-
+            remanente_total = max(0, int(cap_total_real - total_asig))
+            pct_lib = round((remanente_total / cap_total_real * 100.0), 1) if cap_total_real > 0 else 0.0
             rows.append({
                 "piso": piso_str,
                 "equipo": "Cupos libres",
                 "dia": dia,
-                "cupos": int(remanente),
+                "cupos": int(remanente_total),
                 "pct": float(pct_lib)
             })
 
-            # F) Reporte de conflictos:
-            # - si no alcanza el mínimo
-            # - o si no alcanza la dotación (capacidad física)
-            for t in teams:
-                per = int(t["per"])
-                mini = int(t["min"])
-                asig = int(t["asig"])
+            # Deficit contra “dotación” SOLO si ignore_params=False (porque si ignoras parámetros,
+            # no es un "problema": es el resultado natural de la capacidad limitada)
+            if not ignore_params:
+                for t in state:
+                    if t["per"] <= 0:
+                        continue
+                    if t["asig"] < t["per"]:
+                        deficit = t["per"] - t["asig"]
+                        cause = "Falta capacidad física del piso (límite diario)"
+                        if t["full_day"] and deficit > 0:
+                            cause = "Día completo recortado por capacidad (restricción imposible)"
+                        total_deficit += deficit
+                        deficit_report.append({
+                            "piso": piso_str,
+                            "equipo": t["eq"],
+                            "dia": dia,
+                            "dotacion": t["per"],
+                            "minimo": t["min"],
+                            "asignado": t["asig"],
+                            "deficit": int(deficit),
+                            "causa": cause,
+                            "formula": FORMULA_EQUIDAD,
+                            "explicacion": EXPLICACION_EQUIDAD
+                        })
 
-                # Sin dotación, no reportamos
-                if per <= 0:
-                    continue
+    mse = (total_sq_error / max(1, n_eval))
+    score = mse + (total_deficit * 50.0) + (total_recortes_full_day * 200.0)
 
-                # Solo reportamos si hay un "problema real"
-                # 1) No cumple mínimo
-                # 2) No cumple dotación (capacidad)
-                if asig < mini:
-                    cause = "No alcanzó el mínimo requerido"
-                    deficit_val = mini - asig
-                elif asig < per:
-                    cause = "Falta capacidad física del piso (límite diario)"
-                    deficit_val = per - asig
-                else:
-                    continue
+    score_obj = {
+        "score": float(score),
+        "details": {
+            "mse_proporcion": float(mse),
+            "total_deficit": int(total_deficit),
+            "recortes_full_day": int(total_recortes_full_day),
+            "n_eval": int(n_eval)
+        }
+    }
 
-                deficit_report.append({
-                    "piso": piso_str,
-                    "equipo": t["eq"],
-                    "dia": dia,
-                    "dotacion": per,
-                    "minimo": mini,
-                    "asignado": asig,
-                    "deficit": int(deficit_val),
-                    "causa": cause,
-                    "formula": FORMULA_EQUIDAD,
-                    "explicacion": EXPLICACION_EQUIDAD
-                })
+    return rows, deficit_report, audit, score_obj
 
-    return rows, deficit_report
+
+def compute_distribution_variants(
+    equipos_df,
+    parametros_df,
+    df_capacidades,
+    cupos_reserva=2,
+    ignore_params=False,
+    n_variants=5,
+    variant_seed: int = 42,
+    variant_mode: str = "holgura",
+):
+    """
+    Genera múltiples distribuciones válidas cambiando:
+      - variant_seed (desempates Saint-Laguë + aleatoriedad controlada)
+      - variant_mode (heurística para 'o': holgura/equilibrar/aleatorio) -> SOLO si ignore_params=False
+
+    Retorna lista ordenada por score asc.
+    """
+    variants = []
+    for i in range(max(1, int(n_variants))):
+        seed_i = int(variant_seed) + i
+        rows, deficit, audit, score = compute_distribution_from_excel(
+            equipos_df=equipos_df,
+            parametros_df=parametros_df,
+            df_capacidades=df_capacidades,
+            cupos_reserva=cupos_reserva,
+            ignore_params=ignore_params,
+            variant_seed=seed_i,
+            variant_mode=variant_mode
+        )
+        variants.append({
+            "seed": seed_i,
+            "mode": variant_mode,
+            "rows": rows,
+            "deficit_report": deficit,
+            "audit": audit,
+            "score": score
+        })
+
+    variants.sort(key=lambda v: v["score"]["score"])
+    return variants
