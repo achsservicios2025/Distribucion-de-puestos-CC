@@ -213,26 +213,6 @@ def _get_team_and_dotacion_cols(df_eq: pd.DataFrame):
         col_dot = next((c for c in cols if "dot" in c.lower()), None)
     return col_team, col_dot
 
-
-def _build_dotacion_map(df_eq: pd.DataFrame) -> dict:
-    col_team, col_dot = _get_team_and_dotacion_cols(df_eq)
-    if not col_team or not col_dot:
-        return {}
-
-    dot = {}
-    for _, r in df_eq.iterrows():
-        team = str(r.get(col_team, "")).strip()
-        if not team or team.lower() == "cupos libres":
-            continue
-        try:
-            val = float(str(r.get(col_dot, "0")).replace(",", "."))
-        except Exception:
-            continue
-        if val > 0:
-            dot[team] = val
-    return dot
-
-
 def _equity_score(rows, deficit, dot_map: dict, days_per_week=5):
     """
     Score de equidad:
@@ -269,58 +249,6 @@ def _equity_score(rows, deficit, dot_map: dict, days_per_week=5):
 
     # Pesos: std manda, luego rango, luego conflictos
     return (1.0 * std) + (0.6 * rng) + (0.2 * conflicts)
-
-def generate_balanced_distribution(
-    df_eq: pd.DataFrame,
-    df_pa: pd.DataFrame,
-    df_cap: pd.DataFrame,
-    ignore_params: bool,
-    num_attempts: int = 80,
-    seed: Optional[int] = None
-):
-    """
-    Genera varias distribuciones aleatorias y elige la más EQUITATIVA.
-    """
-    if seed is None:
-        seed = random.randint(1, 10_000_000)
-
-    # dotación por equipo (seguro)
-    dot_map = _build_dotacion_map(df_eq)  # usa tus helpers ya definidos arriba
-
-    best_score = float("inf")
-    best_rows = None
-    best_def = None
-    best_meta = None
-
-    for i in range(num_attempts):
-        attempt_seed = int(seed) + i * 9973
-
-        # shuffle reproducible
-        eq_shuffled = df_eq.sample(frac=1, random_state=attempt_seed).reset_index(drop=True)
-
-        # usa tu motor actual (que ya respeta capacidades)
-        rows, deficit = get_distribution_proposal(
-            eq_shuffled,
-            df_pa,
-            df_cap,
-            strategy="random",
-            ignore_params=ignore_params
-        )
-
-        def_clean = filter_minimum_deficits(deficit)
-
-        if ignore_params:
-            def_clean = []
-
-        score = _equity_score(rows, def_clean, dot_map)
-
-        if score < best_score:
-            best_score = score
-            best_rows = rows
-            best_def = def_clean
-            best_meta = {"score": best_score, "seed": attempt_seed, "attempts": num_attempts}
-
-    return best_rows, best_def, best_meta
 
 def _dot_map_from_equipos(df_eq: pd.DataFrame) -> dict:
     if df_eq is None or df_eq.empty:
@@ -2995,6 +2923,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
