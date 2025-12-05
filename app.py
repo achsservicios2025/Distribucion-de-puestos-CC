@@ -133,7 +133,7 @@ except ImportError:
         return False
 from modules.auth import get_admin_credentials
 from modules.layout import admin_appearance_ui, apply_appearance_styles
-from modules.seats import compute_distribution_from_excel
+from modules.seats import compute_distribution_from_excel, compute_distribution_variants
 from modules.emailer import send_reservation_email
 from modules.rooms import generate_time_slots, check_room_conflict
 from modules.zones import generate_colored_plan, load_zones, save_zones
@@ -496,23 +496,31 @@ def generate_distribution_math_correct(
 
     return rows, deficits
 
-def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strategy="random", ignore_params=False):
+def get_distribution_proposal(
+    df_equipos,
+    df_parametros,
+    df_capacidades,
+    strategy="random",
+    ignore_params=False,
+    variant_seed=None,
+    variant_mode="holgura",
+):
     """
-    Genera una propuesta basada en una estrategia de ordenamiento.
+    Propuesta única.
+    - ignore_params=True => NO mínimos, NO días completos. Solo Saint-Laguë + reserva.
+    - ignore_params=False => aplica día completo + mínimos + remanente Saint-Laguë.
     """
     eq_proc = df_equipos.copy()
     pa_proc = df_parametros.copy()
-    
-    # Asegurarnos de que tenemos datos numéricos para ordenar
+
     col_sort = None
     for c in eq_proc.columns:
         if c.lower().strip() == "dotacion":
             col_sort = c
             break
-    
-    if not col_sort and strategy != "random": strategy = "random"
+    if not col_sort and strategy != "random":
+        strategy = "random"
 
-    # APLICAR ESTRATEGIA
     if strategy == "random":
         eq_proc = eq_proc.sample(frac=1).reset_index(drop=True)
     elif strategy == "size_desc" and col_sort:
@@ -520,18 +528,23 @@ def get_distribution_proposal(df_equipos, df_parametros, df_capacidades, strateg
     elif strategy == "size_asc" and col_sort:
         eq_proc = eq_proc.sort_values(by=col_sort, ascending=True).reset_index(drop=True)
 
-    # CORRECCIÓN CRÍTICA AQUÍ: Pasamos df_capacidades al motor
-    rows, deficit_report = compute_distribution_from_excel(
-        eq_proc, pa_proc, df_capacidades, 2, ignore_params=ignore_params
+    rows, deficit_report, audit, score = compute_distribution_from_excel(
+        equipos_df=eq_proc,
+        parametros_df=pa_proc,
+        df_capacidades=df_capacidades,
+        cupos_reserva=2,
+        ignore_params=ignore_params,
+        variant_seed=variant_seed,
+        variant_mode=variant_mode,
     )
-    
+
     final_deficits = filter_minimum_deficits(deficit_report)
 
-    # Si el usuario pidió ignorar reglas, forzamos que la lista de conflictos esté vacía.
     if ignore_params:
         final_deficits = []
 
-    return rows, final_deficits
+    # opcional: devolver score/audit si te sirve
+    return rows, final_deficits, audit, score
 
 def generate_balanced_distribution(
     df_eq: pd.DataFrame,
@@ -1123,6 +1136,13 @@ def safe_clear_cache(fn):
     """Limpia cache de funciones @st.cache_data si existe; si no, no hace nada."""
     try:
         fn.clear()
+    except Exception:
+        pass
+
+def clear_compute_cache():
+    """Limpia cache del motor seats si está cacheado con @st.cache_data."""
+    try:
+        compute_distribution_from_excel.clear()
     except Exception:
         pass
         
@@ -1806,6 +1826,7 @@ elif menu == "Administrador":
         # Botón Inicial
         if st.button("Procesar e Iniciar", type="primary", key="btn_process_init"):
             st.cache_data.clear()
+            clear_compute_cache()
             
             if up:
                 try:
@@ -1829,29 +1850,51 @@ elif menu == "Administrador":
                     st.session_state['ignore_params'] = ignore_params
                     st.session_state['ideal_options'] = None
                     
-                    # 4 . Calcular
+                    # Calcular
                     if ignore_params:
-                        # ✅ Ideal matemáticamente correcto con mínimos diarios escalados
-                        rows, deficit = generate_distribution_math_correct(
-                            df_eq,
-                            df_cap,
-                            cupos_libres_diarios=2,
-                            min_dotacion_para_garantia=3
-                        )   
+                        # Ideal = Saint-Laguë + reserva (SIN mínimos / SIN full-day)
+                        rows, deficit, audit, score = compute_distribution_from_excel(
+                            equipos_df=df_eq,
+                            parametros_df=df_pa,
+                            df_capacidades=df_cap,
+                            cupos_reserva=2,
+                            ignore_params=True,
+                            variant_seed=0,
+                            variant_mode="holgura",
+                        )
                         st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                        st.toast("✅ Distribución ideal (matemática) generada.")
+                        st.session_state['proposal_deficit'] = []  # por spec
+                        st.session_state['variants'] = None
+                        st.session_state['selected_variant_idx'] = None
+                        st.toast("✅ Distribución ideal generada.")
                     else:
-                        rows, deficit = get_distribution_proposal(df_eq, df_pa, df_cap, strategy="random", ignore_params=False)
-                        st.session_state['proposal_rows'] = rows
-                        st.session_state['proposal_deficit'] = deficit
-                        st.success("✅ Distribución generada.")
-                    
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error al procesar el Excel: {e}")
+                        # Con parámetros => variantes (choice 'o' + desempates)
+                        variants = compute_distribution_variants(
+                            equipos_df=df_eq,
+                            parametros_df=df_pa,
+                            df_capacidades=df_cap,
+                            cupos_reserva=2,
+                            ignore_params=False,
+                            n_variants=5,
+                            variant_seed=random.randint(1, 10_000_000),
+                            variant_mode="holgura",  # default
+                        )
 
+                        best = variants[0] if variants else None
+                        st.session_state["variants"] = variants
+                        st.session_state["selected_variant_idx"] = 0
+
+                        st.session_state['proposal_rows'] = best["rows"] if best else []
+                        st.session_state['proposal_deficit'] = best["deficit_report"] if best else []
+                        st.session_state["last_variant_meta"] = {
+                            "seed": best["seed"],
+                            "mode": best["mode"],
+                            "score": best["score"]["score"],
+                            "details": best["score"].get("details", {})
+                        } if best else None
+
+                        st.success("✅ Distribución generada (con parámetros + variantes).")
+                    
         # -----------------------------------------------------------
         # ZONA DE RESULTADOS
         # -----------------------------------------------------------
@@ -1866,23 +1909,50 @@ elif menu == "Administrador":
             df_cap_s = st.session_state.get("excel_caps", pd.DataFrame())
             ign_s = st.session_state.get("ignore_params", False)
 
-            # 1) REGENERAR EQUILIBRADA
-            if c_regen.button("🔄 Regenerar distribución (Equilibrada)", key="btn_regen_balanced"):
-                with st.spinner("Buscando la distribución más equilibrada..."):
-                    rows, deficit, meta = generate_balanced_distribution(
-                        df_eq_s, df_pa_s, df_cap_s,
-                        ignore_params=ign_s,
-                        num_attempts=80,
-                        seed=None
-                    )
+            # 1) REGENERAR (VARIANTES)
+            if c_regen.button("🔄 Regenerar", key="btn_regen_variants"):
+                st.cache_data.clear()
+                clear_compute_cache()
+                with st.spinner("Generando variantes..."):
+                    if ign_s:
+                        # ignore_params => no hay variantes reales (no hay 'o'/mínimos),
+                        rows, deficit, audit, score = compute_distribution_from_excel(
+                            equipos_df=df_eq_s,
+                            parametros_df=df_pa_s,
+                            df_capacidades=df_cap_s,
+                            cupos_reserva=2,
+                            ignore_params=True,
+                            variant_seed=random.randint(1, 10_000_000),
+                            variant_mode="holgura",
+                        )
+                        st.session_state["proposal_rows"] = rows
+                        st.session_state["proposal_deficit"] = []
+                        st.session_state["variants"] = None
+                        st.session_state["selected_variant_idx"] = None
+                        st.toast("✅ Regenerado.")
+                    else:
+                        variants = compute_distribution_variants(
+                            equipos_df=df_eq_s,
+                            parametros_df=df_pa_s,
+                            df_capacidades=df_cap_s,
+                            cupos_reserva=2,
+                            ignore_params=False,
+                            n_variants=8,  # más opciones
+                            variant_seed=random.randint(1, 10_000_000),
+                            variant_mode=st.session_state.get("variant_mode_ui", "holgura"),
+                        )
+                        st.session_state["variants"] = variants
+                        st.session_state["selected_variant_idx"] = 0
 
-                    st.session_state["proposal_rows"] = rows
-                    st.session_state["proposal_deficit"] = deficit
-                    st.session_state["ideal_options"] = None
-                    st.session_state["last_balance_meta"] = meta
-
-                    if meta:
-                        st.toast(f"Equilibrado listo ✅ (score: {meta['score']:.4f})", icon="⚖️")
+                        best = variants[0] if variants else None
+                        st.session_state["proposal_rows"] = best["rows"] if best else []
+                        st.session_state["proposal_deficit"] = best["deficit_report"] if best else []
+                        st.session_state["last_variant_meta"] = {
+                            "seed": best["seed"],
+                            "mode": best["mode"],
+                            "score": best["score"]["score"],
+                            "details": best["score"].get("details", {})
+                        } if best else None
 
                 st.rerun()
 
@@ -3035,6 +3105,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
