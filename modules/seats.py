@@ -519,16 +519,27 @@ def compute_distribution_from_excel(
                     "cupos": int(t["asig"]),
                     "pct": float(pct)
                 })
+        
+        # ✅ SIEMPRE 2 cupos libres (si la capacidad real lo permite)
+        cupos_libres = min(RESERVA_OBLIGATORIA, cap_total_real)
 
-            remanente_total = max(0, int(cap_total_real - total_asig))
-            pct_lib = round((remanente_total / cap_total_real * 100.0), 1) if cap_total_real > 0 else 0.0
-            rows.append({
-                "piso": piso_str,
-                "equipo": "Cupos libres",
-                "dia": dia,
-                "cupos": int(remanente_total),
-                "pct": float(pct_lib)
-            })
+        # total_asig ya está acotado a hard_limit = cap_total_real - RESERVA_OBLIGATORIA
+        # pero por seguridad, recalculamos "libres" como:
+        remanente_total = max(0, cap_total_real - total_asig)
+
+        # fuerza exactitud: si hay capacidad suficiente, libres = 2
+        # si el piso tiene menos de 2 cupos totales, libres = cap_total_real
+        if cap_total_real >= RESERVA_OBLIGATORIA:
+            remanente_total = RESERVA_OBLIGATORIA
+
+        pct_lib = round((remanente_total / cap_total_real * 100.0), 1) if cap_total_real > 0 else 0.0
+        rows.append({
+            "piso": piso_str,
+            "equipo": "Cupos libres",
+            "dia": dia,
+            "cupos": int(remanente_total),
+            "pct": float(pct_lib)
+        })
 
             # Deficit contra “dotación” SOLO si ignore_params=False (porque si ignoras parámetros,
             # no es un "problema": es el resultado natural de la capacidad limitada)
@@ -611,3 +622,4 @@ def compute_distribution_variants(
 
     variants.sort(key=lambda v: v["score"]["score"])
     return variants
+
