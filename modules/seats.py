@@ -1,3 +1,4 @@
+# seats.py
 import pandas as pd
 import re
 import random
@@ -346,7 +347,7 @@ def compute_distribution_from_excel(
             equipos_info.append({"eq": nm, "per": per, "min": mini})
 
         # ---------------------------------------------------------
-        # SOLO si no se ignora parámetros:
+        # SOLO si no ignoras parámetros:
         # pre-asignar choice ("o") por piso
         # ---------------------------------------------------------
         full_day_choice_assignment = {}
@@ -544,7 +545,7 @@ def compute_distribution_from_excel(
                             "explicacion": EXPLICACION_EQUIDAD
                         })
 
-            # ✅ SIEMPRE agregar "Cupos libres" POR DÍA (si la capacidad real lo permite)
+            # ✅ SIEMPRE agregar "Cupos libres" POR DÍA (reserva diaria)
             # hard_limit = cap_total_real - reserva, así que libres = reserva (o cap_total_real si es menor)
             libres = RESERVA_OBLIGATORIA if cap_total_real >= RESERVA_OBLIGATORIA else cap_total_real
             pct_lib = round((libres / cap_total_real * 100.0), 1) if cap_total_real > 0 else 0.0
@@ -612,31 +613,3 @@ def compute_distribution_variants(
 
     variants.sort(key=lambda v: v["score"]["score"])
     return variants
-
-    """
-    variants = []
-    for i in range(max(1, int(n_variants))):
-        seed_i = int(variant_seed) + i
-        rows, deficit, audit, score = compute_distribution_from_excel(
-            equipos_df=equipos_df,
-            parametros_df=parametros_df,
-            df_capacidades=df_capacidades,
-            cupos_reserva=cupos_reserva,
-            ignore_params=ignore_params,
-            variant_seed=seed_i,
-            variant_mode=variant_mode
-        )
-        variants.append({
-            "seed": seed_i,
-            "mode": variant_mode,
-            "rows": rows,
-            "deficit_report": deficit,
-            "audit": audit,
-            "score": score
-        })
-
-    variants.sort(key=lambda v: v["score"]["score"])
-    return variants
-
-
-
