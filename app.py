@@ -2216,7 +2216,6 @@ elif menu == "Administrador":
             bg_img.save(buf0, format="PNG")
             bg_bytes = buf0.getvalue()
 
-            # ✅ si cambias tamaño, lo reemplazas por el resized
             if use_w != canvas_w:
                 bg_img2 = bg_img.resize((use_w, use_h))
                 buf2 = io.BytesIO()
@@ -3036,6 +3035,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
