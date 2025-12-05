@@ -2259,7 +2259,23 @@ elif menu == "Administrador":
             st.info("💡 Debe existir en /planos como piso1.png, piso2.png, piso3.png, etc.")
             st.stop()
     st.session_state["last_style_config"] = {
-    "show_legend": st.session_state["zones_show_legend"],
+    day_config = {
+        "bg_color": "#FFFFFF",
+        "show_logo": True/False,
+        "logo_position": "Izquierda"/"Centro"/"Derecha",
+        "logo_width": 140,
+        "show_title": True/False,
+        "title_text": "...",
+        "title_align": "Izquierda"/"Centro"/"Derecha",
+        "title_font_size": 18,
+        "title_color": "#000000",
+        "show_legend": True/False,
+        "legend_align": "Izquierda"/"Centro"/"Derecha",
+        "legend_size": 14,
+      }
+
+        
+        "show_legend": st.session_state["zones_show_legend"],
     "show_logo": st.session_state["zones_show_logo"],
     "logo_position": st.session_state["zones_logo_pos"].lower(),  # izquierda/centro/derecha
     "show_title": st.session_state["zones_show_title"],
@@ -2979,6 +2995,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
