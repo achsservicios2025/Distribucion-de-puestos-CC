@@ -144,10 +144,30 @@ import streamlit.components.v1 as components
 # 3. CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------
 st.set_page_config(page_title="Distribución de Puestos", layout="wide")
+st.markdown("""
+<style>
+/* 1) Usa todo el ancho de la pantalla */
+section.main > div {
+  max-width: 100% !important;
+  padding-left: 2rem !important;
+  padding-right: 2rem !important;
+}
+
+/* 2) Evita que quede “apretado” por layouts raros */
+.block-container {
+  max-width: 100% !important;
+}
+
+/* 3) Tamaño de letra un poquito más grande (opcional) */
+html, body, [class*="css"] {
+  font-size: 16px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ----------------------------------------------------------------
 ORDER_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-PLANOS_DIR = Path("planos")
+PLANOS_DIR = Path("modules/planos")
 DATA_DIR = Path("data")
 COLORED_DIR = Path("planos_coloreados")
 
@@ -1062,23 +1082,28 @@ def generate_full_pdf(
 
     return pdf.output(dest="S").encode("latin-1")
 
-def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
-    st.warning(f"¿Anular reserva de sala?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
+def confirm_delete_room_dialog(conn, user_email, fecha_str, sala, inicio):
+    st.warning(f"¿Anular reserva de sala?\n\n📧 {user_email} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
     c1, c2 = st.columns(2)
-    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key="yes_s"):
-        if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
-    if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
-
-def confirm_delete_dialog(conn, usuario, fecha_str, area, piso):
-    st.warning(f"¿Anular reserva de puesto?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {piso} | 📍 {area}")
-    c1, c2 = st.columns(2)
-    if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key=f"yes_p_{usuario}_{fecha_str}"):
-        if delete_reservation_from_db(conn, usuario, fecha_str, area):
+    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key=f"yes_s_{user_email}_{fecha_str}_{inicio}"):
+        if delete_room_reservation_from_db(conn, user_email, fecha_str, sala, inicio):
             st.success("Eliminada")
             st.rerun()
         else:
             st.error("No se pudo eliminar")
-    if c2.button("Cancelar", use_container_width=True, key=f"no_p_{usuario}_{fecha_str}"):
+    if c2.button("Cancelar", width="stretch", key=f"no_s_{user_email}_{fecha_str}_{inicio}"):
+        st.rerun()
+
+def confirm_delete_dialog(conn, user_email, fecha_str, area, piso):
+    st.warning(f"¿Anular reserva de puesto?\n\n📧 {user_email} | 📅 {fecha_str}\n🏢 {piso} | 📍 {area}")
+    c1, c2 = st.columns(2)
+    if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key=f"yes_p_{user_email}_{fecha_str}"):
+        if delete_reservation_from_db(conn, user_email, fecha_str, area):
+            st.success("Eliminada")
+            st.rerun()
+        else:
+            st.error("No se pudo eliminar")
+    if c2.button("Cancelar", use_container_width=True, key=f"no_p_{user_email}_{fecha_str}"):
         st.rerun()
 
 # --- UTILS TOKENS ---
@@ -1698,7 +1723,7 @@ elif menu == "Reservas":
                             c1, c2 = st.columns([5, 1])
                             c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
                             if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                confirm_delete_dialog(conn, r["user_name"], r["reservation_date"], r["team_area"], r["piso"])
+                                confirm_delete_dialog(conn, r["user_email"], r["reservation_date"], r["team_area"], r["piso"])
     
                 if not ms.empty:
                     st.markdown("#### 🏢 Tus Salas")
@@ -1707,7 +1732,7 @@ elif menu == "Reservas":
                             c1, c2 = st.columns([5, 1])
                             c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
                             if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                confirm_delete_room_dialog(conn, r["user_name"], r["reservation_date"], r["room_name"], r["start_time"])
+                                confirm_delete_room_dialog(conn, r["user_email"], r["reservation_date"], r["room_name"], r["start_time"])
     
         st.markdown("---")
     
@@ -2953,6 +2978,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
