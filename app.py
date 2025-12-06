@@ -2323,39 +2323,44 @@ elif menu == "Administrador":
                     "#006400", "#00A04A", "#00FF00", "#00FA9A", "#00FFFF", "#00BFFF",
                     "#00008B", "#0000FF", "#1E90FF", "#4169E1", "#8000FF", "#8A2BE2",
                     "#FF00FF", "#FF1493", "#DC143C", "#A0522D", "#8B4513", "#2F4F4F",
-                    ]
+                ]
 
-                current = st.session_state["zones_color"]
-                st.color_picker(" ", value=current, key="zones_color_picker") 
-                st.session_state["zones_color"] = st.session_state["zones_color_picker"]
+                current = st.session_state.get("zones_color", "#00A04A")
 
-                with st.expander("Paleta (Word)", expanded=False):
+                picked = st.color_picker(" ", value=current, key="zones_color_picker")
+                if picked != current:
+                    st.session_state["zones_color"] = picked
+                    st.rerun()
+
+                with st.expander("Paleta", expanded=False):
                     grid = st.columns(6)
                     for i, hx in enumerate(PALETTE):
                         with grid[i % 6]:
                             if st.button(" ", key=f"pal_{piso_sel}_{hx}", help=hx):
                                 st.session_state["zones_color"] = hx
-                                st.session_state["zones_color_picker"] = hx
                                 st.rerun()
                             st.markdown(
                                 f"""<div style="width:28px;height:28px;border-radius:6px;border:1px solid #999;background:{hx};margin-top:-28px;margin-bottom:10px;"></div>""",
                                 unsafe_allow_html=True
                             )
 
-                    custom_hex = st.text_input("Personalizar (#RRGGBB)", value=st.session_state["zones_color"], key="zones_hex")
+                    custom_hex = st.text_input(
+                        "Personalizar (#RRGGBB)",
+                        value=st.session_state.get("zones_color", "#00A04A"),
+                        key="zones_hex"
+                    )
                     custom_hex = (custom_hex or "").strip()
                     if custom_hex and not custom_hex.startswith("#"):
                         custom_hex = "#" + custom_hex
 
-                    if re.match(r"^#[0-9a-fA-F]{6}$", custom_hex):
+                    if re.match(r"^#[0-9a-fA-F]{6}$", custom_hex) and custom_hex != st.session_state.get("zones_color"):
                         st.session_state["zones_color"] = custom_hex
-                        st.session_state["zones_color_picker_override"] = custom_hex
                         st.rerun()
 
-                    if "zones_undo_snapshot" not in st.session_state:
-                        st.session_state["zones_undo_snapshot"] = None
-                    if "zones_redo_snapshot" not in st.session_state:
-                        st.session_state["zones_redo_snapshot"] = None
+                if "zones_undo_snapshot" not in st.session_state:
+                    st.session_state["zones_undo_snapshot"] = None
+                if "zones_redo_snapshot" not in st.session_state:
+                    st.session_state["zones_redo_snapshot"] = None
 
             with tb2:
                 st.markdown("**Edición**")
@@ -2999,6 +3004,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
