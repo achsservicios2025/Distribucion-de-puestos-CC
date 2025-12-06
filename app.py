@@ -1083,15 +1083,22 @@ def generate_full_pdf(
     return pdf.output(dest="S").encode("latin-1")
 
 def confirm_delete_room_dialog(conn, user_email, fecha_str, sala, inicio):
+    user_email = str(user_email).strip().lower()
+    fecha_str = str(fecha_str).strip()
+    sala = str(sala).strip()
+    inicio = str(inicio).strip()  # importante
+
     st.warning(f"¿Anular reserva de sala?\n\n📧 {user_email} | 📅 {fecha_str}\n🏢 {sala} ({inicio})")
     c1, c2 = st.columns(2)
-    if c1.button("🔴 Sí, anular", type="primary", width="stretch", key=f"yes_s_{user_email}_{fecha_str}_{inicio}"):
-        if delete_room_reservation_from_db(conn, user_email, fecha_str, sala, inicio):
+    if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key=f"yes_s_{user_email}_{fecha_str}_{inicio}"):
+        ok = delete_room_reservation_from_db(conn, user_email, fecha_str, sala, inicio)
+        if ok:
             st.success("Eliminada")
+            st.cache_data.clear()
             st.rerun()
         else:
             st.error("No se pudo eliminar")
-    if c2.button("Cancelar", width="stretch", key=f"no_s_{user_email}_{fecha_str}_{inicio}"):
+    if c2.button("Cancelar", use_container_width=True, key=f"no_s_{user_email}_{fecha_str}_{inicio}"):
         st.rerun()
 
 def confirm_delete_dialog(conn, user_email, fecha_str, area, piso):
@@ -2858,7 +2865,7 @@ elif menu == "Administrador":
                         deleted = 0
                         for idx in selected_indices_salas:
                             r = df_salas.loc[idx]
-                            if delete_room_reservation_from_db(conn, r['user_name'], r['reservation_date'], r['room_name'], r['start_time']):
+                            if delete_room_reservation_from_db(conn, r['user_email'], r['reservation_date'], r['room_name'], r['start_time']):
                                 deleted += 1
                         if deleted > 0:
                             st.success(f"✅ {deleted} reserva(s) de sala eliminada(s)")
@@ -3004,6 +3011,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
