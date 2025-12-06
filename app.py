@@ -1783,7 +1783,7 @@ elif menu == "Reservas":
                 ]
 
             if mp.empty and ms.empty:
-                st.warning("No encontré reservas con esos datos.")
+                st.warning("No existen reservas con esos datos.")
             else:
                 render_confirm_delete_dialog(conn)
 
@@ -3070,6 +3070,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
