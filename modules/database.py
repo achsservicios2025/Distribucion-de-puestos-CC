@@ -98,10 +98,6 @@ def _safe_int(x, default=None):
 
 
 def _ensure_headers(ws, headers):
-    """
-    Asegura que la fila 1 sea EXACTAMENTE headers.
-    Esto permite "limpiar" columnas viejas (como pct) sin que aparezcan nunca.
-    """
     try:
         ws.clear()
         ws.append_row(headers)
@@ -173,7 +169,6 @@ def init_db(conn):
     if conn is None:
         return
 
-    # ✅ distribution SIN pct
     sheets_config = {
         "reservations": ["user_name", "user_email", "piso", "reservation_date", "team_area", "created_at"],
         "room_reservations": ["user_name", "user_email", "piso", "room_name", "reservation_date", "start_time", "end_time", "created_at"],
@@ -252,13 +247,6 @@ def get_all_settings(_conn):
 # WRITES / MUTATIONS
 # =========================================================
 def insert_distribution(conn, rows):
-    """
-    Guarda distribution SIN pct (nunca).
-
-    Espera rows como lista de dicts, con claves (como seats.py):
-      - piso, equipo, dia, cupos, dotacion, % uso diario, % uso semanal
-    y también acepta variantes típicas por compatibilidad.
-    """
     ws = get_worksheet(conn, "distribution")
     if ws is None:
         return
@@ -613,3 +601,4 @@ def delete_distribution_rows_by_indices(conn, indices):
 
     except Exception:
         return False
+
