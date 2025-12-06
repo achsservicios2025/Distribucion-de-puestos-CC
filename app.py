@@ -16,6 +16,7 @@ from typing import Optional
 import numpy as np
 import random
 from modules.pdfgen import generate_pdf_from_df
+from modules.database import delete_reservation_by_row, delete_room_reservation_by_row
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
@@ -1751,7 +1752,13 @@ elif menu == "Reservas":
                             c1, c2 = st.columns([5, 1])
                             c1.markdown(f"**{r['reservation_date']}** | {r['piso']} (Cupo Libre)")
                             if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                confirm_delete_dialog(conn, r["user_email"], r["reservation_date"], r["team_area"], r["piso"])
+                                rownum = int(r["_row"])
+                                ok = delete_reservation_by_row(conn, rownum)
+                                if ok:
+                                    st.success("Eliminada")
+                                    st.rerun()
+                                else:
+                                    st.error("No se pudo eliminar")
     
                 if not ms.empty:
                     st.markdown("#### 🏢 Tus Salas")
@@ -1760,11 +1767,17 @@ elif menu == "Reservas":
                             c1, c2 = st.columns([5, 1])
                             c1.markdown(f"**{r['reservation_date']}** | {r['room_name']} | {r['start_time']} - {r['end_time']}")
                             if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                confirm_delete_room_dialog(conn, r["user_email"], r["reservation_date"], r["room_name"], r["start_time"])
+                                rownum = int(r["_row"])
+                                ok = delete_room_reservation_by_row(conn, rownum)
+                                if ok:
+                                    st.success("Eliminada")
+                                    st.rerun()
+                                else:
+                                    st.error("No se pudo eliminar")
     
         st.markdown("---")
     
-        # --- SECCION 2: VER TODO ---
+        # --- SECCION 2 ---
         with st.expander("Ver Listado General de Reservas", expanded=True):
             st.subheader("Reserva de puestos")
             st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
@@ -3012,6 +3025,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
