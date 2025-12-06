@@ -65,7 +65,11 @@ def _norm_piso(p):
     return s
 
 
-def _safe_float(x, default=0.0):
+def _safe_float(x, default=None):
+    """
+    Float seguro.
+    - Si viene None/vacío => devuelve default (por defecto None)
+    """
     try:
         if x is None:
             return default
@@ -77,7 +81,11 @@ def _safe_float(x, default=0.0):
         return default
 
 
-def _safe_int(x, default=0):
+def _safe_int(x, default=None):
+    """
+    Int seguro.
+    - Si viene None/vacío => devuelve default (por defecto None)
+    """
     try:
         if x is None:
             return default
@@ -165,7 +173,7 @@ def init_db(conn):
     if conn is None:
         return
 
-    # ✅ NOTA: distribution SIN pct
+    # ✅ distribution SIN pct
     sheets_config = {
         "reservations": ["user_name", "user_email", "piso", "reservation_date", "team_area", "created_at"],
         "room_reservations": ["user_name", "user_email", "piso", "room_name", "reservation_date", "start_time", "end_time", "created_at"],
@@ -181,11 +189,6 @@ def init_db(conn):
                 first = ws.row_values(1)
                 if not first:
                     ws.append_row(headers)
-                else:
-                    # si la sheet ya existe con otros headers, NO la reescribimos aquí
-                    # (para no borrar datos sin que el admin lo pida),
-                    # pero al guardar distribution sí se normaliza.
-                    pass
             except Exception:
                 pass
         time.sleep(0.2)
@@ -200,9 +203,7 @@ def read_distribution_df(_conn):
     if ws is None:
         return pd.DataFrame()
     try:
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        return df
+        return pd.DataFrame(ws.get_all_records())
     except Exception:
         return pd.DataFrame()
 
@@ -254,14 +255,9 @@ def insert_distribution(conn, rows):
     """
     Guarda distribution SIN pct (nunca).
 
-    Espera rows como lista de dicts, con claves flexibles:
-    - piso/Piso
-    - equipo/Equipo
-    - dia/Día/Dia
-    - cupos/Cupos
-    - dotacion/Dotación/dotación/Dotacion
-    - % uso diario / uso_diario / pct_uso_diario / %uso_diario
-    - % uso semanal / uso_semanal / pct_uso_semanal / %uso_semanal
+    Espera rows como lista de dicts, con claves (como seats.py):
+      - piso, equipo, dia, cupos, dotacion, % uso diario, % uso semanal
+    y también acepta variantes típicas por compatibilidad.
     """
     ws = get_worksheet(conn, "distribution")
     if ws is None:
@@ -270,7 +266,6 @@ def insert_distribution(conn, rows):
     headers = ["piso", "equipo", "dia", "cupos", "dotacion", "% uso diario", "% uso semanal", "created_at"]
 
     try:
-        # ✅ dejamos headers "limpios" sí o sí (adiós pct visual)
         _ensure_headers(ws, headers)
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -282,28 +277,32 @@ def insert_distribution(conn, rows):
             dia = r.get("dia", r.get("Día", r.get("Dia", "")))
             cupos = r.get("cupos", r.get("Cupos", 0))
 
-            dotacion = r.get("dotacion", r.get("Dotación", r.get("Dotacion", r.get("dotación", ""))))
+            dotacion = r.get("dotacion", r.get("Dotación", r.get("Dotacion", r.get("dotación", None))))
 
-            uso_diario = r.get("% uso diario", r.get("uso_diario", r.get("pct_uso_diario", r.get("%uso_diario", ""))))
-            uso_semanal = r.get("% uso semanal", r.get("uso_semanal", r.get("pct_uso_semanal", r.get("%uso_semanal", ""))))
+            uso_diario = r.get("% uso diario", r.get("uso_diario", r.get("pct_uso_diario", r.get("%uso_diario", None))))
+            uso_semanal = r.get("% uso semanal", r.get("uso_semanal", r.get("pct_uso_semanal", r.get("%uso_semanal", None))))
 
+            # Normalización
             piso_norm = _norm_piso(piso)
             equipo_s = str(equipo).strip()
             dia_s = str(dia).strip()
 
             cupos_i = _safe_int(cupos, 0)
-            dot_i = _safe_int(dotacion, 0)
-            uso_d_f = _safe_float(uso_diario, 0.0)
-            uso_s_f = _safe_float(uso_semanal, 0.0)
+
+            # IMPORTANTE:
+            # - si dotacion/uso_* vienen None (ej: "Cupos libres"), los guardamos como "" (vacío), no 0.
+            dot_i = _safe_int(dotacion, None)
+            uso_d_f = _safe_float(uso_diario, None)
+            uso_s_f = _safe_float(uso_semanal, None)
 
             data.append([
                 _to_plain(piso_norm),
                 _to_plain(equipo_s),
                 _to_plain(dia_s),
                 _to_plain(cupos_i),
-                _to_plain(dot_i),
-                _to_plain(uso_d_f),
-                _to_plain(uso_s_f),
+                _to_plain("" if dot_i is None else dot_i),
+                _to_plain("" if uso_d_f is None else uso_d_f),
+                _to_plain("" if uso_s_f is None else uso_s_f),
                 _to_plain(now),
             ])
 
@@ -355,8 +354,7 @@ def user_has_reservation(conn, email, date_str):
     if ws is None:
         return False
     try:
-        records = ws.get_all_records()
-        df = pd.DataFrame(records)
+        df = pd.DataFrame(ws.get_all_records())
         if df.empty:
             return False
         match = df[
@@ -458,7 +456,8 @@ def save_setting(conn, key, value):
         ws.update_cell(cell.row, 3, datetime.datetime.now(datetime.timezone.utc).isoformat())
     except Exception:
         try:
-            ws.append_row([key_s, val_s, datetime.datetime.now(datetime.timezone.utc).isoformat()], value_input_option="USER_ENTERED")
+            ws.append_row([key_s, val_s, datetime.datetime.now(datetime.timezone.utc).isoformat()],
+                          value_input_option="USER_ENTERED")
         except Exception:
             pass
 
@@ -493,7 +492,7 @@ def validate_and_consume_token(conn, t):
         if len(row) < 4:
             return False, "Formato inválido"
 
-        used = int(_safe_int(row[3], 0))
+        used = int(_safe_int(row[3], 0) or 0)
         expires_at = row[2]
 
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -538,8 +537,8 @@ def perform_granular_delete(conn, option):
     if "Distribución" in option or "TODO" in option:
         ws = get_worksheet(conn, "distribution")
         if ws:
-            ws.clear()
-            ws.append_row(["piso", "equipo", "dia", "cupos", "dotacion", "% uso diario", "% uso semanal", "created_at"])
+            headers = ["piso", "equipo", "dia", "cupos", "dotacion", "% uso diario", "% uso semanal", "created_at"]
+            _ensure_headers(ws, headers)
             read_distribution_df.clear()
             msg.append("Distribución eliminada")
 
@@ -550,10 +549,7 @@ def perform_granular_delete(conn, option):
 # Borrado individual de distribution
 # =========================================================
 def delete_distribution_row(conn, piso, equipo, dia):
-    """
-    Elimina una fila específica por (piso,equipo,dia).
-    Retorna True si eliminó al menos 1.
-    """
+    """Elimina una fila específica por (piso,equipo,dia)."""
     ws = get_worksheet(conn, "distribution")
     if ws is None:
         return False
@@ -568,7 +564,7 @@ def delete_distribution_row(conn, piso, equipo, dia):
             return False
 
         header = [h.strip().lower() for h in vals[0]]
-        # buscamos columnas por nombre (pct no existe; si existe, se ignora)
+
         def _idx(name, fallback):
             try:
                 return header.index(name)
