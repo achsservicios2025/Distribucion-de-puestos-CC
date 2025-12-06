@@ -1109,50 +1109,63 @@ def render_confirm_delete_dialog(conn):
 
     tipo = payload.get("type")
 
-    if tipo == "puesto":
-        st.warning(
-            f"¿Anular reserva de puesto?\n\n"
-            f"📧 {payload['user_identifier']} | 📅 {payload['fecha']}\n"
-            f"🏢 {payload['piso']} | 📍 {payload['area']}"
-        )
-        c1, c2 = st.columns(2)
+    title = "Confirmar anulación"
+    with st.modal(title):
+        if tipo == "puesto":
+            st.markdown("### ¿Anular reserva de puesto?")
+            st.markdown(
+                f"**📧** {payload['user_identifier']}  \n"
+                f"**📅** {payload['fecha']}  \n"
+                f"**🏢** {payload['piso']}  \n"
+                f"**📍** {payload['area']}"
+            )
 
-        if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_puesto"):
-            ok = delete_reservation_from_db(conn, payload["user_identifier"], payload["fecha"], payload["area"])
-            st.session_state.pop("confirm_delete", None)
-            if ok:
-                st.success("Eliminada")
-                st.cache_data.clear()
-            else:
-                st.error("No se pudo eliminar")
-            st.rerun()
+            c1, c2 = st.columns(2)
 
-        if c2.button("Cancelar", use_container_width=True, key="confirm_no_puesto"):
-            st.session_state.pop("confirm_delete", None)
-            st.rerun()
+            if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_puesto"):
+                ok = delete_reservation_from_db(conn, payload["user_identifier"], payload["fecha"], payload["area"])
+                st.session_state.pop("confirm_delete", None)
+                if ok:
+                    st.success("Eliminada")
+                    st.cache_data.clear()
+                else:
+                    st.error("No se pudo eliminar")
+                st.rerun()
 
-    elif tipo == "sala":
-        st.warning(
-            f"¿Anular reserva de sala?\n\n"
-            f"📧 {payload['user_identifier']} | 📅 {payload['fecha']}\n"
-            f"🏢 {payload['sala']} ({payload['inicio']})"
-        )
-        c1, c2 = st.columns(2)
+            if c2.button("Cancelar", use_container_width=True, key="confirm_no_puesto"):
+                st.session_state.pop("confirm_delete", None)
+                st.rerun()
 
-        if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_sala"):
-            ok = delete_room_reservation_from_db(conn, payload["user_identifier"], payload["fecha"], payload["sala"], payload["inicio"])
-            st.session_state.pop("confirm_delete", None)
-            if ok:
-                st.success("Eliminada")
-                st.cache_data.clear()
-            else:
-                st.error("No se pudo eliminar")
-            st.rerun()
+        elif tipo == "sala":
+            st.markdown("### ¿Anular reserva de sala?")
+            st.markdown(
+                f"**📧** {payload['user_identifier']}  \n"
+                f"**📅** {payload['fecha']}  \n"
+                f"**🏢** {payload['sala']}  \n"
+                f"**🕒** {payload['inicio']}"
+            )
 
-        if c2.button("Cancelar", use_container_width=True, key="confirm_no_sala"):
-            st.session_state.pop("confirm_delete", None)
-            st.rerun()
+            c1, c2 = st.columns(2)
 
+            if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_sala"):
+                ok = delete_room_reservation_from_db(
+                    conn,
+                    payload["user_identifier"],
+                    payload["fecha"],
+                    payload["sala"],
+                    payload["inicio"]
+                )
+                st.session_state.pop("confirm_delete", None)
+                if ok:
+                    st.success("Eliminada")
+                    st.cache_data.clear()
+                else:
+                    st.error("No se pudo eliminar")
+                st.rerun()
+
+            if c2.button("Cancelar", use_container_width=True, key="confirm_no_sala"):
+                st.session_state.pop("confirm_delete", None)
+                st.rerun()
 
 # --- UTILS TOKENS ---
 def generate_token(): return uuid.uuid4().hex[:8].upper()
@@ -3070,6 +3083,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
