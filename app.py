@@ -1841,8 +1841,8 @@ elif menu == "Administrador":
                         } if best else None
 
                         st.success("✅ Distribución generada (con parámetros + variantes).")
-                    except Exception as e:
-                        st.error(f"❌ Error procesando el Excel: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error procesando el Excel: {e}")
         # -----------------------------------------------------------
         # ZONA DE RESULTADOS
         # -----------------------------------------------------------
@@ -2953,6 +2953,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
