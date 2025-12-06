@@ -1135,6 +1135,26 @@ if "db_initialized" not in st.session_state:
     st.session_state["db_initialized"] = True
 
 apply_appearance_styles(conn)
+st.markdown("""
+<style>
+/* 1) Usa todo el ancho de la pantalla */
+section.main > div {
+  max-width: 100% !important;
+  padding-left: 2rem !important;
+  padding-right: 2rem !important;
+}
+
+/* 2) Evita que quede “apretado” por layouts raros */
+.block-container {
+  max-width: 100% !important;
+}
+
+/* 3) Tamaño de letra un poquito más grande (opcional) */
+html, body, [class*="css"] {
+  font-size: 16px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Obtener settings actualizados en cada carga (permitir que logo y estilos cambien al instante)
 settings = get_all_settings(conn)
@@ -2978,6 +2998,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
