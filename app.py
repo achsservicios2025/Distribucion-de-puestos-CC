@@ -1402,19 +1402,18 @@ elif menu == "Reservas":
             if dn == "FinDeSemana":
                 st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
             else:
-                # CORREGIDO: Siempre hay máximo 2 cupos libres por piso/día (según requerimiento)
-                total_cupos = 2  # Máximo 2 cupos libres por día según requerimiento
-                
-                # Calcular ocupados
-                all_res = list_reservations_df(conn)
-                ocupados = 0
-                if not all_res.empty:
-                    mask = (all_res["reservation_date"].astype(str) == str(fe)) & \
-                        (all_res["piso"].astype(str) == str(pi)) & \
-                        (all_res["team_area"].astype(str) == "Cupos libres")
+                sub_libres = df[
+                    (df["piso"].astype(str) == str(pi)) &
+                    (df["dia"].astype(str) == str(dn)) &
+                    (df["equipo"].astype(str).str.strip().str.lower() == "cupos libres")
+                ]
+
+                if sub_libres.empty:
+                    total_cupos = 0
+                else:
+                    total_cupos = int(pd.to_numeric(sub_libres["cupos"], errors="coerce").fillna(0).sum())
                     ocupados = len(all_res[mask])
                 
-                # Disponibles = máximo 2, menos los ocupados
                 disponibles = max(0, total_cupos - ocupados)
                 
                 if disponibles > 0:
@@ -2203,7 +2202,7 @@ elif menu == "Administrador":
 
             existing = zones_for_floor(zonas_all, piso_sel)
 
-            pil_img = PILImage.open(plano_path).convert("RGB")
+            pil_img = Image.open(plano_path).convert("RGB")
             img_w, img_h = pil_img.size
 
             target_w = 1400
@@ -2886,6 +2885,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
