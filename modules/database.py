@@ -344,7 +344,7 @@ def user_has_reservation(conn, email, date_str):
         return False
 
 
-def delete_reservation_from_db(conn, user_name, date_str, team_area):
+def delete_reservation_from_db(conn, user_mail, date_str, team_area):
     ws = get_worksheet(conn, "reservations")
     if ws is None:
         return False
@@ -352,7 +352,7 @@ def delete_reservation_from_db(conn, user_name, date_str, team_area):
         vals = ws.get_all_values()
         for i in range(len(vals) - 1, 0, -1):
             r = vals[i]
-            if len(r) >= 5 and r[0] == str(user_name) and r[3] == str(date_str) and r[4] == str(team_area):
+            if len(r) >= 5 and r[0] == str(user_mail) and r[3] == str(date_str) and r[4] == str(team_area):
                 ws.delete_rows(i + 1)
                 list_reservations_df.clear()
                 return True
@@ -585,6 +585,7 @@ def delete_distribution_rows_by_indices(conn, indices):
 
     except Exception:
         return False
+
 
 
 
