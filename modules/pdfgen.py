@@ -1,341 +1,414 @@
 # pdfgen.py
 from fpdf import FPDF
 from pathlib import Path
-from datetime import datetime
-import math
+import matplotlib.pyplot as plt
 import pandas as pd
+import tempfile
+import os
+from datetime import datetime
 
 STATIC_DIR = Path("static")
 
 
-# --------------------------
-# Helpers de formateo
-# --------------------------
-def _safe_float(x, default=0.0) -> float:
-    try:
-        if x is None or (isinstance(x, float) and math.isnan(x)):
-            return default
-        return float(x)
-    except Exception:
-        return default
+def _tmp_png_path(filename: str) -> Path:
+    return Path(tempfile.gettempdir()) / filename
 
 
-def _safe_int(x, default=0) -> int:
-    try:
-        if x is None or (isinstance(x, float) and math.isnan(x)):
-            return default
-        return int(float(x))
-    except Exception:
-        return default
+def _save_barh(series_or_df, filename: str, title: str = "") -> Path:
+    """
+    Guarda un gráfico horizontal. Acepta:
+      - Series: barh simple
+      - DataFrame: stacked barh
+    """
+    plt.figure(figsize=(8, 4))
+    ax = None
+    if isinstance(series_or_df, pd.Series):
+        ax = series_or_df.plot(kind="barh")
+    else:
+        ax = series_or_df.plot(kind="barh", stacked=True)
+
+    if title:
+        ax.set_title(title)
+    plt.tight_layout()
+    tmp = _tmp_png_path(filename)
+    plt.savefig(tmp)
+    plt.close()
+    return tmp
 
 
 def _fmt_pct(x, decimals=1) -> str:
-    v = _safe_float(x, 0.0)
-    fmt = f"{{:.{decimals}f}}%"
-    return fmt.format(v)
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    try:
+        return f"{float(x):.{decimals}f}%"
+    except Exception:
+        return ""
 
 
-def _fmt_date(dt: datetime) -> str:
-    # formato “bonito” para Chile / español
-    return dt.strftime("%d-%m-%Y %H:%M")
+def _fmt_num(x) -> str:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    try:
+        if float(x).is_integer():
+            return str(int(float(x)))
+        return str(x)
+    except Exception:
+        return str(x)
 
 
-# --------------------------
-# PDF class con Header/Footer
-# --------------------------
 class ReportPDF(FPDF):
-    def __init__(self, emitted_at: datetime, logo_path: Path | None = None):
+    def __init__(self, issued_at_str: str, logo_path: Path | None = None):
         super().__init__()
-        self.emitted_at = emitted_at
+        self.issued_at_str = issued_at_str
         self.logo_path = logo_path
-        self.set_auto_page_break(auto=True, margin=15)
 
     def header(self):
-        # Logo arriba-izquierda
+        # Logo (izquierda)
         if self.logo_path and self.logo_path.exists():
             try:
-                self.image(str(self.logo_path), x=10, y=8, w=18)
+                self.image(str(self.logo_path), x=10, y=8, w=22)
             except Exception:
                 pass
 
-        # Fecha emisión arriba-derecha
+        # Fecha emisión (derecha, estilo encabezado)
         self.set_font("Arial", "", 9)
-        self.set_xy(0, 10)
-        self.cell(0, 5, f"Fecha de emisión: {_fmt_date(self.emitted_at)}", border=0, ln=0, align="R")
-        self.ln(12)
+        self.set_xy(10, 10)
+        self.cell(0, 6, f"Emisión: {self.issued_at_str}", ln=0, align="R")
+
+        # Separador
+        self.ln(16)
+        self.set_draw_color(210, 210, 210)
+        self.line(10, 26, 200, 26)
+        self.ln(6)
 
     def footer(self):
-        # Página “X de Y” centrado abajo
+        # Número de página "X de N"
         self.set_y(-12)
+        self.set_draw_color(230, 230, 230)
+        self.line(10, self.get_y(), 200, self.get_y())
+        self.ln(2)
         self.set_font("Arial", "", 9)
-        self.cell(0, 8, f"{self.page_no()} de {{nb}}", 0, 0, "C")
+        page = self.page_no()
+        total = getattr(self, "alias_nb_pages_value", None)
+        if total is None:
+            self.cell(0, 8, f"{page}", align="C")
+        else:
+            self.cell(0, 8, f"{page} de {total}", align="C")
 
 
-# --------------------------
-# Tablas genéricas
-# --------------------------
-def _render_table(pdf: FPDF, df: pd.DataFrame, headers: list[str], widths: list[int], aligns: list[str],
-                  row_h: int = 6, header_h: int = 7, font_size: int = 9):
-    pdf.set_font("Arial", "B", font_size)
+def _add_section_title(pdf: FPDF, title: str, subtitle: str | None = None):
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, title, ln=True)
+    if subtitle:
+        pdf.set_font("Arial", "", 10)
+        pdf.multi_cell(0, 5, subtitle)
+    pdf.ln(2)
+
+
+def _add_glossary_box(pdf: FPDF, lines: list[str]):
+    """
+    Caja tipo glosario al final de la página (sin mencionar cupos libres).
+    """
+    pdf.ln(4)
+    x = pdf.get_x()
+    y = pdf.get_y()
+    w = 190
+
+    pdf.set_fill_color(248, 248, 248)
+    pdf.set_draw_color(220, 220, 220)
+    pdf.rect(x, y, w, 28, style="DF")
+
+    pdf.set_xy(x + 3, y + 2)
+    pdf.set_font("Arial", "B", 9)
+    pdf.cell(0, 5, "Glosario", ln=True)
+
+    pdf.set_font("Arial", "", 8.5)
+    for ln in lines:
+        pdf.multi_cell(w - 6, 4.2, f"• {ln}")
+
+    # dejar cursor debajo
+    pdf.set_xy(x, y + 30)
+
+
+def _table(pdf: FPDF, headers: list[str], rows: list[list[str]], widths: list[int], aligns=None):
+    aligns = aligns or ["L"] * len(headers)
+
+    pdf.set_font("Arial", "B", 9)
     for i, h in enumerate(headers):
-        pdf.cell(widths[i], header_h, h, 1, 0, "C")
+        pdf.cell(widths[i], 7, h, 1, 0, "C")
     pdf.ln()
 
-    pdf.set_font("Arial", "", font_size)
-
-    for _, r in df.iterrows():
-        # salto de página si queda poco espacio
-        if pdf.get_y() > (pdf.h - pdf.b_margin - 20):
-            pdf.add_page()
-            pdf.set_font("Arial", "B", font_size)
-            for i, h in enumerate(headers):
-                pdf.cell(widths[i], header_h, h, 1, 0, "C")
-            pdf.ln()
-            pdf.set_font("Arial", "", font_size)
-
-        for i, col in enumerate(headers):
-            val = r.get(col, "")
-            s = "" if val is None else str(val)
-            # truncar texto largo
-            if i == 1 and len(s) > 45:  # equipo
-                s = s[:45] + "…"
-            pdf.cell(widths[i], row_h, s, 1, 0, aligns[i])
+    pdf.set_font("Arial", "", 8.8)
+    for r in rows:
+        for i, cell in enumerate(r):
+            pdf.cell(widths[i], 6, cell, 1, 0, aligns[i])
         pdf.ln()
 
 
-def _render_glossary(pdf: FPDF, title: str, lines: list[str]):
-    pdf.ln(4)
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(0, 6, title, ln=True)
-    pdf.set_font("Arial", "", 9)
-    for line in lines:
-        pdf.multi_cell(0, 5, f"• {line}")
-    pdf.ln(1)
-
-
-# --------------------------
-# Core: generar informe
-# --------------------------
 def generate_pdf_from_df(
-    df_daily: pd.DataFrame,
-    deficit_report: pd.DataFrame | list[dict] | None = None,
+    df: pd.DataFrame,
+    deficit_report: list[dict] | None = None,
     out_path: str = "distribucion_final.pdf",
     logo_path: Path = STATIC_DIR / "logo.png",
-    titulo: str = "Distribución de puestos Casa Central",
+    issued_at: datetime | None = None,
 ):
     """
-    Espera que df_daily venga desde Seats (rows) y contenga al menos:
-      - piso, equipo, dia, cupos
-      - "% uso diario" (por fila)  -> NUEVO en seats
-      - "% uso semanal" (por fila o repetido por equipo) -> NUEVO en seats
-      - dotacion (idealmente; si no, se calcula resumen sin dotación)
-    Además:
-      - "Cupos libres" puede existir en df_daily pero NO se muestra en el PDF.
-    deficit_report:
-      - lista de dicts o DataFrame desde Seats (deficit_report)
-      - debe incluir: piso,equipo,dia,dotacion,asignado,deficit (sin “causa” en tabla)
+    Genera un informe SIN planos.
+
+    Páginas (pueden crecer según cantidad de filas):
+      1) Portada
+      2) Distribución diaria (tabla) + glosario (% uso diario + método Sainte-Laguë)
+      3) Resumen semanal por equipo (tabla) + glosario (% uso semanal)
+      4) (Opcional) Tablas de déficit (si hay registros) + glosario
+
+    Reglas:
+      - NO mostrar filas con equipo == "Cupos libres".
+      - La tabla diaria usa "% uso diario".
+      - El resumen semanal usa "% uso semanal" y dotación.
+      - El déficit no muestra "causa".
+      - Encabezado con fecha emisión + paginado "X de N".
     """
-    emitted_at = datetime.now()
-    pdf = ReportPDF(emitted_at=emitted_at, logo_path=logo_path)
+    issued_at = issued_at or datetime.now()
+    issued_at_str = issued_at.strftime("%Y-%m-%d %H:%M")
+
+    pdf = ReportPDF(issued_at_str=issued_at_str, logo_path=logo_path)
     pdf.alias_nb_pages()
+    pdf.alias_nb_pages_value = "{nb}"
+    pdf.set_auto_page_break(auto=True, margin=16)
 
-    df = df_daily.copy() if df_daily is not None else pd.DataFrame()
-
-    if df.empty:
-        # PDF mínimo de error
+    if df is None or df.empty:
         pdf.add_page()
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, titulo, ln=True, align="C")
-        pdf.ln(8)
+        _add_section_title(pdf, "Distribución de puestos Casa Central")
         pdf.set_font("Arial", "", 10)
         pdf.multi_cell(0, 6, "No hay datos para generar el informe.")
         pdf.output(out_path)
         return out_path
 
+    df = df.copy()
+
+    # Filtrar Cupos libres para el PDF (pero siguen existiendo en data)
+    df = df[df["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
+
     # Normalizar columnas esperadas
-    for c in ["piso", "equipo", "dia", "cupos"]:
-        if c not in df.columns:
-            raise ValueError(f"Falta columna requerida en df_daily: '{c}'")
+    # (si falta alguna, no explotamos: usamos vacío)
+    for col in ["piso", "equipo", "dia", "cupos", "dotacion", "% uso diario", "% uso semanal"]:
+        if col not in df.columns:
+            df[col] = None
 
-    # Filtrar cupos libres para todo lo visible en PDF
-    df_vis = df[df["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
+    # Asegurar tipos para orden
+    df["piso"] = df["piso"].astype(str)
+    df["equipo"] = df["equipo"].astype(str)
+    df["dia"] = df["dia"].astype(str)
 
-    # --------------------------
+    # Orden fijo de días
+    day_order = {"Lunes": 1, "Martes": 2, "Miércoles": 3, "Jueves": 4, "Viernes": 5}
+    df["_day_order"] = df["dia"].map(day_order).fillna(99).astype(int)
+
+    # -------------------------
     # Portada
-    # --------------------------
+    # -------------------------
     pdf.add_page()
+    pdf.set_font("Arial", "B", 18)
+    pdf.ln(10)
+    pdf.cell(0, 10, "Distribución de puestos", ln=True, align="C")
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(0, 8, "Casa Central", ln=True, align="C")
     pdf.ln(8)
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, titulo, ln=True, align="C")
-    pdf.ln(4)
+
     pdf.set_font("Arial", "", 10)
+    pisos = ", ".join(sorted(df["piso"].unique()))
     pdf.multi_cell(
-        0, 6,
-        "Informe de distribución de cupos diarios (Lunes a Viernes) y resumen semanal por equipo."
+        0,
+        6,
+        f"Informe de asignación diaria de cupos por equipo y piso.\n"
+        f"Pisos incluidos: {pisos}",
+        align="C",
     )
 
-    # --------------------------
-    # Hoja: Distribución diaria (tabla)
-    # --------------------------
+    # -------------------------
+    # Página: Distribución diaria
+    # -------------------------
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "Distribución diaria (detalle)", ln=True)
-    pdf.ln(1)
+    _add_section_title(pdf, "Distribución diaria (detalle)")
 
-    # columnas esperadas para esta tabla
-    # % uso diario viene desde seats; si faltara, lo ponemos vacío.
-    if "% uso diario" not in df_vis.columns:
-        df_vis["% uso diario"] = None
+    df_daily = df.sort_values(["piso", "_day_order", "equipo"]).copy()
 
-    daily_table = df_vis[["piso", "equipo", "dia", "cupos", "% uso diario"]].copy()
-    daily_table = daily_table.sort_values(by=["piso", "dia", "equipo"], ascending=[True, True, True])
+    headers = ["Piso", "Equipo", "Día", "Cupos", "% Uso diario"]
+    widths = [18, 84, 22, 18, 22]
 
-    daily_table["cupos"] = daily_table["cupos"].apply(_safe_int)
-    daily_table["% uso diario"] = daily_table["% uso diario"].apply(lambda x: _fmt_pct(x, 1))
+    rows_out: list[list[str]] = []
+    for _, r in df_daily.iterrows():
+        rows_out.append([
+            str(r["piso"]),
+            str(r["equipo"])[:55],
+            str(r["dia"]),
+            _fmt_num(r["cupos"]),
+            _fmt_pct(r["% uso diario"], decimals=2),
+        ])
 
-    headers = ["piso", "equipo", "dia", "cupos", "% uso diario"]
-    display_headers = ["Piso", "Equipo", "Día", "Cupos", "% uso diario"]
-    widths = [18, 92, 25, 18, 27]
-    aligns = ["C", "L", "C", "C", "C"]
+        # paginar si se llena mucho
+        if pdf.get_y() > 260:
+            _table(pdf, headers, rows_out, widths, aligns=["C", "L", "C", "R", "R"])
+            rows_out = []
+            pdf.add_page()
+            _add_section_title(pdf, "Distribución diaria (continuación)")
 
-    # Mapear nombres display -> columnas reales
-    daily_table_disp = daily_table.rename(columns={
-        "piso": "Piso",
-        "equipo": "Equipo",
-        "dia": "Día",
-        "cupos": "Cupos",
-        "% uso diario": "% uso diario",
-    })
+    if rows_out:
+        _table(pdf, headers, rows_out, widths, aligns=["C", "L", "C", "R", "R"])
 
-    _render_table(pdf, daily_table_disp, display_headers, widths, aligns, font_size=9)
-
-    _render_glossary(pdf, "Glosario (Distribución diaria)", [
-        "Capacidad usable por día: Capacidad_usable = Capacidad_total - Reserva.",
-        "Restricciones (si aplican): día completo y mínimos se consideran 'hard' y se asignan antes del remanente.",
-        "Remanente: se distribuye proporcionalmente usando el método Sainte-Laguë.",
-        "Sainte-Laguë asigna cupos uno a uno según el mayor cociente: w / (2a + 1), donde w es la demanda restante del equipo y a es lo ya asignado.",
-        "% uso diario = (cupos_equipo_día / total_cupos_asignados_del_piso_ese_día) × 100.",
+    _add_glossary_box(pdf, [
+        "Capacidad usable diaria (100%): Capacidad total del piso − Reserva diaria.",
+        "% Uso diario = (Cupos asignados al equipo en el día / Capacidad usable diaria) × 100.",
+        "La asignación se realiza con restricciones hard (día completo y mínimos, si aplican) y reparto proporcional con el método Sainte-Laguë sobre la demanda restante.",
+        "Sainte-Laguë asigna cupos uno a uno, maximizando w/(2a+1), donde w es demanda restante y a es cupos ya asignados al equipo.",
     ])
 
-    # --------------------------
-    # Hoja: Resumen semanal por equipo (tabla)
-    # --------------------------
+    # -------------------------
+    # Página: Resumen semanal por equipo (tabla)
+    # -------------------------
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "Resumen semanal por equipo", ln=True)
-    pdf.ln(1)
+    _add_section_title(pdf, "Resumen semanal por equipo")
 
-    # % uso semanal idealmente viene desde seats (repetido por fila o por equipo)
-    if "% uso semanal" not in df_vis.columns:
-        df_vis["% uso semanal"] = None
+    # Tomamos % uso semanal desde la data (viene repetido por fila equipo)
+    # Construimos una tabla agregada por (piso,equipo).
+    df_week = df.copy()
+    df_week["cupos"] = pd.to_numeric(df_week["cupos"], errors="coerce").fillna(0).astype(int)
+    df_week["dotacion"] = pd.to_numeric(df_week["dotacion"], errors="coerce").fillna(0).astype(int)
+    df_week["% uso semanal"] = pd.to_numeric(df_week["% uso semanal"], errors="coerce")
 
-    # dotacion idealmente viene desde seats. Si no, dejamos vacío pero mantenemos tabla.
-    if "dotacion" not in df_vis.columns:
-        df_vis["dotacion"] = None
-
-    # calcular cupos semana por equipo (L-V)
-    week = df_vis.groupby("equipo", as_index=False)["cupos"].sum().rename(columns={"cupos": "Cupos semana"})
-    week["Prom. cupos/día"] = week["Cupos semana"].apply(_safe_int) / 5.0
-
-    # dotación por equipo (primero no nulo)
-    dot = (
-        df_vis.groupby("equipo")["dotacion"]
-        .apply(lambda s: next((v for v in s.tolist() if pd.notna(v)), None))
-        .reset_index()
-        .rename(columns={"dotacion": "Dotación"})
+    # Agregados:
+    # - cupos semana total
+    # - cupos promedio diario = cupos_semana/5
+    # - dotación (tomamos max por seguridad)
+    # - % uso semanal (tomamos max/mean; deben ser iguales por equipo)
+    agg = (
+        df_week.groupby(["piso", "equipo"], as_index=False)
+        .agg({
+            "cupos": "sum",
+            "dotacion": "max",
+            "% uso semanal": "max",
+        })
     )
+    agg["cupos_promedio_diario"] = (agg["cupos"] / 5.0).round(2)
 
-    # % uso semanal por equipo (primero no nulo)
-    uso_sem = (
-        df_vis.groupby("equipo")["% uso semanal"]
-        .apply(lambda s: next((v for v in s.tolist() if pd.notna(v)), None))
-        .reset_index()
-        .rename(columns={"% uso semanal": "% uso semanal"})
-    )
+    agg = agg.sort_values(["piso", "equipo"])
 
-    week = week.merge(dot, on="equipo", how="left").merge(uso_sem, on="equipo", how="left")
-    week = week.rename(columns={"equipo": "Equipo"})
-    week["Dotación"] = week["Dotación"].apply(lambda x: "" if pd.isna(x) else str(_safe_int(x)))
-    week["Cupos semana"] = week["Cupos semana"].apply(_safe_int)
-    week["Prom. cupos/día"] = week["Prom. cupos/día"].apply(lambda x: f"{_safe_float(x):.2f}")
-    week["% uso semanal"] = week["% uso semanal"].apply(lambda x: _fmt_pct(x, 2))
-    week = week.sort_values(by=["Equipo"], ascending=True)
+    headers2 = ["Piso", "Equipo", "Dotación", "Cupos/sem", "Prom/día", "% Uso semanal"]
+    widths2 = [18, 72, 20, 20, 20, 25]
 
-    headers2 = ["Equipo", "Dotación", "Cupos semana", "Prom. cupos/día", "% uso semanal"]
-    widths2 = [85, 20, 25, 30, 30]
-    aligns2 = ["L", "C", "C", "C", "C"]
+    rows2: list[list[str]] = []
+    for _, r in agg.iterrows():
+        rows2.append([
+            str(r["piso"]),
+            str(r["equipo"])[:45],
+            _fmt_num(r["dotacion"]),
+            _fmt_num(r["cupos"]),
+            f'{float(r["cupos_promedio_diario"]):.2f}',
+            _fmt_pct(r["% uso semanal"], decimals=2),
+        ])
 
-    _render_table(pdf, week[headers2], headers2, widths2, aligns2, font_size=9)
+        if pdf.get_y() > 260:
+            _table(pdf, headers2, rows2, widths2, aligns=["C", "L", "R", "R", "R", "R"])
+            rows2 = []
+            pdf.add_page()
+            _add_section_title(pdf, "Resumen semanal por equipo (continuación)")
 
-    _render_glossary(pdf, "Glosario (Uso semanal)", [
-        "Cupos semana = suma de cupos asignados (Lunes a Viernes).",
-        "Prom. cupos/día = cupos_semana / 5.",
-        "% uso semanal = (cupos_semana / (dotación_equipo × 5)) × 100.",
-        "La reserva (Cupos libres) no se incluye en los cálculos de % uso.",
+    if rows2:
+        _table(pdf, headers2, rows2, widths2, aligns=["C", "L", "R", "R", "R", "R"])
+
+    _add_glossary_box(pdf, [
+        "% Uso semanal = (Cupos totales asignados al equipo en la semana / (Dotación del equipo × 5)) × 100.",
+        "La semana considera lunes a viernes (5 días).",
     ])
 
-    # --------------------------
-    # Hoja: Déficit (si existe)
-    # --------------------------
-    deficit_df = None
-    if deficit_report is not None:
-        if isinstance(deficit_report, list):
-            deficit_df = pd.DataFrame(deficit_report)
-        elif isinstance(deficit_report, pd.DataFrame):
-            deficit_df = deficit_report.copy()
+    # -------------------------
+    # Página: gráficos de % uso semanal (opcional pero útil)
+    # -------------------------
+    pdf.add_page()
+    _add_section_title(pdf, "Uso semanal (%), vista gráfica")
 
-    if deficit_df is not None and not deficit_df.empty:
-        # Asegurar columnas esperadas (sin causa)
-        needed = ["piso", "equipo", "dia", "dotacion", "asignado", "deficit"]
-        for c in needed:
-            if c not in deficit_df.columns:
-                # si falta algo crítico, igual mostramos lo que hay
-                pass
+    # Gráfico 1: % uso semanal promedio por equipo (global)
+    team_usage = agg.groupby("equipo")["% uso semanal"].mean().sort_values(ascending=True)
+    plot1 = _save_barh(team_usage, "plot_weekly_usage.png", title="% Uso semanal promedio por equipo")
+    try:
+        pdf.image(str(plot1), x=14, w=182)
+    finally:
+        try:
+            os.remove(plot1)
+        except Exception:
+            pass
 
-        # Filtrar cupos libres por si acaso
-        if "equipo" in deficit_df.columns:
-            deficit_df = deficit_df[deficit_df["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
+    pdf.ln(2)
 
-        # Ordenar y formatear
-        col_map = {
-            "piso": "Piso",
-            "equipo": "Equipo",
-            "dia": "Día",
-            "dotacion": "Dotación",
-            "asignado": "Asignado",
-            "deficit": "Déficit",
-        }
-        for k, v in col_map.items():
-            if k in deficit_df.columns and v not in deficit_df.columns:
-                deficit_df[v] = deficit_df[k]
+    # Gráfico 2: cupos por día (stacked) por equipo (global)
+    df_weekday = (
+        df.groupby(["equipo", "dia"])["cupos"]
+        .sum()
+        .unstack(fill_value=0)
+        .reindex(columns=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"], fill_value=0)
+    )
+    plot2 = _save_barh(df_weekday, "plot_weekly_balance.png", title="Cupos por día (suma semanal por equipo)")
+    try:
+        pdf.image(str(plot2), x=14, y=140, w=182)
+    finally:
+        try:
+            os.remove(plot2)
+        except Exception:
+            pass
 
-        show_cols = ["Piso", "Equipo", "Día", "Dotación", "Asignado", "Déficit"]
-        for c in show_cols:
-            if c not in deficit_df.columns:
-                deficit_df[c] = ""
+    _add_glossary_box(pdf, [
+        "Los gráficos usan los mismos campos calculados por Seats (sin recalcular): cupos diarios y % uso semanal.",
+        "% Uso semanal depende de dotación y cupos asignados acumulados en la semana.",
+    ])
 
-        deficit_df["Piso"] = deficit_df["Piso"].astype(str)
-        deficit_df["Equipo"] = deficit_df["Equipo"].astype(str)
-        deficit_df["Día"] = deficit_df["Día"].astype(str)
-        deficit_df["Dotación"] = deficit_df["Dotación"].apply(_safe_int)
-        deficit_df["Asignado"] = deficit_df["Asignado"].apply(_safe_int)
-        deficit_df["Déficit"] = deficit_df["Déficit"].apply(_safe_int)
-
-        deficit_df = deficit_df.sort_values(by=["Piso", "Día", "Equipo"], ascending=[True, True, True])
-
+    # -------------------------
+    # Página: déficit (si existe)
+    # -------------------------
+    deficit_report = deficit_report or []
+    if len(deficit_report) > 0:
         pdf.add_page()
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 8, "Reporte de déficit (detalle)", ln=True)
-        pdf.ln(1)
+        _add_section_title(pdf, "Reporte de déficit (por día)")
 
-        widths3 = [16, 86, 20, 20, 20, 18]
-        aligns3 = ["C", "L", "C", "C", "C", "C"]
-        _render_table(pdf, deficit_df[show_cols], show_cols, widths3, aligns3, font_size=9)
+        dfd = pd.DataFrame(deficit_report).copy()
+        for col in ["piso", "equipo", "dia", "dotacion", "asignado", "deficit"]:
+            if col not in dfd.columns:
+                dfd[col] = None
 
-        _render_glossary(pdf, "Glosario (Déficit)", [
-            "Déficit = dotación - asignado (cuando asignado < dotación).",
-            "Se produce cuando la demanda del piso no cabe dentro de la capacidad usable diaria o por recortes derivados de restricciones hard.",
+        dfd["deficit"] = pd.to_numeric(dfd["deficit"], errors="coerce").fillna(0).astype(int)
+        dfd = dfd[dfd["deficit"] > 0].copy()
+
+        # Orden días
+        dfd["_day_order"] = dfd["dia"].map(day_order).fillna(99).astype(int)
+        dfd = dfd.sort_values(["piso", "_day_order", "equipo"])
+
+        headers3 = ["Piso", "Equipo", "Día", "Dotación", "Asignado", "Déficit"]
+        widths3 = [18, 72, 22, 20, 20, 18]
+
+        rows3: list[list[str]] = []
+        for _, r in dfd.iterrows():
+            rows3.append([
+                str(r["piso"]),
+                str(r["equipo"])[:45],
+                str(r["dia"]),
+                _fmt_num(r["dotacion"]),
+                _fmt_num(r["asignado"]),
+                _fmt_num(r["deficit"]),
+            ])
+
+            if pdf.get_y() > 260:
+                _table(pdf, headers3, rows3, widths3, aligns=["C", "L", "C", "R", "R", "R"])
+                rows3 = []
+                pdf.add_page()
+                _add_section_title(pdf, "Reporte de déficit (continuación)")
+
+        if rows3:
+            _table(pdf, headers3, rows3, widths3, aligns=["C", "L", "C", "R", "R", "R"])
+
+        _add_glossary_box(pdf, [
+            "Déficit = max(0, Dotación del equipo − Cupos asignados al equipo ese día).",
+            "Si existen restricciones hard (día completo/mínimos), pueden forzar asignaciones y/o generar déficit cuando la capacidad usable diaria no alcanza.",
         ])
 
     pdf.output(out_path)
     return out_path
+
