@@ -15,6 +15,7 @@ import base64
 from typing import Optional
 import numpy as np
 import random
+from modules.pdfgen import generate_pdf_from_df
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
@@ -1408,12 +1409,28 @@ elif menu == "Reservas":
                     (df["equipo"].astype(str).str.strip().str.lower() == "cupos libres")
                 ]
 
-                if sub_libres.empty:
-                    total_cupos = 0
+                total_cupos = int(pd.to_numeric(sub_libres["cupos"], errors="coerce").fillna(0).sum()) if not sub_libres.empty else 0
+
+                all_res = list_reservations_df(conn)
+                if all_res is None or all_res.empty:
+                    ocupados = 0
                 else:
-                    total_cupos = int(pd.to_numeric(sub_libres["cupos"], errors="coerce").fillna(0).sum())
-                    ocupados = len(all_res[mask])
-                
+                    # normaliza piso igual que en otras partes
+                    def _norm_piso_local(x):
+                        s = str(x).strip()
+                        if s.lower().startswith("piso piso"):
+                            s = s[5:].strip()
+                        if not s.lower().startswith("piso"):
+                            s = f"Piso {s}"
+                        return s
+
+                    mask = (
+                        all_res["reservation_date"].astype(str) == str(fe)
+                    ) & (
+                        all_res["piso"].astype(str).map(_norm_piso_local) == _norm_piso_local(pi)
+                    )
+                    ocupados = int(mask.sum())
+
                 disponibles = max(0, total_cupos - ocupados)
                 
                 if disponibles > 0:
@@ -1888,12 +1905,51 @@ elif menu == "Administrador":
             # 2) GUARDAR
             if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
                 try:
-                    rows = ensure_piso_label(st.session_state["proposal_rows"])
+                    rows = ensure_piso_label(st.session_state.get("proposal_rows", []))
+
+                    df_eq_s = st.session_state.get("excel_equipos", pd.DataFrame())
+                    dot_map = _dot_map_from_equipos(df_eq_s)
+
+                    def _to_int(x):
+                        try:
+                            return int(float(str(x).replace(",", ".")))
+                        except Exception:
+                            return 0
+
+                    for r in rows:
+                        eq = str(r.get("equipo", "")).strip()
+                        cup = _to_int(r.get("cupos", 0))
+                        dot = int(dot_map.get(eq, 0)) if eq.lower() != "cupos libres" else 0
+
+                        r["dotacion"] = dot
+
+                        if dot > 0 and eq.lower() != "cupos libres":
+                            r["% uso diario"] = round((cup / dot) * 100.0, 2)
+                        else:
+                            r["% uso diario"] = 0.0
+
+                        r.pop("pct", None)
+
+                    cupos_sem = {}
+                    for r in rows:
+                        eq = str(r.get("equipo", "")).strip()
+                        if eq.lower() == "cupos libres":
+                            continue
+                        cupos_sem[eq] = cupos_sem.get(eq, 0) + _to_int(r.get("cupos", 0))
+
+                    uso_sem = {}
+                    for eq, tot in cupos_sem.items():
+                        dot = int(dot_map.get(eq, 0))
+                        uso_sem[eq] = round((tot / (dot * 5.0) * 100.0), 2) if dot > 0 else 0.0
+
+                    for r in rows:
+                        eq = str(r.get("equipo", "")).strip()
+                        r["% uso semanal"] = 0.0 if eq.lower() == "cupos libres" else float(uso_sem.get(eq, 0.0))
 
                     clear_distribution(conn)
                     insert_distribution(conn, rows)
 
-                    st.success("Distribución guardada en BD.")
+                    st.success("Distribución guardada en BD (con dotación + % uso diario/semanal, sin pct).")
                     st.session_state["proposal_rows"] = rows
 
                     if st.session_state.get("proposal_deficit"):
@@ -2406,17 +2462,27 @@ elif menu == "Administrador":
                 st.session_state['rm'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
             else:
-                df = df_raw.rename(columns={"piso":"Piso","equipo":"Equipo","dia":"Día","cupos":"Cupos","pct":"%Distrib"})
-                df_eq_pdf = st.session_state.get("excel_equipos", pd.DataFrame())
+                issued_at = datetime.datetime.now()
 
-                st.session_state['rd'] = generate_full_pdf(
-                    df,
-                    df_eq_pdf,
-                    logo_path=Path(global_logo_path),
-                    deficit_data=d_data
+                tmp_pdf = Path("data") / "reporte_distribucion.pdf"
+
+                logo_for_pdf = Path("static/logo.png")
+                if isinstance(global_logo_path, str) and global_logo_path.strip():
+                    p = Path(global_logo_path)
+                    if p.exists():
+                        logo_for_pdf = p
+
+                generate_pdf_from_df(
+                    df=df_raw,
+                    deficit_report=d_data,
+                    out_path=str(tmp_pdf),
+                    logo_path=logo_for_pdf,
+                    issued_at=issued_at,
                 )
-                st.session_state['rn'] = "reporte_distribucion.pdf"
-                st.session_state['rm'] = "application/pdf"
+
+                st.session_state["rd"] = tmp_pdf.read_bytes()
+                st.session_state["rn"] = "reporte_distribucion.pdf"
+                st.session_state["rm"] = "application/pdf"
 
             st.success("✅ Reporte generado")
         if 'rd' in st.session_state: st.download_button("📥 Descargar Reporte de Distribución", st.session_state['rd'], st.session_state['rn'], mime=st.session_state['rm'], key="dl_dist_report")
@@ -2885,6 +2951,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
