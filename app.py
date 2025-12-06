@@ -584,6 +584,17 @@ def recompute_pct(rows):
     df["pct"] = df.apply(calc_pct, axis=1)
     return df.to_dict("records")
 
+def ensure_piso_label(rows):
+    """Convierte piso '1' -> 'Piso 1' para compatibilidad con el resto de la app."""
+    out = []
+    for r in rows or []:
+        rr = dict(r)
+        p = str(rr.get("piso", "")).strip()
+        if p and not p.lower().startswith("piso"):
+            rr["piso"] = f"Piso {p}"
+        out.append(rr)
+    return out
+
 def infer_team_dotacion_map(df):
     """Intenta inferir la dotación total por equipo usando la data disponible."""
     if df is None or df.empty:
@@ -1156,29 +1167,11 @@ if menu == "Vista pública":
             
             lib = (
                 df_view[df_view["equipo"] == "Cupos libres"]
-                .groupby(["piso","dia"], observed=False, as_index=False)["cupos"].sum()
+                .groupby(["piso", "dia"], observed=False, as_index=False)["cupos"].sum()
             )
             lib = apply_sorting_to_df(lib)
             st.dataframe(lib, hide_index=True, use_container_width=True)
-            todos_pisos = df_view["piso"].unique()
-            todos_dias = df_view["dia"].unique()
             
-            for piso in todos_pisos:
-                for dia in todos_dias:
-                    if dia == "FinDeSemana":
-                        continue
-                    mask = (lib["piso"] == piso) & (lib["dia"] == dia)
-                    if not mask.any():
-                        lib = pd.concat([lib, pd.DataFrame([{"piso": piso, "dia": dia, "cupos": 2}])], ignore_index=True)
-                    else:
-                        lib.loc[mask, "cupos"] = 2
-
-            lib = apply_sorting_to_df(lib)
-            
-            st.subheader("Distribución completa")
-            # MODIFICADO: Fix use_container_width
-            st.dataframe(df_view, hide_index=True, use_container_width=True)
-        
         with t3:
             # ==========================
             # A) RESERVAS DE SALAS (con filtro por piso)
@@ -1896,11 +1889,13 @@ elif menu == "Administrador":
             # 2) GUARDAR
             if c_save.button("💾 Guardar", type="primary", key="btn_save_v3"):
                 try:
-                    rows_fixed = recompute_pct(st.session_state["proposal_rows"])
-                    st.session_state["proposal_rows"] = rows_fixed
+                    rows = ensure_piso_label(st.session_state["proposal_rows"])
 
                     clear_distribution(conn)
-                    insert_distribution(conn, rows_fixed)
+                    insert_distribution(conn, rows)
+
+                    st.success("Distribución guardada en BD.")
+                    st.session_state["proposal_rows"] = rows
 
                     if st.session_state.get("proposal_deficit"):
                         st.session_state["deficit_report"] = st.session_state["proposal_deficit"]
@@ -1911,7 +1906,6 @@ elif menu == "Administrador":
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
 
-            # Mostrar meta de la última equilibrada (si existe)
             meta = st.session_state.get("last_balance_meta")
             if meta:
                 st.caption(
@@ -1924,19 +1918,17 @@ elif menu == "Administrador":
             with t_view:
                 df_preview = pd.DataFrame(st.session_state.get("proposal_rows", []))
 
-                # Mapa Equipo -> Personas desde hoja "Equipos"
-                dot_map = _dot_map_from_equipos(df_eq_s)  # ya la tienes definida arriba
-
+                dot_map = _dot_map_from_equipos(df_eq_s)
+                
                 if not df_preview.empty:
-                    # normalizar columnas esperadas
                     for c in ["piso", "dia", "equipo", "cupos"]:
                         if c not in df_preview.columns:
                             df_preview[c] = ""
 
-                    # ✅ NO mostrar/usar "Cupos libres" en el generador (tabla admin)
-                    df_preview = df_preview[df_preview["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
+                    df_preview["_is_libre"] = df_preview["equipo"].astype(str).str.strip().str.lower().eq("cupos libres")
+                    df_preview = df_preview.sort_values(["piso", "dia", "_is_libre", "equipo"], ascending=[True, True, True, True])
+                    df_preview = df_preview.drop(columns=["_is_libre"], errors="ignore")
 
-                    # ✅ % Uso diario = (Cupos / Personas) * 100
                     def _pct_uso(row):
                         equipo = str(row.get("equipo", "")).strip()
                         cupos = row.get("cupos", 0)
@@ -2894,6 +2886,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
