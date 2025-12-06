@@ -16,7 +16,6 @@ from typing import Optional
 import numpy as np
 import random
 from modules.pdfgen import generate_pdf_from_df
-from modules.database import delete_reservation_by_row, delete_room_reservation_by_row
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
@@ -1727,7 +1726,6 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     elif opcion_reserva == "📋 Mis Reservas y Listados":
 
-        # --- SECCION 1: BUSCADOR PARA ANULAR ---
         st.subheader("Buscar y Cancelar mis reservas")
         q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
 
@@ -1787,6 +1785,8 @@ elif menu == "Reservas":
             if mp.empty and ms.empty:
                 st.warning("No encontré reservas con esos datos.")
             else:
+                render_confirm_delete_dialog(conn)
+
                 if not mp.empty:
                     st.markdown("#### 🪑 Tus Puestos")
                     for idx, r in mp.iterrows():
@@ -1797,12 +1797,11 @@ elif menu == "Reservas":
                             piso = str(r.get("piso", "")).strip()
                             area = str(r.get("team_area", "")).strip()
                             email = str(r.get("user_email", "")).strip().lower()
-    
+
                             c1.markdown(f"**{fecha}** | {piso} (Cupo Libre)")
 
                             if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                confirm_delete_dialog(conn, email, fecha, area, piso)
-                                st.stop() 
+                                open_confirm_delete_puesto(conn, email, fecha, area, piso)
 
                 if not ms.empty:
                     st.markdown("#### 🏢 Tus Salas")
@@ -1819,18 +1818,17 @@ elif menu == "Reservas":
                             c1.markdown(f"**{fecha}** | {sala} | {inicio} - {fin}")
 
                             if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                confirm_delete_room_dialog(conn, email, fecha, sala, inicio)
-                                st.stop()
+                                open_confirm_delete_sala(conn, email, fecha, sala, inicio)
 
         st.markdown("---")
-    
+
         # --- SECCION 2 ---
         with st.expander("Ver Listado General de Reservas", expanded=True):
             st.subheader("Reserva de puestos")
             st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
-    
+
             st.markdown("<br>", unsafe_allow_html=True)
-    
+
             st.subheader("Reserva de salas")
             st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
     
@@ -3072,6 +3070,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
