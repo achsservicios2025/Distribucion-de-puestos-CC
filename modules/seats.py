@@ -80,7 +80,6 @@ def parse_full_day_rule(text: Any) -> Dict[str, Any]:
             for k, v in mapa.items():
                 if k in norm:
                     days.append(v)
-        # dedup preserve order
         out, seen = [], set()
         for d in days:
             if d not in seen:
@@ -88,7 +87,6 @@ def parse_full_day_rule(text: Any) -> Dict[str, Any]:
                 out.append(d)
         return {"type": "choice", "days": out}
 
-    # fixed por comas (o un día solo)
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     days = []
     for p in (parts if parts else [raw]):
@@ -183,7 +181,6 @@ def choose_flexible_day(
     if mode == "equilibrar":
         return min(opts, key=lambda d: (load_by_day[d], rng.random()))
 
-    # default holgura
     return max(opts, key=lambda d: ((hard_limit - (load_by_day[d] + per)), rng.random()))
 
 
@@ -200,37 +197,25 @@ def compute_distribution_from_excel(
     variant_mode: str = "holgura",
 ):
     """
-    Reglas exigidas:
-
-    - ignore_params=True:
-        * NO Día completo
-        * NO mínimos
-        * Solo Sainte-Laguë + reserva
-
-    - ignore_params=False:
-        * Día completo (fixed por comas, choice por "o" con variantes)
-        * mínimos hard
-        * remanente Sainte-Laguë
-
-    Además:
-      - 'Cupos libres' se generan igual (reserva diaria), pero:
-          * NO se consideran para % de uso diario
-          * NO se consideran para % de uso semanal
-      - Se agregan 2 columnas calculadas por Seats (para que PDF/UI solo lean):
-          * "% uso diario"  = cupos_equipo_dia / (capacidad_usable_dia) * 100
-              donde capacidad_usable_dia = cap_total_real - reserva
+    Además (para PDF/UI):
+      - Se mantienen "Cupos libres" (reserva diaria), pero NO se usan para % uso diario/semanal.
+      - Se agregan columnas:
+          * "dotacion"
+          * "% uso diario"  = cupos_equipo_dia / capacidad_usable_dia * 100
           * "% uso semanal" = cupos_semana_equipo / (dotación_equipo * 5) * 100
-      - El 100% diario es sobre hard_limit (cap_total_real - reserva). Ej: 38 total, reserva 2 => hard_limit 36.
-
-    Devuelve:
-      rows, deficit_report, audit, score_obj
+      - capacidad_usable_dia = cap_total_real - reserva  (hard_limit)
     """
     rng = random.Random(variant_seed if variant_seed is not None else 0)
 
     rows: List[Dict[str, Any]] = []
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-    deficit_report = []
-    audit = {"variant_seed": variant_seed, "variant_mode": variant_mode, "full_day_choices": []}
+    deficit_report: List[Dict[str, Any]] = []
+    audit = {
+        "variant_seed": variant_seed,
+        "variant_mode": variant_mode,
+        "full_day_choices": [],
+        "weekly_summary": []  # lista de resúmenes por piso/equipo
+    }
 
     if equipos_df is None or equipos_df.empty:
         return [], [], audit, {"score": 1e18, "details": {}}
@@ -260,7 +245,6 @@ def compute_distribution_from_excel(
     if not (col_piso and col_equipo and col_personas and col_minimos):
         return [], [], audit, {"score": 1e18, "details": {"error": "Faltan columnas clave"}}
 
-    # Capacidades por piso
     capacidad_pisos: Dict[str, int] = {}
     RESERVA_OBLIGATORIA = int(cupos_reserva) if cupos_reserva is not None else 2
     if not df_capacidades.empty:
@@ -275,9 +259,6 @@ def compute_distribution_from_excel(
             except Exception:
                 continue
 
-    # ---------------------------------------------------------
-    # Parámetros: SOLO si ignore_params=False
-    # ---------------------------------------------------------
     reglas_full_day: Dict[str, Dict[str, Any]] = {}
     if (not ignore_params) and (not parametros_df.empty):
         col_param = next((c for c in parametros_df.columns
@@ -302,7 +283,6 @@ def compute_distribution_from_excel(
         "Si ignore_params=True: se deshabilitan parámetros y se hace solo reparto proporcional con Sainte-Laguë + reserva."
     )
 
-    # Score (menor es mejor)
     total_sq_error = 0.0
     total_deficit = 0
     total_recortes_full_day = 0
@@ -319,7 +299,6 @@ def compute_distribution_from_excel(
         if df_piso.empty:
             continue
 
-        # Capacidad real
         if piso_str in capacidad_pisos:
             cap_total_real = int(capacidad_pisos[piso_str])
         else:
@@ -329,10 +308,8 @@ def compute_distribution_from_excel(
                 cap_total_real = RESERVA_OBLIGATORIA
 
         cap_total_real = max(0, int(cap_total_real))
-        # ✅ capacidad usable diaria (sin reserva). Este es el “100%” para % uso diario
         hard_limit = max(0, cap_total_real - RESERVA_OBLIGATORIA)
 
-        # equipos_info
         equipos_info: List[Dict[str, Any]] = []
         for _, r in df_piso.iterrows():
             nm = str(r.get(col_equipo, "")).strip()
@@ -357,19 +334,13 @@ def compute_distribution_from_excel(
 
             equipos_info.append({"eq": nm, "per": per, "min": mini})
 
-        # Trackers semanales por piso (para % Uso semanal)
         weekly_assigned: Dict[str, int] = {info["eq"]: 0 for info in equipos_info}
         weekly_dot: Dict[str, int] = {info["eq"]: int(info["per"]) for info in equipos_info}
 
-        # ---------------------------------------------------------
-        # SOLO si no ignoras parámetros:
-        # pre-asignar choice ("o") por piso
-        # ---------------------------------------------------------
         full_day_choice_assignment = {}
         if not ignore_params and reglas_full_day:
             load_by_day = {d: 0 for d in dias_semana}
 
-            # fixed suman carga
             for info in equipos_info:
                 nm_norm = normalize_text(info["eq"])
                 rule = reglas_full_day.get(nm_norm)
@@ -378,7 +349,6 @@ def compute_distribution_from_excel(
                         if d in dias_semana:
                             load_by_day[d] += info["per"]
 
-            # choice se elige con heurística + seed
             for info in equipos_info:
                 nm = info["eq"]
                 nm_norm = normalize_text(nm)
@@ -403,9 +373,6 @@ def compute_distribution_from_excel(
                             "mode": variant_mode
                         })
 
-        # -----------------------------
-        # Loop por día
-        # -----------------------------
         for dia in dias_semana:
             state = []
             for info in equipos_info:
@@ -414,7 +381,6 @@ def compute_distribution_from_excel(
                 per = int(info["per"])
                 mini = int(info["min"])
 
-                # full-day SOLO si no ignoramos parámetros
                 is_full_day = False
                 if not ignore_params:
                     rule = reglas_full_day.get(nm_norm)
@@ -434,14 +400,12 @@ def compute_distribution_from_excel(
 
             used = 0
 
-            # 1) Día completo (hard) SOLO si ignore_params=False
             if not ignore_params:
                 for t in state:
                     if t["full_day"] and t["per"] > 0:
                         t["asig"] = t["per"]
                         used += t["asig"]
 
-                # si full-day excede capacidad => recorte + reporte imposible
                 if used > hard_limit:
                     exceso = used - hard_limit
                     total_recortes_full_day += exceso
@@ -454,7 +418,6 @@ def compute_distribution_from_excel(
                         exceso -= 1
                         fulls = [t for t in fulls if t["asig"] > 0]
 
-            # 2) Mínimos (hard) SOLO si ignore_params=False
             if not ignore_params:
                 for t in state:
                     if t["per"] <= 0:
@@ -470,23 +433,8 @@ def compute_distribution_from_excel(
                             if give > 0:
                                 t["asig"] += give
                                 used += give
-                            deficit = target_min - t["asig"]
-                            if deficit > 0:
-                                total_deficit += deficit
-                                deficit_report.append({
-                                    "piso": piso_str,
-                                    "equipo": t["eq"],
-                                    "dia": dia,
-                                    "dotacion": t["per"],
-                                    "minimo": t["min"],
-                                    "asignado": t["asig"],
-                                    "deficit": int(deficit),
-                                    "causa": "Restricciones hard (mínimos) no caben en capacidad usable",
-                                    "formula": FORMULA_EQUIDAD,
-                                    "explicacion": EXPLICACION_EQUIDAD
-                                })
+                            # OJO: no metemos déficit duplicado acá; se reporta 1 sola vez abajo.
 
-            # Remanente por Sainte-Laguë (siempre)
             rem = max(0, hard_limit - used)
 
             weights = {}
@@ -512,11 +460,9 @@ def compute_distribution_from_excel(
             total_asig = sum(t["asig"] for t in state)
             total_asig = min(total_asig, hard_limit)
 
-            # Acumular semanal por equipo
             for t in state:
                 weekly_assigned[t["eq"]] = weekly_assigned.get(t["eq"], 0) + int(t["asig"])
 
-            # Score proporción (siempre)
             sum_per = sum(max(0, t["per"]) for t in state)
             if sum_per > 0 and hard_limit > 0:
                 for t in state:
@@ -527,9 +473,6 @@ def compute_distribution_from_excel(
                     total_sq_error += err * err
                     n_eval += 1
 
-            # Output rows:
-            # - % uso diario: cupos / hard_limit (no incluye cupos libres)
-            # - % uso semanal se rellena post-loop piso
             for t in state:
                 if t["asig"] <= 0:
                     continue
@@ -538,61 +481,48 @@ def compute_distribution_from_excel(
                     "piso": piso_str,
                     "equipo": t["eq"],
                     "dia": dia,
+                    "dotacion": int(t["per"]),
                     "cupos": int(t["asig"]),
                     "% uso diario": float(uso_diario),
-                    "% uso semanal": None,  # se rellena después (por piso+equipo)
+                    "% uso semanal": None,
                 })
 
-            # Deficit contra “dotación” SOLO si ignore_params=False
+            # ✅ ÚNICO lugar donde reportamos déficit (sin duplicar)
             if not ignore_params:
                 for t in state:
                     if t["per"] <= 0:
                         continue
-                    if t["asig"] < t["per"]:
-                        deficit = t["per"] - t["asig"]
-                        cause = "Falta capacidad física del piso (límite diario)"
-                        if t["full_day"] and deficit > 0:
-                            cause = "Día completo recortado por capacidad (restricción imposible)"
+                    deficit = int(max(0, t["per"] - t["asig"]))
+                    if deficit > 0:
                         total_deficit += deficit
                         deficit_report.append({
                             "piso": piso_str,
                             "equipo": t["eq"],
                             "dia": dia,
-                            "dotacion": t["per"],
-                            "minimo": t["min"],
-                            "asignado": t["asig"],
-                            "deficit": int(deficit),
-                            "causa": cause,
+                            "dotacion": int(t["per"]),
+                            "minimo": int(t["min"]),
+                            "asignado": int(t["asig"]),
+                            "deficit": deficit,
                             "formula": FORMULA_EQUIDAD,
                             "explicacion": EXPLICACION_EQUIDAD
                         })
 
-            # ✅ SIEMPRE crear "Cupos libres" por día (reserva diaria),
-            # pero NO tiene % uso diario/ semanal y NO se considera en esos cálculos.
             libres = RESERVA_OBLIGATORIA if cap_total_real >= RESERVA_OBLIGATORIA else cap_total_real
             rows.append({
                 "piso": piso_str,
                 "equipo": "Cupos libres",
                 "dia": dia,
+                "dotacion": None,
                 "cupos": int(libres),
                 "% uso diario": None,
                 "% uso semanal": None,
             })
 
-        # ---------------------------------------------------------
-        # Post-loop del piso: calcular % uso semanal por equipo y rellenar filas
-        # % uso semanal = cupos_semana_equipo / (dotación_equipo * 5) * 100
-        # (sin contar cupos libres)
-        # ---------------------------------------------------------
         weekly_usage_by_team: Dict[str, float] = {}
         for eq, wk_cupos in weekly_assigned.items():
             dot = int(weekly_dot.get(eq, 0))
-            if dot > 0:
-                weekly_usage_by_team[eq] = round((wk_cupos / (dot * 5)) * 100.0, 2)
-            else:
-                weekly_usage_by_team[eq] = 0.0
+            weekly_usage_by_team[eq] = round((wk_cupos / (dot * 5)) * 100.0, 2) if dot > 0 else 0.0
 
-        # Rellenar SOLO filas del piso actual, excluyendo cupos libres
         for r in rows:
             if r.get("piso") != piso_str:
                 continue
@@ -600,6 +530,20 @@ def compute_distribution_from_excel(
             if not eq or normalize_text(eq) == normalize_text("Cupos libres"):
                 continue
             r["% uso semanal"] = float(weekly_usage_by_team.get(eq, 0.0))
+
+        # dump summary para el PDF (por piso)
+        for eq in weekly_assigned.keys():
+            dot = int(weekly_dot.get(eq, 0))
+            wk_cupos = int(weekly_assigned.get(eq, 0))
+            avg_daily = round(wk_cupos / 5.0, 2)
+            audit["weekly_summary"].append({
+                "piso": piso_str,
+                "equipo": eq,
+                "dotacion": dot,
+                "cupos_semana": wk_cupos,
+                "cupos_promedio_diario": avg_daily,
+                "% uso semanal": float(weekly_usage_by_team.get(eq, 0.0)),
+            })
 
     mse = (total_sq_error / max(1, n_eval))
     score = mse + (total_deficit * 50.0) + (total_recortes_full_day * 200.0)
@@ -627,13 +571,6 @@ def compute_distribution_variants(
     variant_seed: int = 42,
     variant_mode: str = "holgura",
 ):
-    """
-    Genera múltiples distribuciones válidas cambiando:
-      - variant_seed (desempates Saint-Laguë + aleatoriedad controlada)
-      - variant_mode (heurística para 'o': holgura/equilibrar/aleatorio) -> SOLO si ignore_params=False
-
-    Retorna lista ordenada por score asc.
-    """
     variants = []
     for i in range(max(1, int(n_variants))):
         seed_i = int(variant_seed) + i
@@ -657,3 +594,4 @@ def compute_distribution_variants(
 
     variants.sort(key=lambda v: v["score"]["score"])
     return variants
+
