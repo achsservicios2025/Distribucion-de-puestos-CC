@@ -1060,6 +1060,18 @@ def confirm_delete_room_dialog(conn, usuario, fecha_str, sala, inicio):
         if delete_room_reservation_from_db(conn, usuario, fecha_str, sala, inicio): st.success("Eliminada"); st.rerun()
     if c2.button("Cancelar", width="stretch", key="no_s"): st.rerun()
 
+def confirm_delete_dialog(conn, usuario, fecha_str, area, piso):
+    st.warning(f"¿Anular reserva de puesto?\n\n👤 {usuario} | 📅 {fecha_str}\n🏢 {piso} | 📍 {area}")
+    c1, c2 = st.columns(2)
+    if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key=f"yes_p_{usuario}_{fecha_str}"):
+        if delete_reservation_from_db(conn, usuario, fecha_str, area):
+            st.success("Eliminada")
+            st.rerun()
+        else:
+            st.error("No se pudo eliminar")
+    if c2.button("Cancelar", use_container_width=True, key=f"no_p_{usuario}_{fecha_str}"):
+        st.rerun()
+
 # --- UTILS TOKENS ---
 def generate_token(): return uuid.uuid4().hex[:8].upper()
 
@@ -1153,22 +1165,16 @@ if menu == "Vista pública":
             todos_pisos = df_view["piso"].unique()
             todos_dias = df_view["dia"].unique()
             
-            # Crear combinaciones completas
             for piso in todos_pisos:
                 for dia in todos_dias:
-                    if dia != "FinDeSemana":
-                        # Verificar si existe en lib
-                        mask = (lib["piso"] == piso) & (lib["dia"] == dia)
-                        if not mask.any():
-                            # Agregar con 1 cupo mínimo
-                            lib = pd.concat([lib, pd.DataFrame([{"piso": piso, "dia": dia, "cupos": 2}])], ignore_index=True)
-                        else:
-                            # Asegurar mínimo 1, máximo 2
-                            idx = lib[mask].index[0] if mask.any() else None
-                            if idx is not None:
-                                current_val = int(lib.loc[idx, "cupos"]) if pd.notna(lib.loc[idx, "cupos"]) else 1
-                                lib.loc[idx, "cupos"] = 2
-            
+                    if dia == "FinDeSemana":
+                        continue
+                    mask = (lib["piso"] == piso) & (lib["dia"] == dia)
+                    if not mask.any():
+                        lib = pd.concat([lib, pd.DataFrame([{"piso": piso, "dia": dia, "cupos": 2}])], ignore_index=True)
+                    else:
+                        lib.loc[mask, "cupos"] = 2
+
             lib = apply_sorting_to_df(lib)
             
             st.subheader("Distribución completa")
@@ -1413,8 +1419,8 @@ elif menu == "Reservas":
                 ocupados = 0
                 if not all_res.empty:
                     mask = (all_res["reservation_date"].astype(str) == str(fe)) & \
-                           (all_res["piso"] == pi) & \
-                           (all_res["team_area"] == "Cupos libres")
+                        (all_res["piso"].astype(str) == str(pi)) & \
+                        (all_res["team_area"].astype(str) == "Cupos libres")
                     ocupados = len(all_res[mask])
                 
                 # Disponibles = máximo 2, menos los ocupados
@@ -2189,39 +2195,37 @@ elif menu == "Administrador":
                 st.info("Debe existir en /planos como piso1.png, piso2.png, piso3.png, etc.")
                 st.stop()
                 
-                st.session_state["last_style_config"] = {
-                    "show_legend": st.session_state["zones_show_legend"],
-                    "show_logo": st.session_state["zones_show_logo"],
-                    "logo_position": st.session_state["zones_logo_pos"].lower(),   # izquierda/centro/derecha
-                    "logo_width": 140,
-                    "show_title": st.session_state["zones_show_title"],
-                    "title_text": st.session_state["zones_title_text"],
-                    "title_align": st.session_state["zones_title_align"].lower(),  # izquierda/centro/derecha
-                    "title_font_size": int(st.session_state["zones_title_size"]),
-                    "title_color": "#000000",
-                    "bg_color": "#FFFFFF",
-                    "legend_align": "izquierda",
-                    "legend_size": 14,
-                    "subtitle_text": ""
-                }
+            st.session_state["last_style_config"] = {
+                "show_legend": st.session_state["zones_show_legend"],
+                "show_logo": st.session_state["zones_show_logo"],
+                "logo_position": st.session_state["zones_logo_pos"].lower(),   # izquierda/centro/derecha
+                "logo_width": 140,
+                "show_title": st.session_state["zones_show_title"],
+                "title_text": st.session_state["zones_title_text"],
+                "title_align": st.session_state["zones_title_align"].lower(),  # izquierda/centro/derecha
+                "title_font_size": int(st.session_state["zones_title_size"]),
+                "title_color": "#000000",
+                "bg_color": "#FFFFFF",
+                "legend_align": "izquierda",
+                "legend_size": 14,
+                "subtitle_text": ""
+            }
 
-                # --- Build existing zones & init objects
-                existing = zones_for_floor(zonas_all, piso_sel)
+            existing = zones_for_floor(zonas_all, piso_sel)
 
-                # Canvas scale for easier editing (2x but with cap)
-                pil_img = PILImage.open(plano_path).convert("RGB")
-                img_w, img_h = pil_img.size
+            pil_img = PILImage.open(plano_path).convert("RGB")
+            img_w, img_h = pil_img.size
 
-                target_w = 1400
-                scale = min(target_w / img_w, 2.0)
-                canvas_w = int(img_w * scale)
-                canvas_h = int(img_h * scale)
-                bg_img = pil_img.resize((canvas_w, canvas_h))
+            target_w = 1400
+            scale = min(target_w / img_w, 2.0)
+            canvas_w = int(img_w * scale)
+            canvas_h = int(img_h * scale)
+            bg_img = pil_img.resize((canvas_w, canvas_h))
 
-                init_objects = build_init_objects(existing, scale)
+            init_objects = build_init_objects(existing, scale)
 
-                st.markdown("### 🧰 Herramientas")
-                tb1, tb2, tb3, tb4, tb5 = st.columns([1.2, 1.2, 1.4, 1.6, 2.6])
+            st.markdown("### 🧰 Herramientas")
+            tb1, tb2, tb3, tb4, tb5 = st.columns([1.2, 1.2, 1.4, 1.6, 2.6])
 
             with tb1:
                 st.markdown("**Color**")
@@ -2241,15 +2245,15 @@ elif menu == "Administrador":
                 with st.expander("Paleta (Word)", expanded=False):
                     grid = st.columns(6)
                     for i, hx in enumerate(PALETTE):
-                    with grid[i % 6]:
-                        if st.button(" ", key=f"pal_{piso_sel}_{hx}", help=hx):
-                            st.session_state["zones_color"] = hx
-                            st.session_state["zones_color_picker"] = hx
-                            st.rerun()
-                            st.markdown(
-                                f"""<div style="width:28px;height:28px;border-radius:6px;border:1px solid #999;background:{hx};margin-top:-28px;margin-bottom:10px;"></div>""",
-                                unsafe_allow_html=True
-                            )
+                        with grid[i % 6]:
+                            if st.button(" ", key=f"pal_{piso_sel}_{hx}", help=hx):
+                                st.session_state["zones_color"] = hx
+                                st.session_state["zones_color_picker"] = hx
+                                st.rerun()
+                                st.markdown(
+                                    f"""<div style="width:28px;height:28px;border-radius:6px;border:1px solid #999;background:{hx};margin-top:-28px;margin-bottom:10px;"></div>""",
+                                    unsafe_allow_html=True
+                                )
 
                     custom_hex = st.text_input("Personalizar (#RRGGBB)", value=st.session_state["zones_color"], key="zones_hex")
                     custom_hex = (custom_hex or "").strip()
@@ -2334,7 +2338,7 @@ elif menu == "Administrador":
                         new_zones.append(rect)
 
                         zonas_all[piso_sel] = new_zones
-                            return save_zones(zonas_all), len(new_zones)
+                        return save_zones(zonas_all), len(new_zones)
 
                 def _append_last_rect_only(objs):
                     rects = [o for o in (objs or []) if o.get("type") == "rect"]
@@ -2358,8 +2362,9 @@ elif menu == "Administrador":
                     ok = save_zones(zonas_all)
                     return ok, (1 if ok else 0)
 
+                    objs = (canvas_result.json_data.get("objects", []) if canvas_result and canvas_result.json_data else [])
+                    
                     if save_one:
-                        objs = (canvas_result.json_data.get("objects", []) if canvas_result and canvas_result.json_data else [])
                         ok, n = _append_last_rect_only(objs)
                     if ok:
                         st.success("Zona guardada")
@@ -2374,13 +2379,14 @@ elif menu == "Administrador":
                         with st.modal("Confirmar guardado"):
                             st.write(f"Vas a guardar TODOS los rectángulos del canvas en **{piso_sel}**.")
                             c_ok, c_no = st.columns(2)
-                    if c_ok.button("Confirmar", type="primary", use_container_width=True, key="zones_confirm_yes"):
-                        objs = (canvas_result.json_data.get("objects", []) if canvas_result and canvas_result.json_data else [])
-                        ok, n = _persist_from_canvas(objs)
-                        st.session_state["zones_confirm_save_all"] = False
-                    if ok:
-                        st.success(f"Guardadas {n} zonas en {piso_sel}")
-                            st.rerun()
+                            
+                            if c_ok.button("Confirmar", type="primary", use_container_width=True, key="zones_confirm_yes"):
+                                objs = (canvas_result.json_data.get("objects", []) if canvas_result and canvas_result.json_data else [])
+                                ok, n = _persist_from_canvas(objs)
+                                st.session_state["zones_confirm_save_all"] = False
+                                if ok:
+                                    st.success(f"Guardadas {n} zonas en {piso_sel}")
+                                    st.rerun()
                     else:
                         st.error("No se pudieron guardar las zonas")
                     if c_no.button("Cancelar", use_container_width=True, key="zones_confirm_no"):
@@ -2890,6 +2896,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
