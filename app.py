@@ -1847,17 +1847,14 @@ elif menu == "Administrador":
         # ZONA DE RESULTADOS
         # -----------------------------------------------------------
         if st.session_state.get("proposal_rows") is not None:
-
             st.markdown("### Panel de Control")
             c_regen, c_opt, c_save = st.columns([1, 1, 1])
 
-            # Recuperar datos de sesión
             df_eq_s = st.session_state.get("excel_equipos", pd.DataFrame())
             df_pa_s = st.session_state.get("excel_params", pd.DataFrame())
             df_cap_s = st.session_state.get("excel_caps", pd.DataFrame())
             ign_s = st.session_state.get("ignore_params", False)
 
-            # 1) REGENERAR (VARIANTES)
             if c_regen.button("🔄 Regenerar", key="btn_regen_variants"):
                 st.cache_data.clear()
                 clear_compute_cache()
@@ -2956,6 +2953,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
