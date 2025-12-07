@@ -10,6 +10,7 @@ import numpy as np
 from io import BytesIO
 from PIL import Image
 from fpdf import FPDF
+import base64
 
 # ---------------------------------------------------------
 # 1) CONFIG STREAMLIT
@@ -97,6 +98,36 @@ st.session_state["ui"]["app_title"] = settings.get("site_title", st.session_stat
 st.session_state["ui"]["logo_path"] = settings.get("logo_path", st.session_state["ui"]["logo_path"])
 
 # ---------------------------------------------------------
+# ✅ HANDLER: click en logo -> vuelve al inicio
+# ---------------------------------------------------------
+def _handle_home_queryparam():
+    # Streamlit nuevo: st.query_params
+    try:
+        home = st.query_params.get("home", None)
+        if home is not None:
+            st.session_state["screen"] = "Administrador"
+            st.session_state["top_menu_select"] = "—"
+            # limpiar query param
+            st.query_params.clear()
+            st.rerun()
+        return
+    except Exception:
+        pass
+
+    # Fallback legacy
+    try:
+        qp = st.experimental_get_query_params()
+        if "home" in qp:
+            st.session_state["screen"] = "Administrador"
+            st.session_state["top_menu_select"] = "—"
+            st.experimental_set_query_params()
+            st.rerun()
+    except Exception:
+        pass
+
+_handle_home_queryparam()
+
+# ---------------------------------------------------------
 # 5) CSS
 # ---------------------------------------------------------
 st.markdown(f"""
@@ -172,18 +203,13 @@ button[data-testid="baseButton-secondary"] {{
   width: 320px !important;
 }}
 
-/* ✅ Botón-logo: invisible pero clickeable ocupando el ancho del logo */
-.mk-logo-btn button {{
-  background: transparent !important;
-  border: none !important;
-  padding: 0 !important;
-  box-shadow: none !important;
+/* ✅ logo clickeable */
+.mk-logo-link {{
+  display: inline-block;
+  cursor: pointer;
 }}
-.mk-logo-btn button:hover {{
-  filter: brightness(0.98);
-}}
-.mk-logo-btn button:focus {{
-  outline: none !important;
+.mk-logo-img {{
+  display: block;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -213,6 +239,14 @@ def clean_pdf_text(s: str) -> str:
 def go(screen: str):
     st.session_state["screen"] = screen
 
+def _img_to_data_uri(path: Path) -> str:
+    b = path.read_bytes()
+    ext = path.suffix.lower().replace(".", "")
+    if ext == "jpg":
+        ext = "jpeg"
+    mime = f"image/{ext if ext in ['png','jpeg','webp'] else 'png'}"
+    return f"data:{mime};base64," + base64.b64encode(b).decode("utf-8")
+
 # ---------------------------------------------------------
 # TOPBAR
 # ---------------------------------------------------------
@@ -225,18 +259,17 @@ def render_topbar_and_menu():
     c1, c2, c3 = st.columns([1.2, 3.6, 1.2], vertical_alignment="center")
 
     with c1:
-        # ✅ Logo clickeable: botón invisible + imagen
         if logo_path.exists():
-            # Si se clickea, vuelve al Inicio (Administrador) y resetea el menú superior
-            st.markdown("<div class='mk-logo-btn'>", unsafe_allow_html=True)
-            if st.button(" ", key="logo_home_btn"):
-                st.session_state["top_menu_select"] = "—"
-                go("Administrador")
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-            # Pintamos la imagen encima (visual). El botón está justo arriba en el flujo,
-            # pero sin padding y sin fondo: se comporta como "área clickeable".
-            st.image(str(logo_path), width=logo_w)
+            # ✅ Click REAL sobre la imagen: <a href="?home=1"><img .../></a>
+            data_uri = _img_to_data_uri(logo_path)
+            st.markdown(
+                f"""
+                <a class="mk-logo-link" href="?home=1" title="Volver al inicio">
+                  <img class="mk-logo-img" src="{data_uri}" style="width:{logo_w}px; height:auto;" />
+                </a>
+                """,
+                unsafe_allow_html=True
+            )
         else:
             if st.button("🧩 Inicio", key="logo_home_fallback"):
                 st.session_state["top_menu_select"] = "—"
