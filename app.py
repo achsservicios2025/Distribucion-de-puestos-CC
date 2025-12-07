@@ -1,157 +1,12 @@
 import streamlit as st
 import pandas as pd
-import datetime
-import os
-import uuid
-import json
-import shutil
 import re
-from pathlib import Path
-import matplotlib.pyplot as plt
-from fpdf import FPDF
-from PIL import Image
-from io import BytesIO
-import base64
-from typing import Optional
-import numpy as np
-import random
-from modules.pdfgen import generate_pdf_from_df
 import unicodedata
-
-# ---------------------------------------------------------
-# 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
-# ---------------------------------------------------------
-from dataclasses import dataclass
-
-@dataclass
-class WidthConfig:
-    width: int
-
-if "st_image_patch_done" not in st.session_state:
-    st.session_state["st_image_patch_done"] = True
-
-try:
-    import streamlit.elements.lib.image_utils as _img_utils
-
-    if hasattr(_img_utils, "image_to_url"):
-        _orig_image_to_url = _img_utils.image_to_url
-
-        def _patched_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-            if isinstance(image_data, str):
-                return image_data
-            if isinstance(width, int):
-                width = WidthConfig(width=width)
-            return _orig_image_to_url(image_data, width, clamp, channels, output_format, image_id)
-
-        _img_utils.image_to_url = _patched_image_to_url
-
-    try:
-        import streamlit.elements.image as st_image_module
-        if hasattr(st_image_module, "image_to_url"):
-            _orig_st_image_to_url = st_image_module.image_to_url
-
-            def _patched_st_image_to_url(image_data, width=None, clamp=False, channels="RGB", output_format="JPEG", image_id=None):
-                if isinstance(image_data, str):
-                    return image_data
-                if isinstance(width, int):
-                    width = WidthConfig(width=width)
-                return _orig_st_image_to_url(image_data, width, clamp, channels, output_format, image_id)
-
-            st_image_module.image_to_url = _patched_st_image_to_url
-    except Exception:
-        pass
-
-except Exception:
-    pass
-
-def resolve_logo_source(raw_path: Optional[str], logo_b64: Optional[str]):
-    """
-    Devuelve bytes o URL del logo.
-    Prioriza base64 (subido desde admin), luego URL, luego rutas locales.
-    """
-    if logo_b64:
-        try:
-            return base64.b64decode(logo_b64)
-        except Exception:
-            pass
-
-    if raw_path:
-        raw_path = raw_path.strip()
-        if raw_path.lower().startswith(("http://", "https://")):
-            return raw_path
-        raw_path = raw_path.replace("\\", "/")
-    else:
-        raw_path = ""
-
-    candidates = []
-    if raw_path:
-        candidates.append(raw_path)
-
-    candidates.extend([
-        "static/logo.png",
-        str(Path("static/logo.png")),
-        str(Path("static") / "logo.png"),
-    ])
-
-    for candidate in candidates:
-        candidate = candidate.replace("\\", "/")
-        path_obj = Path(candidate)
-        if path_obj.exists() and path_obj.is_file():
-            try:
-                return path_obj.read_bytes()
-            except Exception:
-                continue
-
-    return None
-
-# ---------------------------------------------------------
-# 2. IMPORTACIONES DE MÓDULOS
-# ---------------------------------------------------------
-from modules.database import (
-    get_conn, init_db, insert_distribution, clear_distribution,
-    read_distribution_df, save_setting, get_all_settings,
-    add_reservation, user_has_reservation, list_reservations_df,
-    add_room_reservation, get_room_reservations_df,
-    count_monthly_free_spots, delete_reservation_from_db, 
-    delete_room_reservation_from_db, perform_granular_delete,
-    ensure_reset_table, save_reset_token, validate_and_consume_token,
-    get_worksheet
-)
-
-# Importar funciones opcionales para borrado individual (pueden no existir en versiones antiguas)
-try:
-    from modules.database import delete_distribution_row, delete_distribution_rows_by_indices
-except ImportError:
-    # Si no existen, crear funciones stub que usen perform_granular_delete
-    def delete_distribution_row(conn, piso, equipo, dia):
-        """Elimina una fila específica de distribución (fallback)"""
-        # Fallback: no se puede borrar individualmente sin estas funciones
-        return False
-    
-    def delete_distribution_rows_by_indices(conn, indices):
-        """Elimina múltiples filas de distribución (fallback)"""
-        # Fallback: no se puede borrar individualmente sin estas funciones
-        return False
-from modules.auth import get_admin_credentials
-from modules.layout import admin_appearance_ui, apply_appearance_styles
-from modules.seats import compute_distribution_from_excel, compute_distribution_variants
-from modules.emailer import send_reservation_email
-from modules.rooms import generate_time_slots, check_room_conflict
-from modules.zones import generate_colored_plan, load_zones, save_zones
-from streamlit_drawable_canvas import st_canvas
-import streamlit.components.v1 as components
-
-# ---------------------------------------------------------
-# 3. CONFIGURACIÓN GENERAL
-# ---------------------------------------------------------
-# ---------------------------------------------------------
-# 0. IMPORTS
-# ---------------------------------------------------------
-import streamlit as st
 from pathlib import Path
+from typing import Optional
 
 # ---------------------------------------------------------
-# 1. CONFIGURACIÓN GENERAL (Streamlit)
+# 1) CONFIGURACIÓN STREAMLIT (una sola vez y arriba)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Gestor de puestos y reservas",
@@ -160,62 +15,97 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 2. ESTADO GLOBAL (editable desde Admin a futuro)
+# 2) IMPORTS DE MÓDULOS (se mantienen, pero pueden no usarse aún)
+# ---------------------------------------------------------
+# Si algunos módulos no existen en tu proyecto, coméntalos temporalmente.
+from modules.database import (
+    get_conn, init_db, insert_distribution, clear_distribution,
+    read_distribution_df, save_setting, get_all_settings,
+    add_reservation, user_has_reservation, list_reservations_df,
+    add_room_reservation, get_room_reservations_df,
+    count_monthly_free_spots, delete_reservation_from_db,
+    delete_room_reservation_from_db, perform_granular_delete,
+    ensure_reset_table, save_reset_token, validate_and_consume_token,
+    get_worksheet
+)
+
+try:
+    from modules.database import delete_distribution_row, delete_distribution_rows_by_indices
+except ImportError:
+    def delete_distribution_row(conn, piso, equipo, dia):
+        return False
+
+    def delete_distribution_rows_by_indices(conn, indices):
+        return False
+
+from modules.auth import get_admin_credentials
+from modules.layout import admin_appearance_ui, apply_appearance_styles
+from modules.seats import compute_distribution_from_excel, compute_distribution_variants
+from modules.emailer import send_reservation_email
+from modules.rooms import generate_time_slots, check_room_conflict
+from modules.zones import generate_colored_plan, load_zones, save_zones
+
+# Si no lo estás usando todavía, puedes comentar st_canvas y components.
+from streamlit_drawable_canvas import st_canvas
+import streamlit.components.v1 as components
+
+# ---------------------------------------------------------
+# 3) CONSTANTES / DIRECTORIOS
+# ---------------------------------------------------------
+ORDER_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+
+PLANOS_DIR = Path("modules/planos")      # Ajusta si tus planos están en otro lugar
+DATA_DIR = Path("data")
+COLORED_DIR = Path("planos_coloreados")
+
+for d in (PLANOS_DIR, DATA_DIR, COLORED_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------
+# 4) ESTADO UI (editable a futuro desde Admin)
 # ---------------------------------------------------------
 st.session_state.setdefault("ui", {
     "app_title": "Gestor de puestos y reservas",
     "bg_color": "#ffffff",
-    "logo_path": "assets/logo.png",  # pon tu logo acá cuando lo tengas
+    "logo_path": "assets/logo.png",
 })
 
 st.session_state.setdefault("nav_collapsed", False)
 st.session_state.setdefault("screen", "Inicio")
 st.session_state.setdefault("forgot_mode", False)
 
-# Opciones de navegación (dropdown del menú)
 RESERVAS_OPTS = [
     "—",
     "Reservar Puesto Flex",
     "Reservar Sala de Reuniones",
     "Mis Reservas y Listados",
+    "Planos (ver)",
     "Administrador",
 ]
 
 # ---------------------------------------------------------
-# 3. ESTILOS (CSS) - look imagen 1 (menú izquierdo compacto)
+# 5) CSS (menú izquierdo compacto, estilo imagen 1)
 # ---------------------------------------------------------
 st.markdown(f"""
 <style>
-/* Fondo global */
-.stApp {{
-  background: {st.session_state.ui["bg_color"]};
-}}
-
-/* Opcional: ocultar header default */
+.stApp {{ background: {st.session_state.ui["bg_color"]}; }}
 header {{ visibility: hidden; }}
 
-/* Contenedor principal ancho completo */
 section.main > div {{
   max-width: 100% !important;
   padding-left: 1.5rem !important;
   padding-right: 1.5rem !important;
 }}
-.block-container {{
-  max-width: 100% !important;
-}}
+.block-container {{ max-width: 100% !important; }}
 
-/* Layout: menú izq + contenido */
 .mk-shell {{
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 24px;
   align-items: start;
 }}
-.mk-shell.mk-collapsed {{
-  grid-template-columns: 76px 1fr;
-}}
+.mk-shell.mk-collapsed {{ grid-template-columns: 76px 1fr; }}
 
-/* Tarjeta menú */
 .mk-menu-card {{
   background: #f3f5f7;
   border-radius: 18px;
@@ -226,17 +116,12 @@ section.main > div {{
   min-height: calc(100vh - 24px);
 }}
 
-/* Botón colapsar */
-.mk-collapse-row {{
-  display: flex;
-  justify-content: flex-end;
-}}
+.mk-collapse-row {{ display:flex; justify-content:flex-end; }}
 .mk-collapse-btn button {{
   border-radius: 14px !important;
   padding: 6px 10px !important;
 }}
 
-/* Título menú */
 .mk-menu-title {{
   font-size: 14px;
   font-weight: 800;
@@ -244,41 +129,24 @@ section.main > div {{
   color: rgba(0,0,0,0.65);
 }}
 
-/* Selectbox pill tipo imagen 1 */
 div[data-baseweb="select"] > div {{
   border-radius: 18px !important;
-  border: 2px solid rgba(255, 60, 60, 0.85) !important; /* borde rojo */
+  border: 2px solid rgba(255, 60, 60, 0.85) !important;
   background: #fff !important;
   min-height: 44px !important;
 }}
 
-/* Lista desplegable */
 ul[role="listbox"] {{
   border-radius: 14px !important;
   box-shadow: 0 16px 36px rgba(0,0,0,0.18) !important;
   overflow: hidden !important;
 }}
 
-/* Texto del select */
-div[data-baseweb="select"] span {{
-  font-weight: 650;
-}}
+.mk-collapsed .mk-menu-title {{ display:none; }}
+.mk-collapsed .stSelectbox label {{ display:none !important; }}
 
-/* Colapsado: ocultar labels/título */
-.mk-collapsed .mk-menu-title {{ display: none; }}
-.mk-collapsed .stSelectbox label {{ display: none !important; }}
-
-/* Header simple (logo - titulo) */
-.mk-topbar {{
-  display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  align-items: center;
-  padding: 10px 0 12px 0;
-  border-bottom: 1px solid rgba(0,0,0,0.08);
-  margin-bottom: 14px;
-}}
 .mk-title {{
-  text-align: center;
+  text-align:center;
   font-size: 22px;
   font-weight: 800;
   margin: 0;
@@ -286,15 +154,129 @@ div[data-baseweb="select"] span {{
 </style>
 """, unsafe_allow_html=True)
 
+import uuid
+
+def _fmt_item(item: dict) -> str:
+    if item["kind"] == "puesto":
+        return (f"📌 Puesto | {item['reservation_date']} | Piso: {item.get('piso','')} | "
+                f"Área: {item.get('team_area','')} | Nombre: {item.get('user_name','')}")
+    return (f"🏢 Sala | {item['reservation_date']} | {item.get('room_name','')} | "
+            f"{item.get('start_time','')}–{item.get('end_time','')} | Equipo: {item.get('user_name','')}")
+
+def open_confirm_delete_multi(selected_items: list[dict]):
+    st.session_state["confirm_delete_multi"] = {"items": selected_items}
+    st.rerun()
+
+def render_confirm_delete_multi_dialog(conn):
+    payload = st.session_state.get("confirm_delete_multi")
+    if not payload:
+        return
+
+    items = payload.get("items") or []
+    if not items:
+        st.session_state.pop("confirm_delete_multi", None)
+        return
+
+    if not hasattr(st, "dialog"):
+        st.error("Tu Streamlit no soporta popups centrados (st.dialog). Actualiza Streamlit.")
+        return
+
+    @st.dialog("Confirmar anulación")
+    def _dlg():
+        st.markdown("### ¿Anular las reservas seleccionadas?")
+        st.caption("Se eliminarán únicamente las reservas marcadas. Las no marcadas se mantienen.")
+
+        with st.expander("Ver detalle", expanded=True):
+            for it in items:
+                st.write("• " + _fmt_item(it))
+
+        c1, c2 = st.columns(2)
+
+        if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_multi_yes"):
+            deleted = 0
+            for it in items:
+                if it["kind"] == "puesto":
+                    ok = delete_reservation_from_db(conn, it["user_email"], it["reservation_date"], it["team_area"])
+                else:
+                    inicio = str(it.get("start_time", "")).strip()
+                    inicio = inicio[:5] if len(inicio) >= 5 else inicio
+                    ok = delete_room_reservation_from_db(conn, it["user_email"], it["reservation_date"], it["room_name"], inicio)
+                if ok:
+                    deleted += 1
+
+            st.session_state.pop("confirm_delete_multi", None)
+            st.cache_data.clear()
+            st.success(f"✅ Se anularon {deleted} reserva(s).")
+            st.rerun()
+
+        if c2.button("Cancelar", use_container_width=True, key="confirm_multi_no"):
+            st.session_state.pop("confirm_delete_multi", None)
+            st.rerun()
+
+    _dlg()
+
 # ---------------------------------------------------------
-# 4. HELPERS UI
+# 6) HELPERS & LÓGICA (tu parte, corregida)
+# ---------------------------------------------------------
+def clean_pdf_text(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = (s.replace("\r", "")
+           .replace("\t", " ")
+           .replace("–", "-")
+           .replace("—", "-")
+           .replace("−", "-")
+           .replace("“", '"')
+           .replace("”", '"')
+           .replace("’", "'")
+           .replace("‘", "'")
+           .replace("•", "-")
+           .replace("\u00a0", " "))
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("latin-1", "replace").decode("latin-1")
+    return s
+
+def sort_floors(floor_list):
+    """Ordena lista de pisos lógicamente (1, 2, 10)."""
+    def extract_num(text):
+        text = str(text)
+        num = re.findall(r"\d+", text)
+        return int(num[0]) if num else 0
+    return sorted(list(floor_list), key=extract_num)
+
+def apply_sorting_to_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica orden lógico a un DataFrame para Pisos y Días."""
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    cols_lower = {c.lower(): c for c in df.columns}
+    col_dia = cols_lower.get("dia") or cols_lower.get("día")
+    col_piso = cols_lower.get("piso")
+
+    if col_dia:
+        df[col_dia] = pd.Categorical(df[col_dia], categories=ORDER_DIAS, ordered=True)
+
+    if col_piso:
+        unique_floors = [str(x) for x in df[col_piso].dropna().unique()]
+        sorted_floors = sort_floors(unique_floors)
+        df[col_piso] = pd.Categorical(df[col_piso], categories=sorted_floors, ordered=True)
+
+    sort_cols = [c for c in (col_piso, col_dia) if c]
+    if sort_cols:
+        df = df.sort_values(sort_cols)
+
+    return df
+
+# ---------------------------------------------------------
+# 7) UI HELPERS
 # ---------------------------------------------------------
 def go(screen_name: str):
     st.session_state.screen = screen_name
 
 def render_topbar():
     c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
-
     with c1:
         logo_path = Path(st.session_state.ui["logo_path"])
         if logo_path.exists():
@@ -307,15 +289,43 @@ def render_topbar():
         st.write("")
 
 # ---------------------------------------------------------
-# 5. PANTALLAS
+# 8) PANTALLAS (base)
 # ---------------------------------------------------------
 def screen_inicio():
     st.info("Selecciona una opción desde el menú de la izquierda.")
-    st.write("Luego aquí irá: distribución de cupos, reservas hechas, ver/descargar planos, etc.")
+    st.write("Más adelante aquí: distribución de cupos, reservas hechas, ver/descargar planos, etc.")
 
 def screen_reservas(option: str):
     st.subheader(option)
     st.write("TODO: aquí conectas tu módulo actual para esta sección.")
+
+def screen_planos():
+    st.subheader("Planos (ver)")
+
+    # Busca imágenes comunes (sin base64, sin html)
+    patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG", "*.WEBP"]
+    imgs = []
+    for pat in patterns:
+        imgs.extend(sorted(PLANOS_DIR.glob(pat)))
+
+    if not imgs:
+        st.warning("No se encontraron imágenes de planos.")
+        st.write(f"Ruta buscada: `{PLANOS_DIR.resolve()}`")
+        st.write("Pon tus planos como .png/.jpg dentro de esa carpeta.")
+        return
+
+    selected = st.selectbox("Selecciona un plano", [p.name for p in imgs])
+    img_path = next(p for p in imgs if p.name == selected)
+
+    st.caption(f"Mostrando: `{img_path}`")
+    st.image(str(img_path), use_container_width=True)
+
+    st.download_button(
+        "Descargar plano",
+        data=img_path.read_bytes(),
+        file_name=img_path.name,
+        mime="image/png" if img_path.suffix.lower() == ".png" else "image/jpeg",
+    )
 
 def screen_admin():
     st.subheader("Administrador")
@@ -360,20 +370,19 @@ def screen_admin():
                 st.rerun()
 
 # ---------------------------------------------------------
-# 6. APP (layout + menú)
+# 9) APP (layout + menú)
 # ---------------------------------------------------------
 shell_class = "mk-shell mk-collapsed" if st.session_state.nav_collapsed else "mk-shell"
 st.markdown(f'<div class="{shell_class}">', unsafe_allow_html=True)
 
-# ---- MENU IZQUIERDO
+# Menú izquierdo
 st.markdown('<div class="mk-menu-card">', unsafe_allow_html=True)
 
-# Botón colapsar
 st.markdown('<div class="mk-collapse-row mk-collapse-btn">', unsafe_allow_html=True)
 if st.button("<<" if not st.session_state.nav_collapsed else ">>", key="collapse"):
     st.session_state.nav_collapsed = not st.session_state.nav_collapsed
     st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
 if not st.session_state.nav_collapsed:
     st.markdown('<div class="mk-menu-title">Menú</div>', unsafe_allow_html=True)
@@ -385,89 +394,563 @@ choice = st.selectbox(
     key="left_nav",
     label_visibility="collapsed" if st.session_state.nav_collapsed else "visible",
 )
-
 if choice and choice != "—":
     go(choice)
 
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
-# ---- CONTENIDO PRINCIPAL
-st.markdown('<div>', unsafe_allow_html=True)
-
+# Contenido principal
+st.markdown("<div>", unsafe_allow_html=True)
 render_topbar()
 st.divider()
 
 screen = st.session_state.screen
+
 if screen == "Inicio":
     screen_inicio()
-elif screen in ["Reservar Puesto Flex", "Reservar Sala de Reuniones", "Mis Reservas y Listados"]:
-    screen_reservas(screen)
+elif screen == "Planos (ver)":
+    screen_planos()
 elif screen == "Administrador":
     screen_admin()
+elif screen in ["Reservar Puesto Flex", "Reservar Sala de Reuniones", "Mis Reservas y Listados"]:
+    screen_reservas(screen)
 else:
     screen_inicio()
 
-st.markdown('</div>', unsafe_allow_html=True)  # end main
-st.markdown('</div>', unsafe_allow_html=True)  # end shell
+st.markdown("</div>", unsafe_allow_html=True)  # end main
+st.markdown("</div>", unsafe_allow_html=True)  # end shell
+# ---------------------------------------------------------
+# INICIO APP (DB + SETTINGS + NAV + PANTALLAS)
+# ---------------------------------------------------------
+conn = get_conn()
+
+# Protección: no inicializar DB mil veces (Error 429)
+if "db_initialized" not in st.session_state:
+    with st.spinner("Conectando a Google Sheets..."):
+        init_db(conn)
+    st.session_state["db_initialized"] = True
+
+# Aplica estilos/colores desde settings (si tu módulo los usa)
+apply_appearance_styles(conn)
+
+# Settings (para que cambios en Admin apliquen al instante)
+settings = get_all_settings(conn)
+
+site_title = settings.get("site_title", "Gestor de puestos y reservas")
+global_logo_path = settings.get("logo_path", "static/logo.png")
 
 # ---------------------------------------------------------
-# 4. FUNCIONES HELPER & LÓGICA
+# TOPBAR (logo izquierda + título centro)
 # ---------------------------------------------------------
-def clean_pdf_text(s: str) -> str:
-    if s is None:
-        return ""
+c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
+with c1:
+    lp = Path(global_logo_path)
+    if lp.exists():
+        st.image(str(lp), width=120)
+    else:
+        st.write("🧩 (Logo aquí)")
+with c2:
+    st.markdown(f"<h3 style='text-align:center;margin:0;'>{site_title}</h3>", unsafe_allow_html=True)
+with c3:
+    st.write("")
+st.divider()
 
-    s = str(s)
+# ---------------------------------------------------------
+# MENÚ IZQUIERDO (continuación del layout que te di)
+#   - Reservas -> selectbox con 3 opciones
+#   - Administrador -> selectbox acceso/login
+# ---------------------------------------------------------
 
-    s = (s.replace("\r", "")
-           .replace("\t", " ")
-           .replace("–", "-")
-           .replace("—", "-")
-           .replace("−", "-")
-           .replace("“", '"')
-           .replace("”", '"')
-           .replace("’", "'")
-           .replace("‘", "'")
-           .replace("•", "-")
-           .replace("\u00a0", " "))
+# Si ya tienes el "shell" grid y la card izquierda, este bloque va dentro.
+# Si NO lo tienes, igual puedes usarlo con st.columns, pero asumo que ya está.
 
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("latin-1", "replace").decode("latin-1")
-    return s
+# === Menú izquierdo: Reservas (con tus 3 opciones) ===
+opcion_reserva = st.selectbox(
+    "Reservas",
+    ["—", "Reservar Puesto Flex", "Reservar Sala de Reuniones", "Mis Reservas y Listados"],
+    index=0,
+    key="nav_reservas_select",
+    label_visibility="collapsed",
+)
 
-def sort_floors(floor_list):
-    """Ordena una lista de pisos lógicamente (1, 2, 10)."""
-    def extract_num(text):
-        text = str(text)
-        num = re.findall(r'\d+', text)
-        return int(num[0]) if num else 0
-    return sorted(list(floor_list), key=extract_num)
+# === Menú izquierdo: Administrador ===
+opcion_admin = st.selectbox(
+    "Administrador",
+    ["—", "Acceso"],
+    index=0,
+    key="nav_admin_select",
+    label_visibility="collapsed",
+)
 
-def apply_sorting_to_df(df):
-    """Aplica orden lógico a un DataFrame para Pisos y Días."""
-    if df.empty: return df
-    df = df.copy()
-    
-    cols_lower = {c.lower(): c for c in df.columns}
-    col_dia = cols_lower.get('dia') or cols_lower.get('día')
-    col_piso = cols_lower.get('piso')
-    
-    if col_dia:
-        df[col_dia] = pd.Categorical(df[col_dia], categories=ORDER_DIAS, ordered=True)
-    
-    if col_piso:
-        unique_floors = [str(x) for x in df[col_piso].dropna().unique()]
-        sorted_floors = sort_floors(unique_floors)
-        df[col_piso] = pd.Categorical(df[col_piso], categories=sorted_floors, ordered=True)
+# Decide pantalla (prioriza lo último escogido)
+if opcion_reserva != "—":
+    st.session_state["screen"] = opcion_reserva
+    st.session_state["nav_admin_select"] = "—"
+elif opcion_admin != "—":
+    st.session_state["screen"] = "Administrador"
+    st.session_state["nav_reservas_select"] = "—"
+else:
+    st.session_state.setdefault("screen", "Inicio")
 
-    sort_cols = []
-    if col_piso: sort_cols.append(col_piso)
-    if col_dia: sort_cols.append(col_dia)
-    
-    if sort_cols:
-        df = df.sort_values(sort_cols)
-        
-    return df
+screen = st.session_state.get("screen", "Inicio")
+
+# ---------------------------------------------------------
+# PANTALLAS
+# ---------------------------------------------------------
+
+# ==========================================
+# INICIO
+# ==========================================
+if screen == "Inicio":
+    st.info("Selecciona una opción en **Reservas** o entra a **Administrador**.")
+
+# ==========================================
+# A) RESERVAR PUESTO FLEX (tu lógica intacta)
+# ==========================================
+elif screen == "Reservar Puesto Flex":
+    import datetime
+
+    st.header("Reservar Puesto Flex")
+    st.info("Reserva de 'Cupos libres' (Máximo 2 días por mes).")
+
+    df = read_distribution_df(conn)
+
+    if df.empty:
+        st.warning("⚠️ No hay configuración de distribución cargada en el sistema.")
+    else:
+        c1, c2 = st.columns(2)
+        fe = c1.date_input("Selecciona Fecha", min_value=datetime.date.today(), key="fp")
+        pisos_disp = sort_floors(df["piso"].unique())
+        pi = c2.selectbox("Selecciona Piso", pisos_disp, key="pp")
+
+        dn = ORDER_DIAS[fe.weekday()] if fe.weekday() < 5 else "FinDeSemana"
+
+        if dn == "FinDeSemana":
+            st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
+        else:
+            sub_libres = df[
+                (df["piso"].astype(str) == str(pi)) &
+                (df["dia"].astype(str) == str(dn)) &
+                (df["equipo"].astype(str).str.strip().str.lower() == "cupos libres")
+            ]
+
+            total_cupos = int(pd.to_numeric(sub_libres["cupos"], errors="coerce").fillna(0).sum()) if not sub_libres.empty else 0
+
+            all_res = list_reservations_df(conn)
+            if all_res is None or all_res.empty:
+                ocupados = 0
+            else:
+                def _norm_piso_local(x):
+                    s = str(x).strip()
+                    if s.lower().startswith("piso piso"):
+                        s = s[5:].strip()
+                    if not s.lower().startswith("piso"):
+                        s = f"Piso {s}"
+                    return s
+
+                mask = (
+                    all_res["reservation_date"].astype(str) == str(fe)
+                ) & (
+                    all_res["piso"].astype(str).map(_norm_piso_local) == _norm_piso_local(pi)
+                )
+                ocupados = int(mask.sum())
+
+            disponibles = max(0, total_cupos - ocupados)
+
+            if disponibles > 0:
+                st.success(f"✅ **Hay cupo: Quedan {disponibles} puestos disponibles**")
+            else:
+                st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
+
+            st.markdown("### Datos del Solicitante")
+
+            equipos_disponibles = sorted(df[df["piso"] == pi]["equipo"].unique().tolist())
+            equipos_disponibles = [e for e in equipos_disponibles if e != "Cupos libres"]
+
+            with st.form("form_puesto"):
+                cf1, cf2 = st.columns(2)
+                nombre = cf1.text_input("Nombre")
+                area_equipo = cf1.selectbox("Área / Equipo", equipos_disponibles if equipos_disponibles else ["General"])
+                em = cf2.text_input("Correo Electrónico")
+
+                submitted = st.form_submit_button(
+                    "Confirmar Reserva",
+                    type="primary",
+                    disabled=(disponibles <= 0)
+                )
+
+                if submitted:
+                    if not nombre.strip():
+                        st.error("Por favor ingresa tu nombre.")
+                    if not em:
+                        st.error("Por favor ingresa tu correo electrónico.")
+                    elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', em):
+                        st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
+                    elif user_has_reservation(conn, em, str(fe)):
+                        st.error("Ya tienes una reserva registrada para esta fecha.")
+                    elif count_monthly_free_spots(conn, em, fe) >= 2:
+                        st.error("Has alcanzado el límite de 2 reservas mensuales.")
+                    elif disponibles <= 0:
+                        st.error("Lo sentimos, el cupo se acaba de agotar.")
+                    else:
+                        add_reservation(
+                            conn,
+                            area_equipo,
+                            em,
+                            pi,
+                            str(fe),
+                            "Cupos libres",
+                            datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        )
+                        msg = (
+                            f"✅ Reserva Confirmada:\n\n"
+                            f"- Área/Equipo: {area_equipo}\n"
+                            f"- Fecha: {fe}\n"
+                            f"- Piso: {pi}\n"
+                            f"- Tipo: Puesto Flex"
+                        )
+                        st.success(msg)
+
+                        email_sent = send_reservation_email(em, "Confirmación Puesto", msg.replace("\n", "<br>"))
+                        if email_sent:
+                            st.info("📧 Correo de confirmación enviado")
+                        else:
+                            st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
+
+                        st.rerun()
+
+# ==========================================
+# B) RESERVAR SALA (tu lógica intacta)
+# ==========================================
+elif screen == "Reservar Sala de Reuniones":
+    import datetime
+
+    st.header("Reservar Sala de Reuniones")
+    st.info("Selecciona tu equipo/área y luego elige la sala y horario disponible")
+
+    df_dist = read_distribution_df(conn)
+    equipos_lista = []
+    if not df_dist.empty:
+        equipos_lista = sorted([e for e in df_dist["equipo"].unique() if e != "Cupos libres"])
+
+    if not equipos_lista:
+        st.warning("⚠️ No hay equipos configurados. Contacta al administrador.")
+    else:
+        st.markdown("### Selecciona tu Equipo/Área")
+        equipo_seleccionado = st.selectbox("Equipo/Área", equipos_lista, key="equipo_sala_sel")
+
+        st.markdown("---")
+        st.markdown("### Selecciona Sala y Horario")
+
+        salas_disponibles = [
+            "Sala Reuniones Pequeña Piso 1",
+            "Sala Reuniones Grande Piso 1",
+            "Sala Reuniones Piso 2",
+            "Sala Reuniones Piso 3",
+        ]
+
+        c_sala, c_fecha = st.columns(2)
+        sl = c_sala.selectbox("Selecciona Sala", salas_disponibles, key="sala_sel")
+
+        if "Piso 1" in sl:
+            pi_s = "Piso 1"
+        elif "Piso 2" in sl:
+            pi_s = "Piso 2"
+        elif "Piso 3" in sl:
+            pi_s = "Piso 3"
+        else:
+            pi_s = "Piso 1"
+
+        fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs_sala")
+
+        df_reservas_sala = get_room_reservations_df(conn)
+        reservas_hoy = []
+        if df_reservas_sala is not None and not df_reservas_sala.empty:
+            mask = (df_reservas_sala["reservation_date"].astype(str) == str(fe_s)) & (df_reservas_sala["room_name"] == sl)
+            reservas_hoy = df_reservas_sala[mask].to_dict("records")
+
+        st.markdown("#### Horarios Disponibles")
+
+        if reservas_hoy:
+            horarios_ocupados = ", ".join([f"{r.get('start_time','')} - {r.get('end_time','')}" for r in reservas_hoy])
+            st.warning(f"⚠️ Horarios ocupados: {horarios_ocupados}")
+
+        slots_completos = generate_time_slots("08:00", "20:00", 15)
+        if len(slots_completos) < 2:
+            st.error("No hay horarios configurados para esta sala.")
+        else:
+            opciones_inicio = slots_completos[:-1]
+            inicio_key = f"inicio_sala_{sl}"
+            fin_key = f"fin_sala_{sl}"
+
+            hora_inicio_sel = st.selectbox("Hora de inicio", opciones_inicio, index=0, key=inicio_key)
+
+            pos_inicio = slots_completos.index(hora_inicio_sel)
+            opciones_fin = slots_completos[pos_inicio + 1:]
+
+            if not opciones_fin:
+                st.warning("Selecciona una hora de inicio anterior a las 20:00 hrs.")
+            else:
+                idx_fin = min(4, len(opciones_fin) - 1)  # default ~ 1 hora
+                hora_fin_sel = st.selectbox("Hora de término", opciones_fin, index=idx_fin, key=fin_key)
+
+                inicio_dt = datetime.datetime.strptime(hora_inicio_sel, "%H:%M")
+                fin_dt = datetime.datetime.strptime(hora_fin_sel, "%H:%M")
+                duracion_min = int((fin_dt - inicio_dt).total_seconds() / 60)
+
+                if duracion_min < 15:
+                    st.error("El intervalo debe ser de al menos 15 minutos.")
+                else:
+                    conflicto_actual = check_room_conflict(reservas_hoy, str(fe_s), sl, hora_inicio_sel, hora_fin_sel)
+                    if conflicto_actual:
+                        st.error("❌ Ese intervalo ya está reservado. Elige otro horario.")
+
+                    st.markdown("---")
+                    st.markdown(f"### Confirmar Reserva: {hora_inicio_sel} - {hora_fin_sel}")
+
+                    with st.form("form_sala"):
+                        st.info(
+                            f"**Equipo/Área:** {equipo_seleccionado}\n\n"
+                            f"**Sala:** {sl}\n\n"
+                            f"**Fecha:** {fe_s}\n\n"
+                            f"**Horario:** {hora_inicio_sel} - {hora_fin_sel}"
+                        )
+                        e_s = st.text_input("Correo Electrónico", key="email_sala")
+                        sub_sala = st.form_submit_button("✅ Confirmar Reserva", type="primary", disabled=conflicto_actual)
+
+                    if sub_sala:
+                        if not e_s:
+                            st.error("Por favor ingresa tu correo electrónico.")
+                        elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', e_s):
+                            st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
+                        elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, hora_inicio_sel, hora_fin_sel):
+                            st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
+                        else:
+                            add_room_reservation(
+                                conn,
+                                equipo_seleccionado,
+                                e_s,
+                                pi_s,
+                                sl,
+                                str(fe_s),
+                                hora_inicio_sel,
+                                hora_fin_sel,
+                                datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            )
+
+                            msg = (
+                                f"✅ Sala Confirmada:\n\n"
+                                f"- Equipo/Área: {equipo_seleccionado}\n"
+                                f"- Sala: {sl}\n"
+                                f"- Fecha: {fe_s}\n"
+                                f"- Horario: {hora_inicio_sel} - {hora_fin_sel}"
+                            )
+                            st.success(msg)
+
+                            try:
+                                email_sent = send_reservation_email(e_s, "Reserva Sala", msg.replace("\n", "<br>"))
+                                if email_sent:
+                                    st.info("📧 Correo de confirmación enviado")
+                                else:
+                                    st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
+                            except Exception as email_error:
+                                st.warning(f"⚠️ Error al enviar correo: {email_error}")
+
+                            st.rerun()
+
+# ==========================================
+# C) MIS RESERVAS Y LISTADOS
+# ==========================================
+elif screen == "Mis Reservas y Listados":
+    st.header("Mis Reservas y Listados")
+
+    # =========================
+    # A) TABLAS DE RESERVAS
+    # =========================
+    ver_tipo = st.selectbox(
+        "Ver:",
+        ["Reserva de Puestos", "Reserva de Salas"],
+        key="mis_reservas_ver_tipo"
+    )
+
+    df_puestos = list_reservations_df(conn) or pd.DataFrame()
+    df_salas = get_room_reservations_df(conn) or pd.DataFrame()
+
+    if ver_tipo == "Reserva de Puestos":
+        if df_puestos.empty:
+            st.info("No hay reservas de puestos registradas.")
+        else:
+            df_view = df_puestos.copy().rename(columns={
+                "piso": "Piso",
+                "user_name": "Nombre",
+                "team_area": "Equipo",
+                "user_email": "Correo",
+                "reservation_date": "Fecha de Reserva",
+            })
+            cols = ["Piso", "Nombre", "Equipo", "Correo", "Fecha de Reserva"]
+            st.dataframe(df_view[[c for c in cols if c in df_view.columns]], hide_index=True, use_container_width=True)
+
+    else:  # Reserva de Salas
+        if df_salas.empty:
+            st.info("No hay reservas de salas registradas.")
+        else:
+            df_view = df_salas.copy().rename(columns={
+                "room_name": "Sala",
+                "user_name": "Equipo",
+                "user_email": "Correo",
+                "reservation_date": "Fecha de Reserva",
+                "start_time": "Hora Inicio",
+                "end_time": "Hora Fin",
+            })
+            cols = ["Sala", "Equipo", "Correo", "Fecha de Reserva", "Hora Inicio", "Hora Fin"]
+            st.dataframe(df_view[[c for c in cols if c in df_view.columns]], hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+
+    # =========================
+    # B) ANULAR RESERVAS (por correo + checklist + popup bonito)
+    # =========================
+    with st.expander("Anular Reservas", expanded=False):
+        correo_buscar = st.text_input(
+            "Correo asociado a la(s) reserva(s)",
+            key="anular_correo",
+            placeholder="usuario@ejemplo.com"
+        ).strip()
+
+        buscar = st.button("Buscar", type="primary", key="btn_buscar_reservas")
+
+        st.session_state.setdefault("anular_candidates", [])
+        st.session_state.setdefault("anular_checks", {})  # dict index->bool
+
+        if buscar:
+            st.session_state["anular_candidates"] = []
+            st.session_state["anular_checks"] = {}
+
+            if not correo_buscar:
+                st.error("Ingresa un correo para buscar reservas.")
+            elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', correo_buscar):
+                st.error("Ingresa un correo válido.")
+            else:
+                correo_norm = correo_buscar.lower()
+                candidates = []
+
+                # --- Puestos ---
+                if not df_puestos.empty and "user_email" in df_puestos.columns:
+                    hits = df_puestos[df_puestos["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
+                    for _, r in hits.iterrows():
+                        candidates.append({
+                            "kind": "puesto",
+                            "user_email": str(r.get("user_email", "")).strip(),
+                            "reservation_date": str(r.get("reservation_date", "")).strip(),
+                            "team_area": str(r.get("team_area", "")).strip(),
+                            "piso": str(r.get("piso", "")).strip(),
+                            "user_name": str(r.get("user_name", "")).strip(),
+                        })
+
+                # --- Salas ---
+                if not df_salas.empty and "user_email" in df_salas.columns:
+                    hits = df_salas[df_salas["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
+                    for _, r in hits.iterrows():
+                        inicio_raw = str(r.get("start_time", "")).strip()
+                        inicio = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
+                        candidates.append({
+                            "kind": "sala",
+                            "user_email": str(r.get("user_email", "")).strip(),
+                            "reservation_date": str(r.get("reservation_date", "")).strip(),
+                            "room_name": str(r.get("room_name", "")).strip(),
+                            "start_time": inicio,
+                            "end_time": str(r.get("end_time", "")).strip(),
+                            "piso": str(r.get("piso", "")).strip(),
+                            "user_name": str(r.get("user_name", "")).strip(),
+                        })
+
+                st.session_state["anular_candidates"] = candidates
+                st.session_state["anular_checks"] = {i: False for i in range(len(candidates))}
+
+        candidates = st.session_state.get("anular_candidates") or []
+
+        if candidates:
+            st.markdown("### Marca las reservas que quieres anular")
+            st.caption("Las que NO marques se mantienen.")
+
+            b1, b2, _ = st.columns([1, 1, 2])
+            with b1:
+                if st.button("Marcar todas", key="btn_mark_all"):
+                    st.session_state["anular_checks"] = {i: True for i in range(len(candidates))}
+                    st.rerun()
+            with b2:
+                if st.button("Desmarcar todas", key="btn_unmark_all"):
+                    st.session_state["anular_checks"] = {i: False for i in range(len(candidates))}
+                    st.rerun()
+
+            selected_items = []
+            for i, item in enumerate(candidates):
+                label = _fmt_item(item)
+                current = bool(st.session_state["anular_checks"].get(i, False))
+                new_val = st.checkbox(label, value=current, key=f"anular_ck_{i}")
+                st.session_state["anular_checks"][i] = new_val
+                if new_val:
+                    selected_items.append(item)
+
+            if st.button("Anular seleccionadas", type="primary", key="btn_anular_multi"):
+                if not selected_items:
+                    st.warning("Marca al menos una reserva.")
+                else:
+                    open_confirm_delete_multi(selected_items)
+
+        elif correo_buscar:
+            st.info("No se encontraron reservas para ese correo.")
+
+    render_confirm_delete_multi_dialog(conn)
+
+# ==========================================
+# ADMINISTRADOR (solo acceso aquí; lo demás lo enchufas después)
+# ==========================================
+elif screen == "Administrador":
+    st.header("Administrador")
+
+    st.session_state.setdefault("forgot_mode", False)
+
+    if not st.session_state["forgot_mode"]:
+        email = st.text_input("Ingresar correo", key="admin_login_email")
+        password = st.text_input("Contraseña", type="password", key="admin_login_pass")
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("Olvidaste tu contraseña", key="btn_admin_forgot"):
+                st.session_state["forgot_mode"] = True
+                st.rerun()
+
+        with c2:
+            if st.button("Acceder", type="primary", key="btn_admin_login"):
+                # TODO: valida con get_admin_credentials / tokens
+                if not email or not password:
+                    st.warning("Completa correo y contraseña.")
+                else:
+                    st.success("Login recibido (validación real pendiente).")
+    else:
+        reset_email = st.text_input("Correo de acceso", key="admin_reset_email")
+        if st.button("Enviar código", key="btn_admin_send_code"):
+            if not reset_email:
+                st.warning("Ingresa tu correo.")
+            else:
+                st.success("Código enviado (simulado).")
+
+        st.caption("Ingresa el código recibido en tu correo.")
+        code = st.text_input("Código", key="admin_reset_code")
+
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("Validar código", type="primary", key="btn_admin_validate"):
+                if not code:
+                    st.warning("Ingresa el código.")
+                else:
+                    st.success("Código validado (simulado).")
+
+        with c2:
+            if st.button("Volver a Acceso", key="btn_admin_back"):
+                st.session_state["forgot_mode"] = False
+                st.rerun()
 
 # ---------------------------------------------------------
 # FUNCIONES DE DISTRIBUCIÓN
@@ -1329,904 +1812,7 @@ def generate_full_pdf(
 
     return pdf.output(dest="S").encode("latin-1")
 
-def open_confirm_delete_puesto(conn, user_identifier, fecha_str, area, piso):
-    st.session_state["confirm_delete"] = {
-        "type": "puesto",
-        "user_identifier": str(user_identifier).strip(),
-        "fecha": str(fecha_str).strip(),
-        "area": str(area).strip(),
-        "piso": str(piso).strip(),
-    }
-    st.rerun()
 
-def open_confirm_delete_sala(conn, user_identifier, fecha_str, sala, inicio):
-    st.session_state["confirm_delete"] = {
-        "type": "sala",
-        "user_identifier": str(user_identifier).strip(),
-        "fecha": str(fecha_str).strip(),
-        "sala": str(sala).strip(),
-        "inicio": str(inicio).strip(),
-    }
-    st.rerun()
-
-def render_confirm_delete_dialog(conn):
-    payload = st.session_state.get("confirm_delete")
-    if not payload:
-        return
-
-    tipo = payload.get("type")
-
-    if not hasattr(st, "dialog"):
-        st.error("Esta versión de Streamlit no soporta popups centrados (st.dialog). Actualiza Streamlit.")
-        return
-
-    @st.dialog("Confirmar anulación")
-    def _dlg():
-        if tipo == "puesto":
-            st.markdown("### ¿Anular reserva de puesto?")
-            st.markdown(
-                f"**📧** {payload['user_identifier']}  \n"
-                f"**📅** {payload['fecha']}  \n"
-                f"**🏢** {payload['piso']}  \n"
-                f"**📍** {payload['area']}"
-            )
-            c1, c2 = st.columns(2)
-
-            if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_puesto"):
-                ok = delete_reservation_from_db(conn, payload["user_identifier"], payload["fecha"], payload["area"])
-                st.session_state.pop("confirm_delete", None)
-                if ok:
-                    st.success("Eliminada")
-                    st.cache_data.clear()
-                else:
-                    st.error("No se pudo eliminar")
-                st.rerun()
-
-            if c2.button("Cancelar", use_container_width=True, key="confirm_no_puesto"):
-                st.session_state.pop("confirm_delete", None)
-                st.rerun()
-
-        elif tipo == "sala":
-            st.markdown("### ¿Anular reserva de sala?")
-            st.markdown(
-                f"**📧** {payload['user_identifier']}  \n"
-                f"**📅** {payload['fecha']}  \n"
-                f"**🏢** {payload['sala']}  \n"
-                f"**🕒** {payload['inicio']}"
-            )
-            c1, c2 = st.columns(2)
-
-            if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_sala"):
-                inicio = str(payload["inicio"]).strip()
-                inicio = inicio[:5] if len(inicio) >= 5 else inicio  # "08:00:00" -> "08:00"
-
-                ok = delete_room_reservation_from_db(
-                    conn,
-                    payload["user_identifier"],
-                    payload["fecha"],
-                    payload["sala"],
-                    inicio
-                )
-
-                st.session_state.pop("confirm_delete", None)
-                if ok:
-                    st.success("Eliminada")
-                    st.cache_data.clear()
-                else:
-                    st.error("No se pudo eliminar")
-                st.rerun()
-
-            if c2.button("Cancelar", use_container_width=True, key="confirm_no_sala"):
-                st.session_state.pop("confirm_delete", None)
-                st.rerun()    
-    
-# --- UTILS TOKENS ---
-def generate_token(): return uuid.uuid4().hex[:8].upper()
-
-def safe_clear_cache(fn):
-    """Limpia cache de funciones @st.cache_data si existe; si no, no hace nada."""
-    try:
-        fn.clear()
-    except Exception:
-        pass
-
-def clear_compute_cache():
-    """Limpia cache del motor seats si está cacheado con @st.cache_data."""
-    try:
-        compute_distribution_from_excel.clear()
-    except Exception:
-        pass
-        
-# ---------------------------------------------------------
-# INICIO APP
-# ---------------------------------------------------------
-conn = get_conn()
-
-# MODIFICADO: Protección para no inicializar DB mil veces (Error 429)
-if "db_initialized" not in st.session_state:
-    with st.spinner('Conectando a Google Sheets...'):
-        init_db(conn)
-    st.session_state["db_initialized"] = True
-
-apply_appearance_styles(conn)
-st.markdown("""
-<style>
-/* 1) Usa todo el ancho de la pantalla */
-section.main > div {
-  max-width: 100% !important;
-  padding-left: 2rem !important;
-  padding-right: 2rem !important;
-}
-
-/* 2) Evita que quede “apretado” por layouts raros */
-.block-container {
-  max-width: 100% !important;
-}
-
-/* 3) Tamaño de letra un poquito más grande (opcional) */
-html, body, [class*="css"] {
-  font-size: 16px !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# Obtener settings actualizados en cada carga (permitir que logo y estilos cambien al instante)
-settings = get_all_settings(conn)
-
-# Definir variables
-site_title = settings.get("site_title", "Gestor de Puestos y Salas — ACHS Servicios")
-global_logo_path = settings.get("logo_path", "static/logo.png")
-logo_base64 = settings.get("logo_base64")
-
-logo_source = resolve_logo_source(global_logo_path, logo_base64)
-
-if logo_source is not None:
-    c1, c2 = st.columns([1, 5])
-    c1.image(logo_source, width=150, use_container_width=False)
-    c2.title(site_title)
-else:
-    st.title(site_title)
-    st.caption("💡 No se pudo cargar el logo. Sube uno desde Apariencia o coloca un archivo en static/logo.png.")
-
-# ---------------------------------------------------------
-# MENÚ PRINCIPAL
-# ---------------------------------------------------------
-menu = st.sidebar.selectbox("Menú", ["Vista pública", "Reservas", "Administrador"])
-
-# ==========================================
-# A. VISTA PÚBLICA
-# ==========================================
-if menu == "Vista pública":
-    st.header("Cupos y Planos")
-    
-    # MODIFICADO: Leemos solo una vez para evitar Error 429
-    df = read_distribution_df(conn)
-    
-    if not df.empty:
-        cols_drop = [c for c in df.columns if c.lower() in ['id', 'created_at']]
-        df_view = df.drop(columns=cols_drop, errors='ignore')
-        df_view = apply_sorting_to_df(df_view)
-        # MODIFICADO: Usamos df local en vez de leer de nuevo
-        pisos_disponibles = sort_floors(df["piso"].unique())
-    else:
-        df_view = df
-        pisos_disponibles = ["Piso 1"]
-
-    if df.empty: st.info("Sin datos.")
-    else:
-        t1, t2, t3 = st.tabs(["Estadísticas", "Ver Planos", "Reservas Agendadas"])
-        with t1:
-            st.markdown("""
-                <style>
-                [data-testid="stElementToolbar"] {
-                    display: none;
-                }
-                </style>
-                """, unsafe_allow_html=True)
-            
-            lib = (
-                df_view[df_view["equipo"] == "Cupos libres"]
-                .groupby(["piso", "dia"], observed=False, as_index=False)["cupos"].sum()
-            )
-            lib = apply_sorting_to_df(lib)
-            st.dataframe(lib, hide_index=True, use_container_width=True)
-            
-        with t3:
-            # ==========================
-            # A) RESERVAS DE SALAS (con filtro por piso)
-            # ==========================
-            st.subheader("Reservas de Salas de Reuniones")
-
-            df_salas = get_room_reservations_df(conn)
-
-            # selector de piso para salas
-            pisos_salas = []
-            if not df_salas.empty and "piso" in df_salas.columns:
-                pisos_salas = sort_floors(df_salas["piso"].dropna().unique())
-            if not pisos_salas:
-                pisos_salas = ["Todos"]
-
-            piso_sala_sel = st.selectbox(
-                "Filtrar por piso",
-                ["Todos"] + [p for p in pisos_salas if p != "Todos"],
-                key="pub_salas_piso_filter"
-            )
-
-            if df_salas.empty:
-                st.info("No hay reservas de salas registradas.")
-            else:
-                df_tabla = df_salas[['user_name', 'room_name', 'reservation_date', 'start_time', 'end_time', 'piso']].copy()
-                df_tabla.columns = ['Equipo', 'Sala', 'Fecha', 'Hora Inicio', 'Hora Fin', 'Piso']
-                df_tabla = df_tabla.sort_values(['Fecha', 'Hora Inicio'])
-
-                if piso_sala_sel != "Todos":
-                    df_tabla = df_tabla[df_tabla["Piso"].astype(str) == str(piso_sala_sel)]
-
-                st.dataframe(df_tabla, hide_index=True, width=None, use_container_width=True)
-
-            st.markdown("---")
-
-            # ==========================
-            # B) CALENDARIO PISO FLEX (solo aquí)
-            # ==========================
-            st.subheader("Calendario de reserva para Piso Flex")
-
-            all_res = list_reservations_df(conn)
-
-            fecha_base = datetime.date.today().replace(day=1)
-            mes_sel_date = st.date_input(
-                "Mes a visualizar",
-                value=fecha_base,
-                key="cal_reserva_piso_flex_t3"
-            )
-            mes_sel = mes_sel_date.replace(day=1)
-
-            # pisos disponibles (desde distribución si existe)
-            pisos_cal = sort_floors(pisos_disponibles) if pisos_disponibles else ["Piso 1"]
-
-            import calendar
-            for piso_cal in pisos_cal:
-                piso_label = str(piso_cal).strip()
-                if piso_label.lower().startswith("piso piso"):
-                    piso_label = piso_label[5:].strip()
-                if not piso_label.lower().startswith("piso"):
-                    piso_label = f"Piso {piso_label}"
-
-                with st.expander(f"📅 {piso_label}", expanded=False):
-                    reservas_piso = []
-                    if all_res is not None and not all_res.empty:
-                        def _norm_piso_local(x):
-                            s = str(x).strip()
-                            if s.lower().startswith("piso piso"):
-                                s = s[5:].strip()
-                            if not s.lower().startswith("piso"):
-                                s = f"Piso {s}"
-                            return s
-
-                        mask_piso = (
-                            all_res["piso"].astype(str).map(_norm_piso_local) == piso_label
-                        ) & (all_res["team_area"] == "Cupos libres")
-
-                        for _, r in all_res[mask_piso].iterrows():
-                            try:
-                                fecha_res = pd.to_datetime(r["reservation_date"])
-                                if fecha_res.year == mes_sel.year and fecha_res.month == mes_sel.month:
-                                    reservas_piso.append({
-                                        "fecha": fecha_res,
-                                        "equipo": r["user_name"],
-                                        "correo": r["user_email"]
-                                    })
-                            except:
-                                pass
-
-                    cal = calendar.monthcalendar(mes_sel.year, mes_sel.month)
-
-                    html_cal = '<div style="margin: 20px 0; overflow-x: auto;">'
-                    html_cal += '<table style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; table-layout: fixed;">'
-                    html_cal += '<thead><tr style="background-color: #00A04A; color: white;">'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Lun</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mar</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Mié</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Jue</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Vie</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Sáb</th>'
-                    html_cal += '<th style="padding: 12px 8px; border: 2px solid #006B32; font-size: 13px; font-weight: bold; width: 14.28%;">Dom</th>'
-                    html_cal += '</tr></thead><tbody>'
-
-                    for week in cal:
-                        html_cal += "<tr style='height: 120px;'>"
-                        for day in week:
-                            if day == 0:
-                                html_cal += '<td style="padding: 0; border: 1px solid #ddd; background-color: #f5f5f5; vertical-align: top;"></td>'
-                            else:
-                                fecha_dia = datetime.date(mes_sel.year, mes_sel.month, day)
-                                reservas_dia = [r for r in reservas_piso if r["fecha"].date() == fecha_dia]
-
-                                if reservas_dia:
-                                    equipos_lista = [r["equipo"] for r in reservas_dia]
-                                    if len(equipos_lista) > 3:
-                                        equipos_mostrar = equipos_lista[:3]
-                                        equipos_restantes = len(equipos_lista) - 3
-                                        equipos_str = "<br>".join([f"• {eq}" for eq in equipos_mostrar])
-                                        equipos_str += f'<br><span style="color: #006B32; font-weight: bold;">+{equipos_restantes} más</span>'
-                                    else:
-                                        equipos_str = "<br>".join([f"• {eq}" for eq in equipos_lista])
-
-                                    html_cal += f'<td style="padding: 8px 6px; border: 1px solid #ddd; background-color: #e8f5e9; vertical-align: top; min-height: 120px;">'
-                                    html_cal += f'<div style="font-size: 14px; font-weight: bold; color: #006B32; margin-bottom: 4px; border-bottom: 1px solid #c8e6c9; padding-bottom: 2px;">{day}</div>'
-                                    html_cal += f'<div style="font-size: 10px; color: #2e7d32; line-height: 1.4; word-wrap: break-word; overflow-wrap: break-word;">{equipos_str}</div>'
-                                    html_cal += '</td>'
-                                else:
-                                    html_cal += f'<td style="padding: 8px 6px; border: 1px solid #ddd; vertical-align: top; min-height: 120px;">'
-                                    html_cal += f'<div style="font-size: 14px; font-weight: bold; color: #666; margin-bottom: 4px;">{day}</div>'
-                                    html_cal += '<div style="font-size: 9px; color: #999; font-style: italic;">Disponible</div>'
-                                    html_cal += '</td>'
-                        html_cal += "</tr>"
-
-                    html_cal += '</tbody></table></div>'
-                    html_cal += '<style>@media (max-width: 768px) { table { font-size: 10px; } td { padding: 4px 2px !important; min-height: 80px !important; } }</style>'
-
-                    st.markdown(html_cal, unsafe_allow_html=True)
-        
-        with t2:
-            st.subheader("Descarga de Planos")
-            c1, c2 = st.columns(2)
-            
-            # Aseguramos que la lista no tenga valores nulos
-            pisos_clean = [p for p in pisos_disponibles if p is not None]
-            if not pisos_clean: pisos_clean = ["Piso 1"]
-            
-            p_sel = c1.selectbox("Selecciona Piso", pisos_clean)
-            ds = c2.selectbox("Selecciona Día", ["Todos (Lunes a Viernes)"] + ORDER_DIAS)
-            
-            # Blindaje: Convertir a string antes de reemplazar
-            if p_sel:
-                pn = str(p_sel).replace("Piso ", "").strip()
-            else:
-                pn = "1" # Fallback por defecto
-                
-            st.write("---")
-            
-            if ds == "Todos (Lunes a Viernes)":
-                m = create_merged_pdf(p_sel, conn, global_logo_path)
-                if m: 
-                    st.success("✅ Dossier disponible.")
-                    st.download_button("📥 Descargar Semana (PDF)", m, f"Planos_{p_sel}_Semana.pdf", "application/pdf", use_container_width=True)
-                else: st.warning("Sin planos generados.")
-            else:
-                dsf = ds.lower().replace("é","e").replace("á","a")
-                fpng = COLORED_DIR / f"piso_{pn}_{dsf}_combined.png"
-                fpdf = COLORED_DIR / f"piso_{pn}_{dsf}_combined.pdf"
-                
-                # Verificar si hay zonas guardadas para este piso
-                zonas = load_zones()
-                has_zones = p_sel in zonas and zonas[p_sel] and len(zonas[p_sel]) > 0
-                
-                opts = []
-                if fpng.exists(): opts.append("Imagen (PNG)")
-                if fpdf.exists(): opts.append("Documento (PDF)")
-                
-                if opts:
-                    if fpng.exists(): st.image(str(fpng), width=550, caption=f"{p_sel} - {ds}")
-                    sf = st.selectbox("Formato:", opts, key=f"dl_pub_{p_sel}_{ds}")
-                    tf = fpng if "PNG" in sf else fpdf
-                    mim = "image/png" if "PNG" in sf else "application/pdf"
-                    with open(tf,"rb") as f: st.download_button(f"📥 Descargar {sf}", f, tf.name, mim, use_container_width=True, key=f"dl_btn_{p_sel}_{ds}")
-                else:
-                    # Recargar zonas para verificar
-                    zonas_check = load_zones()
-                    has_zones_check = p_sel in zonas_check and zonas_check[p_sel] and len(zonas_check[p_sel]) > 0
-                    
-                    if has_zones_check:
-                        st.warning(f"⚠️ Hay {len(zonas_check[p_sel])} zonas guardadas para {p_sel}, pero el plano no está generado.")
-                        st.info(f"💡 Ve a 'Editor Visual de Zonas' → 'Generar Planos' y haz clic en '🎨 Generar Vista Previa' para crear el plano.")
-                    else:
-                        st.warning(f"⚠️ No hay planos generados para {p_sel} - {ds}.")
-                        st.info(f"💡 Primero crea zonas en 'Editor Visual de Zonas' y luego genera el plano en 'Generar Planos'.")
-
-# ==========================================
-# B. RESERVAS (UNIFICADO CON DROPDOWN Y TÍTULOS CORREGIDOS)
-# ==========================================
-elif menu == "Reservas":
-    
-    st.header("Gestión de Reservas")
-    
-    # --- MENÚ DESPLEGABLE UNIFICADO ---
-    opcion_reserva = st.selectbox(
-        "¿Qué deseas gestionar hoy?",
-        ["🪑 Reservar Puesto Flex", "🏢 Reservar Sala de Reuniones", "📋 Mis Reservas y Listados"],
-        index=0
-    )
-    st.markdown("---")
-
-    # ---------------------------------------------------------
-    # OPCIÓN 1: RESERVAR PUESTO (Con lógica de disponibilidad real)
-    # ---------------------------------------------------------
-    if opcion_reserva == "🪑 Reservar Puesto Flex":
-        st.subheader("Disponibilidad de Puestos")
-        st.info("Reserva de 'Cupos libres' (Máximo 2 días por mes).")
-        
-        df = read_distribution_df(conn)
-        
-        if df.empty:
-            st.warning("⚠️ No hay configuración de distribución cargada en el sistema.")
-        else:
-            c1, c2 = st.columns(2)
-            fe = c1.date_input("Selecciona Fecha", min_value=datetime.date.today(), key="fp")
-            pisos_disp = sort_floors(df["piso"].unique())
-            pi = c2.selectbox("Selecciona Piso", pisos_disp, key="pp")
-            
-            dn = ORDER_DIAS[fe.weekday()] if fe.weekday() < 5 else "FinDeSemana"
-            
-            if dn == "FinDeSemana":
-                st.error("🔒 Es fin de semana. No se pueden realizar reservas.")
-            else:
-                sub_libres = df[
-                    (df["piso"].astype(str) == str(pi)) &
-                    (df["dia"].astype(str) == str(dn)) &
-                    (df["equipo"].astype(str).str.strip().str.lower() == "cupos libres")
-                ]
-
-                total_cupos = int(pd.to_numeric(sub_libres["cupos"], errors="coerce").fillna(0).sum()) if not sub_libres.empty else 0
-
-                all_res = list_reservations_df(conn)
-                if all_res is None or all_res.empty:
-                    ocupados = 0
-                else:
-                    # normaliza piso igual que en otras partes
-                    def _norm_piso_local(x):
-                        s = str(x).strip()
-                        if s.lower().startswith("piso piso"):
-                            s = s[5:].strip()
-                        if not s.lower().startswith("piso"):
-                            s = f"Piso {s}"
-                        return s
-
-                    mask = (
-                        all_res["reservation_date"].astype(str) == str(fe)
-                    ) & (
-                        all_res["piso"].astype(str).map(_norm_piso_local) == _norm_piso_local(pi)
-                    )
-                    ocupados = int(mask.sum())
-
-                disponibles = max(0, total_cupos - ocupados)
-                
-                if disponibles > 0:
-                    st.success(f"✅ **Hay cupo: Quedan {disponibles} puestos disponibles**")
-                else:
-                    st.error(f"🔴 **AGOTADO: Se ocuparon los {total_cupos} puestos del día.**")
-                
-                st.markdown("### Datos del Solicitante")
-                
-                # Obtener lista de equipos para seleccionar área
-                equipos_disponibles = sorted(df[df["piso"] == pi]["equipo"].unique().tolist())
-                equipos_disponibles = [e for e in equipos_disponibles if e != "Cupos libres"]
-                
-                with st.form("form_puesto"):
-                    cf1, cf2 = st.columns(2)
-                    nombre = cf1.text_input("Nombre")
-                    area_equipo = cf1.selectbox("Área / Equipo", equipos_disponibles if equipos_disponibles else ["General"])
-                    em = cf2.text_input("Correo Electrónico")
-                    
-                    submitted = st.form_submit_button("Confirmar Reserva", type="primary", disabled=(disponibles <= 0))
-                    
-                    if submitted:
-                        if not nombre.strip():
-                            st.error("Por favor ingresa tu nombre.")
-                        if not em:
-                            st.error("Por favor ingresa tu correo electrónico.")
-                        elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', em):
-                            st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
-                        elif user_has_reservation(conn, em, str(fe)):
-                            st.error("Ya tienes una reserva registrada para esta fecha.")
-                        elif count_monthly_free_spots(conn, em, fe) >= 2:
-                            st.error("Has alcanzado el límite de 2 reservas mensuales.")
-                        elif disponibles <= 0:
-                            st.error("Lo sentimos, el cupo se acaba de agotar.")
-                        else:
-                            add_reservation(conn, area_equipo, em, pi, str(fe), "Cupos libres", datetime.datetime.now(datetime.timezone.utc).isoformat())
-                            msg = f"✅ Reserva Confirmada:\n\n- Área/Equipo: {area_equipo}\n- Fecha: {fe}\n- Piso: {pi}\n- Tipo: Puesto Flex"
-                            st.success(msg)
-                            
-                            email_sent = send_reservation_email(em, "Confirmación Puesto", msg.replace("\n","<br>"))
-                            if email_sent:
-                                st.info("📧 Correo de confirmación enviado")
-                            else:
-                                st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
-                            
-                            st.rerun()
-
-    # ---------------------------------------------------------
-    # OPCIÓN 2: RESERVAR SALA
-    # ---------------------------------------------------------
-    elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
-        st.subheader("Agendar Sala de Reuniones")
-        st.info("Selecciona tu equipo/área y luego elige la sala y horario disponible")
-        
-        df_dist = read_distribution_df(conn)
-        equipos_lista = []
-        if not df_dist.empty:
-            equipos_lista = sorted([e for e in df_dist["equipo"].unique() if e != "Cupos libres"])
-        
-        if not equipos_lista:
-            st.warning("⚠️ No hay equipos configurados. Contacta al administrador.")
-        else:
-            # Pestañas plegables por equipo (estilo horas médicas)
-            st.markdown("### Selecciona tu Equipo/Área")
-            equipo_seleccionado = st.selectbox("Equipo/Área", equipos_lista, key="equipo_sala_sel")
-            
-            st.markdown("---")
-            st.markdown("### Selecciona Sala y Horario")
-            
-            salas_disponibles = [
-                "Sala Reuniones Pequeña Piso 1",
-                "Sala Reuniones Grande Piso 1", 
-                "Sala Reuniones Piso 2",
-                "Sala Reuniones Piso 3"
-            ]
-            
-            c_sala, c_fecha = st.columns(2)
-            sl = c_sala.selectbox("Selecciona Sala", salas_disponibles, key="sala_sel")
-            
-            # Determinar piso desde el nombre de la sala
-            if "Piso 1" in sl:
-                pi_s = "Piso 1"
-            elif "Piso 2" in sl:
-                pi_s = "Piso 2"
-            elif "Piso 3" in sl:
-                pi_s = "Piso 3"
-            else:
-                pi_s = "Piso 1"
-            
-            fe_s = c_fecha.date_input("Fecha", min_value=datetime.date.today(), key="fs_sala")
-            
-            # Obtener reservas existentes para esta sala y fecha
-            df_reservas_sala = get_room_reservations_df(conn)
-            reservas_hoy = []
-            if not df_reservas_sala.empty:
-                mask = (df_reservas_sala["reservation_date"].astype(str) == str(fe_s)) & \
-                       (df_reservas_sala["room_name"] == sl)
-                reservas_hoy = df_reservas_sala[mask].to_dict("records")
-            
-            st.markdown("#### Horarios Disponibles")
-            
-            # Mostrar horarios ocupados (informativo)
-            if reservas_hoy:
-                horarios_ocupados = ', '.join([f"{r.get('start_time', '')} - {r.get('end_time', '')}" for r in reservas_hoy])
-                st.warning(f"⚠️ Horarios ocupados: {horarios_ocupados}")
-            
-            slots_completos = generate_time_slots("08:00", "20:00", 15)
-            if len(slots_completos) < 2:
-                st.error("No hay horarios configurados para esta sala.")
-            else:
-                opciones_inicio = slots_completos[:-1]
-                inicio_key = f"inicio_sala_{sl}"
-                fin_key = f"fin_sala_{sl}"
-                
-                idx_inicio = 0
-                hora_inicio_sel = st.selectbox("Hora de inicio", opciones_inicio, index=idx_inicio, key=inicio_key)
-                
-                if hora_inicio_sel not in slots_completos:
-                    hora_inicio_sel = opciones_inicio[0]
-                pos_inicio = slots_completos.index(hora_inicio_sel)
-                opciones_fin = slots_completos[pos_inicio + 1:]
-                
-                if not opciones_fin:
-                    st.warning("Selecciona una hora de inicio anterior a las 20:00 hrs.")
-                else:
-                    idx_fin = min(4, len(opciones_fin) - 1)  # Default: 1 hora
-                    hora_fin_sel = st.selectbox("Hora de término", opciones_fin, index=idx_fin, key=fin_key)
-                    
-                    inicio_dt = datetime.datetime.strptime(hora_inicio_sel, "%H:%M")
-                    fin_dt = datetime.datetime.strptime(hora_fin_sel, "%H:%M")
-                    duracion_min = int((fin_dt - inicio_dt).total_seconds() / 60)
-                    
-                    if duracion_min < 15:
-                        st.error("El intervalo debe ser de al menos 15 minutos.")
-                    else:
-                        conflicto_actual = check_room_conflict(
-                            reservas_hoy, str(fe_s), sl, hora_inicio_sel, hora_fin_sel
-                        )
-                        if conflicto_actual:
-                            st.error("❌ Ese intervalo ya está reservado. Elige otro horario.")
-                        
-                        st.markdown("---")
-                        st.markdown(f"### Confirmar Reserva: {hora_inicio_sel} - {hora_fin_sel}")
-                        
-                        with st.form("form_sala"):
-                            st.info(
-                                f"**Equipo/Área:** {equipo_seleccionado}\n\n"
-                                f"**Sala:** {sl}\n\n"
-                                f"**Fecha:** {fe_s}\n\n"
-                                f"**Horario:** {hora_inicio_sel} - {hora_fin_sel}"
-                            )
-                            
-                            e_s = st.text_input("Correo Electrónico", key="email_sala")
-                            
-                            sub_sala = st.form_submit_button("✅ Confirmar Reserva", type="primary", disabled=conflicto_actual)
-                        
-                        if sub_sala:
-                            if not e_s:
-                                st.error("Por favor ingresa tu correo electrónico.")
-                            elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', e_s):
-                                st.error("Por favor ingresa un correo electrónico válido (ejemplo: usuario@ejemplo.com).")
-                            elif check_room_conflict(get_room_reservations_df(conn).to_dict("records"), str(fe_s), sl, hora_inicio_sel, hora_fin_sel):
-                                st.error("❌ Conflicto: La sala ya está ocupada en ese horario.")
-                            else:
-                                add_room_reservation(
-                                    conn,
-                                    equipo_seleccionado,
-                                    e_s,
-                                    pi_s,
-                                    sl,
-                                    str(fe_s),
-                                    hora_inicio_sel,
-                                    hora_fin_sel,
-                                    datetime.datetime.now(datetime.timezone.utc).isoformat()
-                                )
-                                msg = (
-                                    f"✅ Sala Confirmada:\n\n"
-                                    f"- Equipo/Área: {equipo_seleccionado}\n"
-                                    f"- Sala: {sl}\n"
-                                    f"- Fecha: {fe_s}\n"
-                                    f"- Horario: {hora_inicio_sel} - {hora_fin_sel}"
-                                )
-                                st.success(msg)
-                                
-                                if e_s:
-                                    try:
-                                        email_sent = send_reservation_email(e_s, "Reserva Sala", msg.replace("\n","<br>"))
-                                        if email_sent:
-                                            st.info("📧 Correo de confirmación enviado")
-                                        else:
-                                            st.warning("⚠️ No se pudo enviar el correo. Verifica la configuración SMTP.")
-                                    except Exception as email_error:
-                                        st.warning(f"⚠️ Error al enviar correo: {email_error}")
-                                
-                                st.rerun()
-
-    # ---------------------------------------------------------
-    # OPCIÓN 3: MIS RESERVAS Y LISTADOS (REHECHO LIMPIO)
-    # ---------------------------------------------------------
-    else:
-        st.subheader("Reservas agendadas")
-
-        # =========================
-        # A) TABLAS DE RESERVAS
-        # =========================
-        ver_tipo = st.selectbox(
-            "Ver:",
-            ["Reserva de Puestos", "Reserva de Salas"],
-            key="mis_reservas_ver_tipo"
-        )
-
-        # Cargar data
-        df_puestos = list_reservations_df(conn)
-        df_salas = get_room_reservations_df(conn)
-
-        if df_puestos is None:
-            df_puestos = pd.DataFrame()
-        if df_salas is None:
-            df_salas = pd.DataFrame()
-
-        if ver_tipo == "Reserva de Puestos":
-            if df_puestos.empty:
-                st.info("No hay reservas de puestos registradas.")
-            else:
-                # Normaliza/arma columnas
-                df_view = df_puestos.copy()
-
-                df_view = df_view.rename(columns={
-                    "piso": "Piso",
-                    "user_name": "Nombre",
-                    "team_area": "Equipo",
-                    "user_email": "Correo",
-                    "reservation_date": "Fecha de Reserva",
-                })
-
-                cols = ["Piso", "Nombre", "Equipo", "Correo", "Fecha de Reserva"]
-                st.dataframe(
-                    df_view[[c for c in cols if c in df_view.columns]],
-                    hide_index=True,
-                    use_container_width=True
-                )
-
-        else:  # Reserva de Salas
-            if df_salas.empty:
-                st.info("No hay reservas de salas registradas.")
-            else:
-                df_view = df_salas.copy()
-
-                # Columnas esperadas: room_name, user_name(equipo), user_email, reservation_date
-                df_view = df_view.rename(columns={
-                    "room_name": "Sala",
-                    "user_name": "Equipo",
-                    "user_email": "Correo",
-                    "reservation_date": "Fecha de Reserva",
-                })
-
-                cols = ["Sala", "Equipo", "Correo", "Fecha de Reserva"]
-                st.dataframe(
-                    df_view[[c for c in cols if c in df_view.columns]],
-                    hide_index=True,
-                    use_container_width=True
-                )
-
-        st.markdown("---")
-
-        # =========================
-        # B) ANULAR RESERVAS (SECCIÓN INDEPENDIENTE)
-        # =========================
-        with st.expander("Anular Reservas", expanded=False):
-            tipo_anular = st.selectbox(
-                "¿Qué deseas anular?",
-                ["Anular Reserva de Puesto", "Anular Reserva de Sala"],
-                key="anular_tipo"
-            )
-
-            correo_buscar = st.text_input(
-                "Correo asociado a la reserva",
-                key="anular_correo",
-                placeholder="usuario@ejemplo.com"
-            ).strip()
-
-            buscar = st.button("Buscar", type="primary", key="btn_buscar_reservas")
-
-            if "anular_candidates" not in st.session_state:
-                st.session_state["anular_candidates"] = []
-            if "anular_kind" not in st.session_state:
-                st.session_state["anular_kind"] = None
-
-            if buscar:
-                st.session_state["anular_candidates"] = []
-                st.session_state["anular_kind"] = None
-
-                if not correo_buscar:
-                    st.error("Ingresa un correo para buscar reservas.")
-                elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', correo_buscar):
-                    st.error("Ingresa un correo válido.")
-                else:
-                    correo_norm = correo_buscar.lower()
-
-                    if tipo_anular == "Anular Reserva de Puesto":
-                        if df_puestos.empty or "user_email" not in df_puestos.columns:
-                            st.warning("No hay reservas de puestos para buscar.")
-                        else:
-                            hits = df_puestos[df_puestos["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
-                            if hits.empty:
-                                st.info("No se encontraron reservas de puesto para ese correo.")
-                            else:
-                                candidates = []
-                                for _, r in hits.iterrows():
-                                    candidates.append({
-                                        "kind": "puesto",
-                                        "user_email": str(r.get("user_email", "")).strip(),
-                                        "reservation_date": str(r.get("reservation_date", "")).strip(),
-                                        "team_area": str(r.get("team_area", "")).strip(),
-                                        "piso": str(r.get("piso", "")).strip(),
-                                        "user_name": str(r.get("user_name", "")).strip(),
-                                    })
-                                st.session_state["anular_candidates"] = candidates
-                                st.session_state["anular_kind"] = "puesto"
-
-                    else:  # sala
-                        if df_salas.empty or "user_email" not in df_salas.columns:
-                            st.warning("No hay reservas de salas para buscar.")
-                        else:
-                            hits = df_salas[df_salas["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
-                            if hits.empty:
-                                st.info("No se encontraron reservas de sala para ese correo.")
-                            else:
-                                candidates = []
-                                for _, r in hits.iterrows():
-                                    inicio_raw = str(r.get("start_time", "")).strip()
-                                    inicio = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
-
-                                    candidates.append({
-                                        "kind": "sala",
-                                        "user_email": str(r.get("user_email", "")).strip(),
-                                        "reservation_date": str(r.get("reservation_date", "")).strip(),
-                                        "room_name": str(r.get("room_name", "")).strip(),
-                                        "start_time": inicio,
-                                        "end_time": str(r.get("end_time", "")).strip(),
-                                        "piso": str(r.get("piso", "")).strip(),
-                                        "user_name": str(r.get("user_name", "")).strip(),
-                                    })
-                                st.session_state["anular_candidates"] = candidates
-                                st.session_state["anular_kind"] = "sala"
-
-            candidates = st.session_state.get("anular_candidates") or []
-            if candidates:
-                st.markdown("### Selecciona una o más reservas a anular")
-
-                selected_keys = []
-                for i, item in enumerate(candidates):
-                    if item["kind"] == "puesto":
-                        label = (
-                            f"📌 Puesto | Fecha: {item['reservation_date']} | Piso: {item['piso']} | "
-                            f"Ubicación: {item['team_area']} | Nombre: {item['user_name']}"
-                        )
-                    else:
-                        label = (
-                            f"🏢 Sala | Fecha: {item['reservation_date']} | Sala: {item['room_name']} | "
-                            f"Hora: {item['start_time']} | Equipo: {item['user_name']}"
-                        )
-
-                    ck = st.checkbox(label, key=f"anular_ck_{item['kind']}_{i}")
-                    if ck:
-                        selected_keys.append(i)
-
-                # Guardamos selección
-                st.session_state["anular_selected_idx"] = selected_keys
-
-                def _open_confirm_popup():
-                    st.session_state["anular_confirm_open"] = True
-                    st.rerun()
-
-                if st.button("Anular Reserva(s)", type="primary", key="btn_anular_reservas"):
-                    if not selected_keys:
-                        st.warning("Selecciona al menos una reserva.")
-                    else:
-                        _open_confirm_popup()
-
-            # Popup confirmación
-            if st.session_state.get("anular_confirm_open"):
-                if not hasattr(st, "dialog"):
-                    st.error("Tu Streamlit no soporta st.dialog. Actualiza Streamlit.")
-                else:
-                    @st.dialog("Confirmación")
-                    def _dlg_confirm():
-                        st.write("¿Estás segura (o) de eliminar tu (s) Reserva (s)?")
-
-                        c_yes, c_no = st.columns(2)
-
-                        if c_yes.button("Si, confirmo", type="primary", use_container_width=True, key="anular_confirm_yes"):
-                            cand = st.session_state.get("anular_candidates") or []
-                            sel = st.session_state.get("anular_selected_idx") or []
-
-                            deleted = 0
-                            for idx in sel:
-                                if idx < 0 or idx >= len(cand):
-                                    continue
-                                item = cand[idx]
-
-                                if item["kind"] == "puesto":
-                                    ok = delete_reservation_from_db(
-                                        conn,
-                                        item["user_email"],
-                                        item["reservation_date"],
-                                        item["team_area"]
-                                    )
-                                else:
-                                    ok = delete_room_reservation_from_db(
-                                        conn,
-                                        item["user_email"],
-                                        item["reservation_date"],
-                                        item["room_name"],
-                                        item["start_time"]
-                                    )
-
-                                if ok:
-                                    deleted += 1
-
-                            # limpiar estado
-                            st.session_state["anular_confirm_open"] = False
-                            st.session_state["anular_candidates"] = []
-                            st.session_state["anular_selected_idx"] = []
-                            st.cache_data.clear()
-
-                            if deleted > 0:
-                                st.success(f"✅ Se anularon {deleted} reserva(s).")
-                            else:
-                                st.error("❌ No se pudo anular ninguna reserva.")
-
-                            st.rerun()
-
-                        if c_no.button("No", use_container_width=True, key="anular_confirm_no"):
-                            st.session_state["anular_confirm_open"] = False
-                            st.rerun()
-
-                    _dlg_confirm()
 
 # ==========================================
 # E. ADMINISTRADOR
@@ -3464,6 +3050,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
