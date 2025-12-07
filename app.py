@@ -16,6 +16,7 @@ from typing import Optional
 import numpy as np
 import random
 from modules.pdfgen import generate_pdf_from_df
+import unicodedata
 
 # ---------------------------------------------------------
 # 1. PARCHE PARA STREAMLIT >= 1.39 (MANTIENE COMPATIBILIDAD ST_CANVAS)
@@ -178,12 +179,27 @@ COLORED_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------
 # 4. FUNCIONES HELPER & LÓGICA
 # ---------------------------------------------------------
-def clean_pdf_text(text: str) -> str:
-    if not isinstance(text, str): return str(text)
-    replacements = {"•": "-", "—": "-", "–": "-", "⚠": "ATENCION:", "⚠️": "ATENCION:", "…": "...", "º": "o", "°": ""}
-    for bad, good in replacements.items():
-        text = text.replace(bad, good)
-    return text.encode('latin-1', 'replace').decode('latin-1')
+def clean_pdf_text(s: str) -> str:
+    if s is None:
+        return ""
+
+    s = str(s)
+
+    s = (s.replace("\r", "")
+           .replace("\t", " ")
+           .replace("–", "-")
+           .replace("—", "-")
+           .replace("−", "-")
+           .replace("“", '"')
+           .replace("”", '"')
+           .replace("’", "'")
+           .replace("‘", "'")
+           .replace("•", "-")
+           .replace("\u00a0", " "))
+
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("latin-1", "replace").decode("latin-1")
+    return s
 
 def sort_floors(floor_list):
     """Ordena una lista de pisos lógicamente (1, 2, 10)."""
@@ -220,7 +236,7 @@ def apply_sorting_to_df(df):
     return df
 
 # ---------------------------------------------------------
-# FUNCIONES DE DISTRIBUCIÓN CORREGIDAS
+# FUNCIONES DE DISTRIBUCIÓN
 # ---------------------------------------------------------
 def _get_team_and_dotacion_cols(df_eq: pd.DataFrame):
     if df_eq is None or df_eq.empty:
@@ -258,7 +274,6 @@ def _equity_score(rows, deficit, dot_map: dict, days_per_week=5):
             continue
         coverages.append(assigned.get(eq, 0) / needed)
 
-    # Si no hay datos para comparar, castiga fuerte
     if not coverages:
         return 9999.0 + (len(deficit) if deficit else 0)
 
@@ -275,7 +290,6 @@ def _dot_map_from_equipos(df_eq: pd.DataFrame) -> dict:
         return {}
     col_team = next((c for c in df_eq.columns if "equipo" in c.lower()), None)
     col_dot = None
-    # soporta "personas", "dotacion", "dotación", "dot"
     for key in ["personas", "dotacion", "dotación", "dot"]:
         col_dot = next((c for c in df_eq.columns if key in c.lower()), None)
         if col_dot:
@@ -354,7 +368,6 @@ def _largest_remainder_allocation(weights: dict, total: int) -> dict:
     used = sum(base.values())
     remain = total - used
 
-    # ordenar por mayor fracción
     frac = sorted(((k, quotas[k] - base[k]) for k in quotas), key=lambda x: x[1], reverse=True)
     i = 0
     while remain > 0 and i < len(frac):
@@ -3218,6 +3231,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
