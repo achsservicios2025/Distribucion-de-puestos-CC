@@ -1763,16 +1763,16 @@ elif menu == "Reservas":
                         area = "Cupos libres"
 
                     with c1:
-                            st.markdown(
-                                f"**📅 Fecha:** {fecha}  \n"
-                                f"**🏢 Piso:** {piso}  \n"
-                                f"**📍 Ubicación:** {area}  \n"
-                                f"**👤 Nombre:** {user_name}  \n"
-                                f"**📧 Correo:** {user_email}"
-                            )
+                        st.markdown(
+                            f"**📅 Fecha:** {fecha}  \n"
+                            f"**🏢 Piso:** {piso}  \n"
+                            f"**📍 Ubicación:** {area}  \n"
+                            f"**👤 Nombre:** {user_name}  \n"
+                            f"**📧 Correo:** {user_email}"
+                        )
 
-                        if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                            open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
+                    if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                        open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
 
         if not ms.empty:
             st.markdown("#### 🏢 Tus Salas")
@@ -3054,6 +3054,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
