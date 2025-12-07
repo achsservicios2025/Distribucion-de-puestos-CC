@@ -2221,7 +2221,6 @@ elif menu == "Administrador":
                     clear_distribution(conn)
                     insert_distribution(conn, rows)
 
-                    st.success("Distribución guardada.")
                     st.session_state["proposal_rows"] = rows
 
                     if st.session_state.get("proposal_deficit"):
@@ -3231,6 +3230,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
