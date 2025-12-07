@@ -1743,7 +1743,30 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     else:
         render_confirm_delete_dialog(conn)
-        
+
+        df_puestos = list_reservations_df(conn)
+        df_salas = get_room_reservations_df(conn)
+
+        if df_puestos is None:
+            df_puestos = pd.DataFrame()
+        if df_salas is None:
+            df_salas = pd.DataFrame()
+
+        user_email_filter = str(st.session_state.get("user_email", "")).strip().lower()
+
+        if user_email_filter and (not df_puestos.empty) and ("user_email" in df_puestos.columns):
+            mp = df_puestos[df_puestos["user_email"].astype(str).str.strip().str.lower() == user_email_filter].copy()
+        else:
+            mp = df_puestos.copy()
+
+        if user_email_filter and (not df_salas.empty) and ("user_email" in df_salas.columns):
+            ms = df_salas[df_salas["user_email"].astype(str).str.strip().str.lower() == user_email_filter].copy()
+        else:
+            ms = df_salas.copy()
+
+        # -------------------------
+        # Tus Puestos
+        # -------------------------
         if not mp.empty:
             st.markdown("#### 🪑 Tus Puestos")
 
@@ -1771,7 +1794,12 @@ elif menu == "Reservas":
 
                     if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
                         open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
+        else:
+            st.info("No tienes reservas de puestos registradas.")
 
+        # -------------------------
+        # Tus Salas
+        # -------------------------
         if not ms.empty:
             st.markdown("#### 🏢 Tus Salas")
 
@@ -1802,18 +1830,28 @@ elif menu == "Reservas":
 
                     if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
                         open_confirm_delete_sala(conn, user_email, fecha, sala, inicio)
+        else:
+            st.info("No tienes reservas de salas registradas.")
 
         st.markdown("---")
 
         # --- SECCION 2 ---
         with st.expander("Ver Listado General de Reservas", expanded=True):
             st.subheader("Reserva de puestos")
-            st.dataframe(clean_reservation_df(list_reservations_df(conn)), hide_index=True, use_container_width=True)
+            st.dataframe(
+                clean_reservation_df(list_reservations_df(conn)),
+                hide_index=True,
+                use_container_width=True
+            )
 
             st.markdown("<br>", unsafe_allow_html=True)
 
             st.subheader("Reserva de salas")
-            st.dataframe(clean_reservation_df(get_room_reservations_df(conn), "sala"), hide_index=True, use_container_width=True)
+            st.dataframe(
+                clean_reservation_df(get_room_reservations_df(conn), "sala"),
+                hide_index=True,
+                use_container_width=True
+            )
     
 # ==========================================
 # E. ADMINISTRADOR
@@ -3052,6 +3090,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
