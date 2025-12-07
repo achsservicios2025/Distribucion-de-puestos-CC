@@ -1150,15 +1150,17 @@ def render_confirm_delete_dialog(conn):
             c1, c2 = st.columns(2)
 
             if c1.button("🔴 Sí, anular", type="primary", use_container_width=True, key="confirm_yes_sala"):
-                    ok = delete_room_reservation_from_db(
-                        conn,
-                        payload["user_identifier"],
-                        payload["fecha"],
-                        payload["sala"],
-                        inicio
-                    )
-                
-                    st.
+                inicio = str(payload["inicio"]).strip()
+                inicio = inicio[:5] if len(inicio) >= 5 else inicio  # "08:00:00" -> "08:00"
+
+                ok = delete_room_reservation_from_db(
+                    conn,
+                    payload["user_identifier"],
+                    payload["fecha"],
+                    payload["sala"],
+                    inicio
+                )
+
                 st.session_state.pop("confirm_delete", None)
                 if ok:
                     st.success("Eliminada")
@@ -1169,10 +1171,8 @@ def render_confirm_delete_dialog(conn):
 
             if c2.button("Cancelar", use_container_width=True, key="confirm_no_sala"):
                 st.session_state.pop("confirm_delete", None)
-                st.rerun()
-
-    _dlg()
-
+                st.rerun()    
+    
 # --- UTILS TOKENS ---
 def generate_token(): return uuid.uuid4().hex[:8].upper()
 
@@ -3086,6 +3086,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
