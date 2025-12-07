@@ -144,233 +144,260 @@ import streamlit.components.v1 as components
 # ---------------------------------------------------------
 # 3. CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------
-st.set_page_config(page_title="Gestor de puestos y reservas", layout="wide")
+# ---------------------------------------------------------
+# 0. IMPORTS
+# ---------------------------------------------------------
+import streamlit as st
+from pathlib import Path
 
-# Defaults editables a futuro (Admin)
-if "ui" not in st.session_state:
-    st.session_state.ui = {
-        "app_title": "Gestor de puestos y reservas",
-        "bg_color": "#ffffff",
-        "logo_path": "assets/logo.png",  # cámbialo cuando tengas tu logo
-    }
+# ---------------------------------------------------------
+# 1. CONFIGURACIÓN GENERAL (Streamlit)
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Gestor de puestos y reservas",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-# CSS: fondo blanco (editable), header fijo, padding, y margen tipo "5 cm"
-# 5cm ~ 189px aprox (depende de DPI, pero visualmente cumple)
-LEFT_MARGIN_PX = 190
+# ---------------------------------------------------------
+# 2. ESTADO GLOBAL (editable desde Admin a futuro)
+# ---------------------------------------------------------
+st.session_state.setdefault("ui", {
+    "app_title": "Gestor de puestos y reservas",
+    "bg_color": "#ffffff",
+    "logo_path": "assets/logo.png",  # pon tu logo acá cuando lo tengas
+})
 
+st.session_state.setdefault("nav_collapsed", False)
+st.session_state.setdefault("screen", "Inicio")
+st.session_state.setdefault("forgot_mode", False)
+
+# Opciones de navegación (dropdown del menú)
+RESERVAS_OPTS = [
+    "—",
+    "Reservar Puesto Flex",
+    "Reservar Sala de Reuniones",
+    "Mis Reservas y Listados",
+    "Administrador",
+]
+
+# ---------------------------------------------------------
+# 3. ESTILOS (CSS) - look imagen 1 (menú izquierdo compacto)
+# ---------------------------------------------------------
 st.markdown(f"""
 <style>
-/* Fondo global (editable a futuro) */
+/* Fondo global */
 .stApp {{
-    background: {st.session_state.ui["bg_color"]};
+  background: {st.session_state.ui["bg_color"]};
 }}
+
+/* Opcional: ocultar header default */
+header {{ visibility: hidden; }}
 
 /* Contenedor principal ancho completo */
 section.main > div {{
   max-width: 100% !important;
-  padding-left: 2rem !important;
-  padding-right: 2rem !important;
+  padding-left: 1.5rem !important;
+  padding-right: 1.5rem !important;
+}}
+.block-container {{
+  max-width: 100% !important;
 }}
 
-/* Header */
-.mk-header {{
+/* Layout: menú izq + contenido */
+.mk-shell {{
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  align-items: start;
+}}
+.mk-shell.mk-collapsed {{
+  grid-template-columns: 76px 1fr;
+}}
+
+/* Tarjeta menú */
+.mk-menu-card {{
+  background: #f3f5f7;
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.12);
   position: sticky;
-  top: 0;
-  z-index: 999;
-  background: {st.session_state.ui["bg_color"]};
-  padding: 1rem 0 0.75rem 0;
-  border-bottom: 1px solid rgba(0,0,0,0.08);
+  top: 12px;
+  min-height: calc(100vh - 24px);
 }}
 
-/* Empuja contenido interno del header dejando "5cm" al logo */
-.mk-header-inner {{
+/* Botón colapsar */
+.mk-collapse-row {{
+  display: flex;
+  justify-content: flex-end;
+}}
+.mk-collapse-btn button {{
+  border-radius: 14px !important;
+  padding: 6px 10px !important;
+}}
+
+/* Título menú */
+.mk-menu-title {{
+  font-size: 14px;
+  font-weight: 800;
+  margin: 6px 0 10px 2px;
+  color: rgba(0,0,0,0.65);
+}}
+
+/* Selectbox pill tipo imagen 1 */
+div[data-baseweb="select"] > div {{
+  border-radius: 18px !important;
+  border: 2px solid rgba(255, 60, 60, 0.85) !important; /* borde rojo */
+  background: #fff !important;
+  min-height: 44px !important;
+}}
+
+/* Lista desplegable */
+ul[role="listbox"] {{
+  border-radius: 14px !important;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.18) !important;
+  overflow: hidden !important;
+}}
+
+/* Texto del select */
+div[data-baseweb="select"] span {{
+  font-weight: 650;
+}}
+
+/* Colapsado: ocultar labels/título */
+.mk-collapsed .mk-menu-title {{ display: none; }}
+.mk-collapsed .stSelectbox label {{ display: none !important; }}
+
+/* Header simple (logo - titulo) */
+.mk-topbar {{
   display: grid;
   grid-template-columns: 1fr 2fr 1fr;
   align-items: center;
-  column-gap: 1rem;
-  padding-left: {LEFT_MARGIN_PX}px; /* <- ~ 5cm */
-  padding-right: 2rem;
+  padding: 10px 0 12px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  margin-bottom: 14px;
 }}
-
-/* Logo */
-.mk-logo {{
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-}}
-
-/* Título centrado */
 .mk-title {{
   text-align: center;
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1.2;
-  color: rgba(0,0,0,0.85);
-}}
-
-/* Zona derecha */
-.mk-right {{
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  align-items: center;
-}}
-
-/* Selectbox más compacto */
-div[data-baseweb="select"] > div {{
-  border-radius: 12px !important;
+  font-size: 22px;
+  font-weight: 800;
+  margin: 0;
 }}
 </style>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# 4. HELPERS UI
+# ---------------------------------------------------------
+def go(screen_name: str):
+    st.session_state.screen = screen_name
 
-# -----------------------------
-# HEADER / NAV
-# -----------------------------
-def render_header():
-    st.markdown('<div class="mk-header"><div class="mk-header-inner">', unsafe_allow_html=True)
-
+def render_topbar():
     c1, c2, c3 = st.columns([1, 2, 1], vertical_alignment="center")
 
-    # Izquierda: Logo
     with c1:
-        st.markdown('<div class="mk-logo">', unsafe_allow_html=True)
         logo_path = Path(st.session_state.ui["logo_path"])
         if logo_path.exists():
             st.image(str(logo_path), width=90)
         else:
-            # Placeholder si aún no existe
-            st.markdown("🧩 **(Logo aquí)**")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # Centro: Título editable a futuro
+            st.write("🧩 (Logo aquí)")
     with c2:
-        st.markdown(f'<div class="mk-title">{st.session_state.ui["app_title"]}</div>', unsafe_allow_html=True)
-
-    # Derecha: "pestañas" como selectbox (simulan dropdown)
+        st.markdown(f"<div class='mk-title'>{st.session_state.ui['app_title']}</div>", unsafe_allow_html=True)
     with c3:
-        st.markdown('<div class="mk-right">', unsafe_allow_html=True)
+        st.write("")
 
-        # Menú Reservas
-        reserva_opt = st.selectbox(
-            "Reservas",
-            ["—", "Reservar Puesto Flex", "Reservar Sala de Reuniones", "Mis Reservas y Listados"],
-            label_visibility="collapsed",
-            key="nav_reservas",
-        )
-
-        # Menú Admin
-        admin_opt = st.selectbox(
-            "Administrador",
-            ["—", "Acceso"],
-            label_visibility="collapsed",
-            key="nav_admin",
-        )
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-    # Decide "pantalla" actual según dropdown
-    if reserva_opt != "—":
-        st.session_state["screen"] = reserva_opt
-        st.session_state["nav_admin"] = "—"
-    elif admin_opt != "—":
-        st.session_state["screen"] = "Administrador"
-        st.session_state["nav_reservas"] = "—"
-    else:
-        st.session_state.setdefault("screen", "Inicio")
-
-
-# -----------------------------
-# PANTALLAS
-# -----------------------------
+# ---------------------------------------------------------
+# 5. PANTALLAS
+# ---------------------------------------------------------
 def screen_inicio():
-    st.write("Selecciona una opción en **Reservas** o entra a **Administrador**.")
-    st.info("Aquí después agregaremos los selectbox de distribución de cupos, reservas, planos, descargas, etc.")
-
+    st.info("Selecciona una opción desde el menú de la izquierda.")
+    st.write("Luego aquí irá: distribución de cupos, reservas hechas, ver/descargar planos, etc.")
 
 def screen_reservas(option: str):
     st.subheader(option)
-
-    if option == "Reservar Puesto Flex":
-        st.write("Aquí conectas tu módulo existente de Puesto Flex.")
-    elif option == "Reservar Sala de Reuniones":
-        st.write("Aquí conectas tu módulo existente de Salas.")
-    elif option == "Mis Reservas y Listados":
-        st.write("Aquí conectas tu módulo existente de Mis Reservas/Listados.")
-    else:
-        st.write("Opción no reconocida.")
-
+    st.write("TODO: aquí conectas tu módulo actual para esta sección.")
 
 def screen_admin():
     st.subheader("Administrador")
 
-    # Estado login / reset
-    st.session_state.setdefault("forgot_mode", False)
+    if not st.session_state.forgot_mode:
+        email = st.text_input("Ingresar correo", key="admin_email")
+        password = st.text_input("Contraseña", type="password", key="admin_pass")
 
-    colA, colB = st.columns([1, 2])
-
-    with colA:
-        # Login box
-        st.markdown("### Acceso")
-
-        if not st.session_state["forgot_mode"]:
-            email = st.text_input("Ingresar correo", key="admin_email")
-            password = st.text_input("Contraseña", type="password", key="admin_pass")
-
+        c1, c2, _ = st.columns([1, 1, 2])
+        with c1:
             if st.button("Olvidaste tu contraseña"):
-                st.session_state["forgot_mode"] = True
+                st.session_state.forgot_mode = True
                 st.rerun()
-
+        with c2:
             if st.button("Acceder"):
-                # TODO: aquí validas credenciales (a futuro)
                 if not email or not password:
                     st.warning("Completa correo y contraseña.")
                 else:
-                    st.success("Credenciales recibidas (validación real pendiente).")
+                    st.success("Acceso recibido (validación real pendiente).")
 
-        else:
-            # Forgot password flow
-            reset_email = st.text_input("Correo de acceso", key="reset_email")
-            if st.button("Enviar código"):
-                # TODO: enviar email real (SMTP/servicio)
-                if not reset_email:
-                    st.warning("Ingresa tu correo.")
-                else:
-                    st.session_state["reset_code_sent"] = True
-                    st.success("Código enviado (simulado).")
+    else:
+        reset_email = st.text_input("Correo de acceso", key="reset_email")
+        if st.button("Enviar código"):
+            if not reset_email:
+                st.warning("Ingresa tu correo.")
+            else:
+                st.success("Código enviado (simulado).")
 
-            st.caption("Ingresa el código recibido en tu correo.")
-            code = st.text_input("Código", key="reset_code")
+        st.caption("Ingresa el código recibido en tu correo.")
+        code = st.text_input("Código", key="reset_code")
 
+        c1, c2, _ = st.columns([1, 1, 2])
+        with c1:
             if st.button("Validar código"):
-                # TODO: validar código real
                 if not code:
                     st.warning("Ingresa el código.")
                 else:
                     st.success("Código validado (simulado).")
-
+        with c2:
             if st.button("Volver a Acceso"):
-                st.session_state["forgot_mode"] = False
+                st.session_state.forgot_mode = False
                 st.rerun()
 
-    with colB:
-        st.markdown("### Configuración visual (a futuro)")
-        st.caption("Esto lo dejamos preparado para que después edites logo/título/fondo desde acá.")
-        st.write({
-            "logo_path": st.session_state.ui["logo_path"],
-            "app_title": st.session_state.ui["app_title"],
-            "bg_color": st.session_state.ui["bg_color"],
-        })
+# ---------------------------------------------------------
+# 6. APP (layout + menú)
+# ---------------------------------------------------------
+shell_class = "mk-shell mk-collapsed" if st.session_state.nav_collapsed else "mk-shell"
+st.markdown(f'<div class="{shell_class}">', unsafe_allow_html=True)
 
+# ---- MENU IZQUIERDO
+st.markdown('<div class="mk-menu-card">', unsafe_allow_html=True)
 
-# -----------------------------
-# APP
-# -----------------------------
-render_header()
+# Botón colapsar
+st.markdown('<div class="mk-collapse-row mk-collapse-btn">', unsafe_allow_html=True)
+if st.button("<<" if not st.session_state.nav_collapsed else ">>", key="collapse"):
+    st.session_state.nav_collapsed = not st.session_state.nav_collapsed
+    st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
-screen = st.session_state.get("screen", "Inicio")
+if not st.session_state.nav_collapsed:
+    st.markdown('<div class="mk-menu-title">Menú</div>', unsafe_allow_html=True)
+
+choice = st.selectbox(
+    "Reservas",
+    RESERVAS_OPTS,
+    index=0,
+    key="left_nav",
+    label_visibility="collapsed" if st.session_state.nav_collapsed else "visible",
+)
+
+if choice and choice != "—":
+    go(choice)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ---- CONTENIDO PRINCIPAL
+st.markdown('<div>', unsafe_allow_html=True)
+
+render_topbar()
+st.divider()
+
+screen = st.session_state.screen
 if screen == "Inicio":
     screen_inicio()
 elif screen in ["Reservar Puesto Flex", "Reservar Sala de Reuniones", "Mis Reservas y Listados"]:
@@ -379,6 +406,9 @@ elif screen == "Administrador":
     screen_admin()
 else:
     screen_inicio()
+
+st.markdown('</div>', unsafe_allow_html=True)  # end main
+st.markdown('</div>', unsafe_allow_html=True)  # end shell
 
 # ---------------------------------------------------------
 # 4. FUNCIONES HELPER & LÓGICA
@@ -3434,6 +3464,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
