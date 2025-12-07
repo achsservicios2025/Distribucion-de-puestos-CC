@@ -1739,11 +1739,21 @@ elif menu == "Reservas":
                                 st.rerun()
 
     # ---------------------------------------------------------
-    # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
+    # OPCIÓN 3: MIS RESERVAS Y LISTADOS (REHECHO LIMPIO)
     # ---------------------------------------------------------
     else:
-        render_confirm_delete_dialog(conn)
+        st.subheader("Reservas agendadas")
 
+        # =========================
+        # A) TABLAS DE RESERVAS
+        # =========================
+        ver_tipo = st.selectbox(
+            "Ver:",
+            ["Reserva de Puestos", "Reserva de Salas"],
+            key="mis_reservas_ver_tipo"
+        )
+
+        # Cargar data
         df_puestos = list_reservations_df(conn)
         df_salas = get_room_reservations_df(conn)
 
@@ -1752,107 +1762,225 @@ elif menu == "Reservas":
         if df_salas is None:
             df_salas = pd.DataFrame()
 
-        user_email_filter = str(st.session_state.get("user_email", "")).strip().lower()
+        if ver_tipo == "Reserva de Puestos":
+            if df_puestos.empty:
+                st.info("No hay reservas de puestos registradas.")
+            else:
+                # Normaliza/arma columnas
+                df_view = df_puestos.copy()
 
-        if user_email_filter and (not df_puestos.empty) and ("user_email" in df_puestos.columns):
-            mp = df_puestos[df_puestos["user_email"].astype(str).str.strip().str.lower() == user_email_filter].copy()
-        else:
-            mp = df_puestos.copy()
+                df_view = df_view.rename(columns={
+                    "piso": "Piso",
+                    "user_name": "Nombre",
+                    "team_area": "Equipo",
+                    "user_email": "Correo",
+                    "reservation_date": "Fecha de Reserva",
+                })
 
-        if user_email_filter and (not df_salas.empty) and ("user_email" in df_salas.columns):
-            ms = df_salas[df_salas["user_email"].astype(str).str.strip().str.lower() == user_email_filter].copy()
-        else:
-            ms = df_salas.copy()
+                cols = ["Piso", "Nombre", "Equipo", "Correo", "Fecha de Reserva"]
+                st.dataframe(
+                    df_view[[c for c in cols if c in df_view.columns]],
+                    hide_index=True,
+                    use_container_width=True
+                )
 
-        # -------------------------
-        # Tus Puestos
-        # -------------------------
-        if not mp.empty:
-            st.markdown("#### 🪑 Tus Puestos")
+        else:  # Reserva de Salas
+            if df_salas.empty:
+                st.info("No hay reservas de salas registradas.")
+            else:
+                df_view = df_salas.copy()
 
-            for idx, r in mp.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([5, 1])
+                # Columnas esperadas: room_name, user_name(equipo), user_email, reservation_date
+                df_view = df_view.rename(columns={
+                    "room_name": "Sala",
+                    "user_name": "Equipo",
+                    "user_email": "Correo",
+                    "reservation_date": "Fecha de Reserva",
+                })
 
-                    user_email = str(r.get("user_email", "")).strip()
-                    user_name  = str(r.get("user_name", "")).strip()
-                    fecha      = str(r.get("reservation_date", "")).strip()
-                    piso       = str(r.get("piso", "")).strip()
-                    area       = str(r.get("team_area", "")).strip()
-
-                    if area.lower() != "cupos libres":
-                        area = "Cupos libres"
-
-                    with c1:
-                        st.markdown(
-                            f"**📅 Fecha:** {fecha}  \n"
-                            f"**🏢 Piso:** {piso}  \n"
-                            f"**📍 Ubicación:** {area}  \n"
-                            f"**👤 Nombre:** {user_name}  \n"
-                            f"**📧 Correo:** {user_email}"
-                        )
-
-                    if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                        open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
-        else:
-            st.info("No tienes reservas de puestos registradas.")
-
-        # -------------------------
-        # Tus Salas
-        # -------------------------
-        if not ms.empty:
-            st.markdown("#### 🏢 Tus Salas")
-
-            for idx, r in ms.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([5, 1])
-
-                    user_email = str(r.get("user_email", "")).strip()
-                    user_name  = str(r.get("user_name", "")).strip()
-                    fecha      = str(r.get("reservation_date", "")).strip()
-                    sala       = str(r.get("room_name", "")).strip()
-                    piso       = str(r.get("piso", "")).strip()
-
-                    inicio_raw = str(r.get("start_time", "")).strip()
-                    fin_raw    = str(r.get("end_time", "")).strip()
-                    inicio = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
-                    fin    = fin_raw[:5] if len(fin_raw) >= 5 else fin_raw
-
-                    with c1:
-                        st.markdown(
-                            f"**📅 Fecha:** {fecha}  \n"
-                            f"**🏢 Piso:** {piso}  \n"
-                            f"**🏢 Sala:** {sala}  \n"
-                            f"**🕒 Hora:** {inicio} - {fin}  \n"
-                            f"**👤 Nombre:** {user_name}  \n"
-                            f"**📧 Correo:** {user_email}"
-                        )
-
-                    if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                        open_confirm_delete_sala(conn, user_email, fecha, sala, inicio)
-        else:
-            st.info("No tienes reservas de salas registradas.")
+                cols = ["Sala", "Equipo", "Correo", "Fecha de Reserva"]
+                st.dataframe(
+                    df_view[[c for c in cols if c in df_view.columns]],
+                    hide_index=True,
+                    use_container_width=True
+                )
 
         st.markdown("---")
 
-        # --- SECCION 2 ---
-        with st.expander("Ver Listado General de Reservas", expanded=True):
-            st.subheader("Reserva de puestos")
-            st.dataframe(
-                clean_reservation_df(list_reservations_df(conn)),
-                hide_index=True,
-                use_container_width=True
+        # =========================
+        # B) ANULAR RESERVAS (SECCIÓN INDEPENDIENTE)
+        # =========================
+        with st.expander("Anular Reservas", expanded=False):
+            tipo_anular = st.selectbox(
+                "¿Qué deseas anular?",
+                ["Anular Reserva de Puesto", "Anular Reserva de Sala"],
+                key="anular_tipo"
             )
 
-            st.markdown("<br>", unsafe_allow_html=True)
+            correo_buscar = st.text_input(
+                "Correo asociado a la reserva",
+                key="anular_correo",
+                placeholder="usuario@ejemplo.com"
+            ).strip()
 
-            st.subheader("Reserva de salas")
-            st.dataframe(
-                clean_reservation_df(get_room_reservations_df(conn), "sala"),
-                hide_index=True,
-                use_container_width=True
-            )
-    
+            buscar = st.button("Buscar", type="primary", key="btn_buscar_reservas")
+
+            if "anular_candidates" not in st.session_state:
+                st.session_state["anular_candidates"] = []
+            if "anular_kind" not in st.session_state:
+                st.session_state["anular_kind"] = None
+
+            if buscar:
+                st.session_state["anular_candidates"] = []
+                st.session_state["anular_kind"] = None
+
+                if not correo_buscar:
+                    st.error("Ingresa un correo para buscar reservas.")
+                elif not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', correo_buscar):
+                    st.error("Ingresa un correo válido.")
+                else:
+                    correo_norm = correo_buscar.lower()
+
+                    if tipo_anular == "Anular Reserva de Puesto":
+                        if df_puestos.empty or "user_email" not in df_puestos.columns:
+                            st.warning("No hay reservas de puestos para buscar.")
+                        else:
+                            hits = df_puestos[df_puestos["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
+                            if hits.empty:
+                                st.info("No se encontraron reservas de puesto para ese correo.")
+                            else:
+                                candidates = []
+                                for _, r in hits.iterrows():
+                                    candidates.append({
+                                        "kind": "puesto",
+                                        "user_email": str(r.get("user_email", "")).strip(),
+                                        "reservation_date": str(r.get("reservation_date", "")).strip(),
+                                        "team_area": str(r.get("team_area", "")).strip(),
+                                        "piso": str(r.get("piso", "")).strip(),
+                                        "user_name": str(r.get("user_name", "")).strip(),
+                                    })
+                                st.session_state["anular_candidates"] = candidates
+                                st.session_state["anular_kind"] = "puesto"
+
+                    else:  # sala
+                        if df_salas.empty or "user_email" not in df_salas.columns:
+                            st.warning("No hay reservas de salas para buscar.")
+                        else:
+                            hits = df_salas[df_salas["user_email"].astype(str).str.lower().str.strip() == correo_norm].copy()
+                            if hits.empty:
+                                st.info("No se encontraron reservas de sala para ese correo.")
+                            else:
+                                candidates = []
+                                for _, r in hits.iterrows():
+                                    inicio_raw = str(r.get("start_time", "")).strip()
+                                    inicio = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
+
+                                    candidates.append({
+                                        "kind": "sala",
+                                        "user_email": str(r.get("user_email", "")).strip(),
+                                        "reservation_date": str(r.get("reservation_date", "")).strip(),
+                                        "room_name": str(r.get("room_name", "")).strip(),
+                                        "start_time": inicio,
+                                        "end_time": str(r.get("end_time", "")).strip(),
+                                        "piso": str(r.get("piso", "")).strip(),
+                                        "user_name": str(r.get("user_name", "")).strip(),
+                                    })
+                                st.session_state["anular_candidates"] = candidates
+                                st.session_state["anular_kind"] = "sala"
+
+            candidates = st.session_state.get("anular_candidates") or []
+            if candidates:
+                st.markdown("### Selecciona una o más reservas a anular")
+
+                selected_keys = []
+                for i, item in enumerate(candidates):
+                    if item["kind"] == "puesto":
+                        label = (
+                            f"📌 Puesto | Fecha: {item['reservation_date']} | Piso: {item['piso']} | "
+                            f"Ubicación: {item['team_area']} | Nombre: {item['user_name']}"
+                        )
+                    else:
+                        label = (
+                            f"🏢 Sala | Fecha: {item['reservation_date']} | Sala: {item['room_name']} | "
+                            f"Hora: {item['start_time']} | Equipo: {item['user_name']}"
+                        )
+
+                    ck = st.checkbox(label, key=f"anular_ck_{item['kind']}_{i}")
+                    if ck:
+                        selected_keys.append(i)
+
+                # Guardamos selección
+                st.session_state["anular_selected_idx"] = selected_keys
+
+                def _open_confirm_popup():
+                    st.session_state["anular_confirm_open"] = True
+                    st.rerun()
+
+                if st.button("Anular Reserva(s)", type="primary", key="btn_anular_reservas"):
+                    if not selected_keys:
+                        st.warning("Selecciona al menos una reserva.")
+                    else:
+                        _open_confirm_popup()
+
+            # Popup confirmación
+            if st.session_state.get("anular_confirm_open"):
+                if not hasattr(st, "dialog"):
+                    st.error("Tu Streamlit no soporta st.dialog. Actualiza Streamlit.")
+                else:
+                    @st.dialog("Confirmación")
+                    def _dlg_confirm():
+                        st.write("¿Estás segura (o) de eliminar tu (s) Reserva (s)?")
+
+                        c_yes, c_no = st.columns(2)
+
+                        if c_yes.button("Si, confirmo", type="primary", use_container_width=True, key="anular_confirm_yes"):
+                            cand = st.session_state.get("anular_candidates") or []
+                            sel = st.session_state.get("anular_selected_idx") or []
+
+                            deleted = 0
+                            for idx in sel:
+                                if idx < 0 or idx >= len(cand):
+                                    continue
+                                item = cand[idx]
+
+                                if item["kind"] == "puesto":
+                                    ok = delete_reservation_from_db(
+                                        conn,
+                                        item["user_email"],
+                                        item["reservation_date"],
+                                        item["team_area"]
+                                    )
+                                else:
+                                    ok = delete_room_reservation_from_db(
+                                        conn,
+                                        item["user_email"],
+                                        item["reservation_date"],
+                                        item["room_name"],
+                                        item["start_time"]
+                                    )
+
+                                if ok:
+                                    deleted += 1
+
+                            # limpiar estado
+                            st.session_state["anular_confirm_open"] = False
+                            st.session_state["anular_candidates"] = []
+                            st.session_state["anular_selected_idx"] = []
+                            st.cache_data.clear()
+
+                            if deleted > 0:
+                                st.success(f"✅ Se anularon {deleted} reserva(s).")
+                            else:
+                                st.error("❌ No se pudo anular ninguna reserva.")
+
+                            st.rerun()
+
+                        if c_no.button("No", use_container_width=True, key="anular_confirm_no"):
+                            st.session_state["anular_confirm_open"] = False
+                            st.rerun()
+
+                    _dlg_confirm()
+
 # ==========================================
 # E. ADMINISTRADOR
 # ==========================================
@@ -3090,6 +3218,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
