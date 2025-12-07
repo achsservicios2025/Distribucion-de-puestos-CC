@@ -97,6 +97,9 @@ st.session_state["ui"]["logo_path"] = settings.get("logo_path", st.session_state
 
 # ---------------------------------------------------------
 # 5) CSS
+#   ✅ dejamos 5cm a ambos lados
+#   ✅ pero limitamos el ancho útil para que inputs y botones
+#      terminen en el MISMO borde (y no se vayan hasta el extremo)
 # ---------------------------------------------------------
 st.markdown(f"""
 <style>
@@ -108,7 +111,6 @@ header {{
   height: 0px;
 }}
 
-/* quitar padding top */
 div[data-testid="stAppViewContainer"] > .main {{
   padding-top: 0rem !important;
 }}
@@ -116,12 +118,20 @@ section.main > div {{
   padding-top: 0rem !important;
 }}
 
-/* márgenes iguales 5cm */
+/* márgenes iguales */
 .block-container {{
   max-width: 100% !important;
   padding-top: 0.75rem !important;
   padding-left: 5cm !important;
   padding-right: 5cm !important;
+}}
+
+/* ✅ “caja” centrada: acá se define el tope derecho/izquierdo real del formulario */
+.mk-content {{
+  width: 100%;
+  max-width: 1200px;   /* ajusta si quieres más ancho (ej 1300/1400) */
+  margin-left: auto;
+  margin-right: auto;
 }}
 
 /* escala global */
@@ -133,12 +143,14 @@ h2 {{ font-size: 40px !important; }}
 h3 {{ font-size: 32px !important; }}
 p, li, label, span {{ font-size: 20px !important; }}
 
-/* inputs y selects */
+/* inputs */
 div[data-baseweb="input"] input {{
   font-size: 20px !important;
   padding-top: 14px !important;
   padding-bottom: 14px !important;
 }}
+
+/* select */
 div[data-baseweb="select"] > div {{
   font-size: 20px !important;
   min-height: 56px !important;
@@ -184,36 +196,11 @@ def clean_pdf_text(s: str) -> str:
     s = s.encode("latin-1", "replace").decode("latin-1")
     return s
 
-def sort_floors(floor_list):
-    def extract_num(text):
-        text = str(text)
-        num = re.findall(r"\d+", text)
-        return int(num[0]) if num else 0
-    return sorted(list(floor_list), key=extract_num)
-
-def apply_sorting_to_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    cols_lower = {c.lower(): c for c in df.columns}
-    col_dia = cols_lower.get("dia") or cols_lower.get("día")
-    col_piso = cols_lower.get("piso")
-    if col_dia:
-        df[col_dia] = pd.Categorical(df[col_dia], categories=ORDER_DIAS, ordered=True)
-    if col_piso:
-        unique_floors = [str(x) for x in df[col_piso].dropna().unique()]
-        sorted_floors = sort_floors(unique_floors)
-        df[col_piso] = pd.Categorical(df[col_piso], categories=sorted_floors, ordered=True)
-    sort_cols = [c for c in (col_piso, col_dia) if c]
-    if sort_cols:
-        df = df.sort_values(sort_cols)
-    return df
-
 def go(screen: str):
     st.session_state["screen"] = screen
 
 # ---------------------------------------------------------
-# TOPBAR (logo izq, título centro, menú der)
+# TOPBAR (dentro de mk-content para que respete el tope)
 # ---------------------------------------------------------
 def render_topbar_and_menu():
     logo_path = Path(st.session_state.ui["logo_path"])
@@ -245,32 +232,23 @@ def render_topbar_and_menu():
 
 # ---------------------------------------------------------
 # ADMIN (principal)
-#   ✅ Acceder alineado al borde derecho de los inputs
+#   ✅ ambos botones terminan en el MISMO borde del formulario
 # ---------------------------------------------------------
 def screen_admin(conn):
     st.subheader("Administrador")
     st.session_state.setdefault("forgot_mode", False)
 
-    # Usamos columnas para que "Acceder" quede al borde derecho del bloque de inputs
-    left, right = st.columns([0.86, 0.14], vertical_alignment="bottom")
-
     if not st.session_state["forgot_mode"]:
-        with left:
-            st.text_input("Ingresar correo", key="admin_login_email")
-            st.text_input("Contraseña", type="password", key="admin_login_pass")
+        st.text_input("Ingresar correo", key="admin_login_email")
+        st.text_input("Contraseña", type="password", key="admin_login_pass")
 
-            # fila inferior: izq "Olvidaste", der vacío (el botón accede va en la otra columna)
-            c1, c2 = st.columns([1, 1], vertical_alignment="center")
-            with c1:
-                if st.button("Olvidaste tu contraseña", key="btn_admin_forgot"):
-                    st.session_state["forgot_mode"] = True
-                    st.rerun()
-            with c2:
-                st.write("")
-
-        # botón al borde derecho (misma altura visual del bloque inferior)
-        with right:
-            st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
+        # ✅ misma fila: Olvidaste (izq) y Acceder (der) dentro del MISMO ancho
+        c1, c2 = st.columns([3, 1], vertical_alignment="center")
+        with c1:
+            if st.button("Olvidaste tu contraseña", key="btn_admin_forgot"):
+                st.session_state["forgot_mode"] = True
+                st.rerun()
+        with c2:
             if st.button("Acceder", type="primary", key="btn_admin_login", use_container_width=True):
                 e = st.session_state.get("admin_login_email", "").strip()
                 p = st.session_state.get("admin_login_pass", "")
@@ -278,34 +256,30 @@ def screen_admin(conn):
                     st.warning("Completa correo y contraseña.")
                 else:
                     st.success("Login recibido (validación real pendiente).")
-
     else:
-        with left:
-            st.text_input("Correo de acceso", key="admin_reset_email")
-            st.caption("Ingresa el código recibido en tu correo.")
-            st.text_input("Código", key="admin_reset_code")
+        st.text_input("Correo de acceso", key="admin_reset_email")
+        st.caption("Ingresa el código recibido en tu correo.")
+        st.text_input("Código", key="admin_reset_code")
 
-            c1, c2 = st.columns([1, 1], vertical_alignment="center")
-            with c1:
-                if st.button("Volver a Acceso", key="btn_admin_back"):
-                    st.session_state["forgot_mode"] = False
-                    st.rerun()
-            with c2:
-                if st.button("Validar código", type="primary", key="btn_admin_validate"):
-                    c = st.session_state.get("admin_reset_code", "").strip()
-                    if not c:
-                        st.warning("Ingresa el código.")
-                    else:
-                        st.success("Código validado (simulado).")
-
-        with right:
-            st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([2, 1, 1], vertical_alignment="center")
+        with c1:
+            if st.button("Volver a Acceso", key="btn_admin_back"):
+                st.session_state["forgot_mode"] = False
+                st.rerun()
+        with c2:
             if st.button("Enviar código", type="primary", key="btn_admin_send_code", use_container_width=True):
                 e = st.session_state.get("admin_reset_email", "").strip()
                 if not e:
                     st.warning("Ingresa tu correo.")
                 else:
                     st.success("Código enviado (simulado).")
+        with c3:
+            if st.button("Validar código", type="primary", key="btn_admin_validate", use_container_width=True):
+                c = st.session_state.get("admin_reset_code", "").strip()
+                if not c:
+                    st.warning("Ingresa el código.")
+                else:
+                    st.success("Código validado (simulado).")
 
 # ---------------------------------------------------------
 # RESERVAS (placeholder)
@@ -336,14 +310,11 @@ def screen_descargas_distribucion_planos(conn):
     with t1:
         st.markdown("### Distribución (Descargar)")
         df = read_distribution_df(conn)
-
         if df is None or df.empty:
             st.warning("No hay distribución cargada para descargar.")
         else:
-            df_show = apply_sorting_to_df(df)
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
-
-            xlsx_bytes = _df_to_xlsx_bytes(df_show, sheet_name="distribucion")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            xlsx_bytes = _df_to_xlsx_bytes(df, sheet_name="distribucion")
             st.download_button(
                 "⬇️ Descargar Distribución (XLSX)",
                 data=xlsx_bytes,
@@ -364,9 +335,7 @@ def screen_descargas_distribucion_planos(conn):
         else:
             selected = st.selectbox("Selecciona un plano", [p.name for p in imgs], key="dl_plano_sel")
             img_path = next(p for p in imgs if p.name == selected)
-
             st.image(str(img_path), use_container_width=True)
-
             st.download_button(
                 "⬇️ Descargar plano (imagen)",
                 data=img_path.read_bytes(),
@@ -377,6 +346,7 @@ def screen_descargas_distribucion_planos(conn):
 # ---------------------------------------------------------
 # APP
 # ---------------------------------------------------------
+st.markdown("<div class='mk-content'>", unsafe_allow_html=True)
 render_topbar_and_menu()
 st.divider()
 
@@ -391,3 +361,5 @@ elif screen == "Planos":
 else:
     st.session_state["screen"] = "Administrador"
     screen_admin(conn)
+
+st.markdown("</div>", unsafe_allow_html=True)
