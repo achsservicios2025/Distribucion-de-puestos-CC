@@ -261,7 +261,7 @@ def screen_admin(conn):
                 st.session_state["forgot_mode"] = True
                 st.rerun()
         with c2:
-            st.markdown("<div class='mk-right'>", unsafe_allow_html=True)
+            st.markdown("<div class='mk-right-wrap'><div class='mk-right-inner'>", unsafe_allow_html=True)
             if st.button("Acceder", type="primary", key="btn_admin_login"):
                 e = st.session_state.get("admin_login_email", "").strip()
                 p = st.session_state.get("admin_login_pass", "")
@@ -269,7 +269,7 @@ def screen_admin(conn):
                     st.warning("Completa correo y contraseña.")
                 else:
                     st.success("Login recibido (validación real pendiente).")
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("</div></div>", unsafe_allow_html=True)
 
     else:
         st.text_input("Correo de acceso", key="admin_reset_email")
@@ -378,3 +378,4 @@ else:
     screen_admin(conn)
 
 st.markdown("</div>", unsafe_allow_html=True)
+
