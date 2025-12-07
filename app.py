@@ -76,6 +76,7 @@ st.session_state.setdefault("ui", {
     "logo_width": 420,
 })
 
+# Inicio = Administrador
 st.session_state.setdefault("screen", "Administrador")
 st.session_state.setdefault("forgot_mode", False)
 
@@ -163,12 +164,26 @@ div[data-baseweb="select"] > div {{
   line-height: 1.05;
 }}
 
-/* ✅ Mismo ancho para ambos botones */
+/* mismo ancho para ambos botones del login */
 button[kind="primary"][data-testid="baseButton-primary"] {{
   width: 320px !important;
 }}
 button[data-testid="baseButton-secondary"] {{
   width: 320px !important;
+}}
+
+/* ✅ Botón-logo: invisible pero clickeable ocupando el ancho del logo */
+.mk-logo-btn button {{
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}}
+.mk-logo-btn button:hover {{
+  filter: brightness(0.98);
+}}
+.mk-logo-btn button:focus {{
+  outline: none !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -205,14 +220,28 @@ def render_topbar_and_menu():
     logo_path = Path(st.session_state.ui["logo_path"])
     size = int(st.session_state.ui.get("title_font_size", 64))
     title = st.session_state.ui.get("app_title", "Gestor de Puestos y Salas")
+    logo_w = int(st.session_state.ui.get("logo_width", 420))
 
     c1, c2, c3 = st.columns([1.2, 3.6, 1.2], vertical_alignment="center")
 
     with c1:
+        # ✅ Logo clickeable: botón invisible + imagen
         if logo_path.exists():
-            st.image(str(logo_path), width=int(st.session_state.ui.get("logo_width", 420)))
+            # Si se clickea, vuelve al Inicio (Administrador) y resetea el menú superior
+            st.markdown("<div class='mk-logo-btn'>", unsafe_allow_html=True)
+            if st.button(" ", key="logo_home_btn"):
+                st.session_state["top_menu_select"] = "—"
+                go("Administrador")
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+            # Pintamos la imagen encima (visual). El botón está justo arriba en el flujo,
+            # pero sin padding y sin fondo: se comporta como "área clickeable".
+            st.image(str(logo_path), width=logo_w)
         else:
-            st.write("🧩 (Logo aquí)")
+            if st.button("🧩 Inicio", key="logo_home_fallback"):
+                st.session_state["top_menu_select"] = "—"
+                go("Administrador")
+                st.rerun()
 
     with c2:
         st.markdown(f"<div class='mk-title' style='font-size:{size}px;'>{title}</div>", unsafe_allow_html=True)
@@ -240,9 +269,6 @@ def screen_admin(conn):
         st.text_input("Ingresar correo", key="admin_login_email")
         st.text_input("Contraseña", type="password", key="admin_login_pass")
 
-        # ✅ Misma fila:
-        # - Izquierda: Olvidaste...
-        # - Derecha: Acceder PEGADO a la derecha (respetando margen)
         c1, c2 = st.columns([1, 1], vertical_alignment="center")
 
         with c1:
@@ -251,8 +277,6 @@ def screen_admin(conn):
                 st.rerun()
 
         with c2:
-            # subgrid que ocupa TODO el ancho de la columna derecha
-            # el botón va en la última columna y se expande hasta el borde derecho
             _, btn_col = st.columns([1, 1], vertical_alignment="center")
             with btn_col:
                 if st.button("Acceder", type="primary", key="btn_admin_login", use_container_width=True):
