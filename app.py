@@ -1743,96 +1743,67 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     # OPCIÓN 3: GESTIONAR (ANULAR Y VER TODO)
     # ---------------------------------------------------------
-    elif opcion_reserva == "📋 Mis Reservas y Listados":
+    else:
+        render_confirm_delete_dialog(conn)
 
-        st.subheader("Buscar y Cancelar mis reservas")
-        q = st.text_input("Ingresa tu Correo o Nombre para buscar:")
+        if not mp.empty:
+            st.markdown("#### 🪑 Tus Puestos")
 
-        mp = pd.DataFrame()
-        ms = pd.DataFrame()
+            for idx, r in mp.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([5, 1])
 
-        if q:
-            dp = list_reservations_df(conn)
-            ds = get_room_reservations_df(conn)
+                    user_email = str(r.get("user_email", "")).strip()
+                    user_name  = str(r.get("user_name", "")).strip()
+                    fecha      = str(r.get("reservation_date", "")).strip()
+                    piso       = str(r.get("piso", "")).strip()
+                    area       = str(r.get("team_area", "")).strip()
 
-            def ensure_cols(df):
-                if df is None or df.empty:
-                    return df
-                df = df.copy()
-                df.columns = [str(c).strip() for c in df.columns]
+                    if area.lower() != "cupos libres":
+                        area = "Cupos libres"
 
-                rename_map = {}
-                if "user_name" not in df.columns:
-                    for c in df.columns:
-                        if c.lower() in ["nombre", "name", "usuario", "user", "user name", "user_name"]:
-                            rename_map[c] = "user_name"
-                            break
+                    with c1:
+                            st.markdown(
+                                f"**📅 Fecha:** {fecha}  \n"
+                                f"**🏢 Piso:** {piso}  \n"
+                                f"**📍 Ubicación:** {area}  \n"
+                                f"**👤 Nombre:** {user_name}  \n"
+                                f"**📧 Correo:** {user_email}"
+                            )
 
-                if "user_email" not in df.columns:
-                    for c in df.columns:
-                        if c.lower() in ["correo", "email", "mail", "e-mail", "user email", "user_email"]:
-                            rename_map[c] = "user_email"
-                            break
+                        if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
+                            open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
 
-                return df.rename(columns=rename_map)
+        if not ms.empty:
+            st.markdown("#### 🏢 Tus Salas")
 
-            dp = ensure_cols(dp)
-            ds = ensure_cols(ds)
+            for idx, r in ms.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([5, 1])
 
-            required = {"user_name", "user_email"}
-            if (dp is not None and not dp.empty and not required.issubset(set(dp.columns))) or \
-               (ds is not None and not ds.empty and not required.issubset(set(ds.columns))):
-                st.error(
-                    f"Faltan columnas para buscar. Encontré en Puestos: {list(dp.columns)} | en Salas: {list(ds.columns)}"
-                )
-                st.stop()
+                    user_email = str(r.get("user_email", "")).strip()
+                    user_name  = str(r.get("user_name", "")).strip()
+                    fecha      = str(r.get("reservation_date", "")).strip()
+                    sala       = str(r.get("room_name", "")).strip()
+                    piso       = str(r.get("piso", "")).strip()
 
-            ql = q.strip().lower()
+                    inicio_raw = str(r.get("start_time", "")).strip()
+                    fin_raw    = str(r.get("end_time", "")).strip()
+                    inicio = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
+                    fin    = fin_raw[:5] if len(fin_raw) >= 5 else fin_raw
 
-            if dp is not None and not dp.empty:
-                mp = dp[
-                    dp["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-                    dp["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-                ]
+                    with c1:
+                        st.markdown(
+                            f"**📅 Fecha:** {fecha}  \n"
+                            f"**🏢 Piso:** {piso}  \n"
+                            f"**🏢 Sala:** {sala}  \n"
+                            f"**🕒 Hora:** {inicio} - {fin}  \n"
+                            f"**👤 Nombre:** {user_name}  \n"
+                            f"**📧 Correo:** {user_email}"
+                        )
 
-            if ds is not None and not ds.empty:
-                ms = ds[
-                    ds["user_name"].fillna("").astype(str).str.lower().str.contains(ql, na=False) |
-                    ds["user_email"].fillna("").astype(str).str.lower().str.contains(ql, na=False)
-                ]
-
-            if mp.empty and ms.empty:
-                st.warning("No existen reservas con esos datos.")
-            else:
-                render_confirm_delete_dialog(conn)
-
-                if not mp.empty:
-                    st.markdown("#### 🪑 Tus Puestos")
-
-                    for idx, r in mp.iterrows():
-                        with st.container(border=True):
-                            c1, c2 = st.columns([5, 1])
-
-                            user_email = str(r.get("user_email", "")).strip()
-                            user_name  = str(r.get("user_name", "")).strip()
-                            fecha      = str(r.get("reservation_date", "")).strip()
-                            piso       = str(r.get("piso", "")).strip()
-                            area       = str(r.get("team_area", "")).strip()
-
-                            if area.lower() != "cupos libres":
-                                area = "Cupos libres"
-
-                            with c1:
-                                st.markdown(
-                                    f"**📅 Fecha:** {fecha}  \n"
-                                    f"**🏢 Piso:** {piso}  \n"
-                                    f"**📍 Ubicación:** {area}  \n"
-                                    f"**👤 Nombre:** {user_name}  \n"
-                                    f"**📧 Correo:** {user_email}"
-                                )
-
-                            if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                open_confirm_delete_puesto(conn, user_email, fecha, area, piso)
+                    if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
+                        open_confirm_delete_sala(conn, user_email, fecha, sala, inicio)
 
         st.markdown("---")
 
@@ -3083,6 +3054,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
