@@ -1819,7 +1819,8 @@ elif menu == "Reservas":
                                 team_area_real = "Cupos libres"
 
                             if c2.button("Anular", key=f"del_p_{idx}", type="primary"):
-                                open_confirm_delete_puesto(conn, email, fecha, team_area_real, piso)
+                                user_email = str(r.get("user_email", "")).strip()
+                                open_confirm_delete_puesto(conn, user_email, fecha, team_area_real, piso)
 
                 if not ms.empty:
                     st.markdown("#### 🏢 Tus Salas")
@@ -1834,7 +1835,8 @@ elif menu == "Reservas":
                             inicio_norm = inicio_raw[:5] if len(inicio_raw) >= 5 else inicio_raw
 
                             if c2.button("Anular", key=f"del_s_{idx}", type="primary"):
-                                open_confirm_delete_sala(conn, email, fecha, sala, inicio_norm)
+                                user_email = str(r.get("user_email", "")).strip()
+                                open_confirm_delete_sala(conn, user_email, fecha, sala, inicio_norm)
 
         st.markdown("---")
 
@@ -3086,6 +3088,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
