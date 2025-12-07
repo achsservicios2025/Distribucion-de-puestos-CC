@@ -97,9 +97,8 @@ st.session_state["ui"]["logo_path"] = settings.get("logo_path", st.session_state
 
 # ---------------------------------------------------------
 # 5) CSS
-#   ✅ dejamos 5cm a ambos lados
-#   ✅ pero limitamos el ancho útil para que inputs y botones
-#      terminen en el MISMO borde (y no se vayan hasta el extremo)
+#   ✅ único cambio: botón "Acceder" mismo tamaño que "Olvidaste..."
+#      (quitamos use_container_width y definimos ancho automático)
 # ---------------------------------------------------------
 st.markdown(f"""
 <style>
@@ -118,7 +117,6 @@ section.main > div {{
   padding-top: 0rem !important;
 }}
 
-/* márgenes iguales */
 .block-container {{
   max-width: 100% !important;
   padding-top: 0.75rem !important;
@@ -126,15 +124,13 @@ section.main > div {{
   padding-right: 5cm !important;
 }}
 
-/* ✅ “caja” centrada: acá se define el tope derecho/izquierdo real del formulario */
 .mk-content {{
   width: 100%;
-  max-width: 1200px;   /* ajusta si quieres más ancho (ej 1300/1400) */
+  max-width: 1200px;
   margin-left: auto;
   margin-right: auto;
 }}
 
-/* escala global */
 html, body, [class*="css"] {{
   font-size: 20px !important;
 }}
@@ -143,21 +139,18 @@ h2 {{ font-size: 40px !important; }}
 h3 {{ font-size: 32px !important; }}
 p, li, label, span {{ font-size: 20px !important; }}
 
-/* inputs */
 div[data-baseweb="input"] input {{
   font-size: 20px !important;
   padding-top: 14px !important;
   padding-bottom: 14px !important;
 }}
 
-/* select */
 div[data-baseweb="select"] > div {{
   font-size: 20px !important;
   min-height: 56px !important;
   border-radius: 18px !important;
 }}
 
-/* botones grandes */
 .stButton button {{
   font-size: 20px !important;
   font-weight: 900 !important;
@@ -170,6 +163,12 @@ div[data-baseweb="select"] > div {{
   font-weight: 900;
   margin: 0;
   line-height: 1.05;
+}}
+
+/* ✅ fuerza que SOLO el botón Acceder NO se estire */
+div[data-testid="column"]:has(button[kind="primary"]) .stButton button {{
+  width: auto !important;
+  min-width: 0 !important;
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -200,7 +199,7 @@ def go(screen: str):
     st.session_state["screen"] = screen
 
 # ---------------------------------------------------------
-# TOPBAR (dentro de mk-content para que respete el tope)
+# TOPBAR
 # ---------------------------------------------------------
 def render_topbar_and_menu():
     logo_path = Path(st.session_state.ui["logo_path"])
@@ -231,8 +230,7 @@ def render_topbar_and_menu():
             go("Planos")
 
 # ---------------------------------------------------------
-# ADMIN (principal)
-#   ✅ ambos botones terminan en el MISMO borde del formulario
+# ADMIN
 # ---------------------------------------------------------
 def screen_admin(conn):
     st.subheader("Administrador")
@@ -242,14 +240,14 @@ def screen_admin(conn):
         st.text_input("Ingresar correo", key="admin_login_email")
         st.text_input("Contraseña", type="password", key="admin_login_pass")
 
-        # ✅ misma fila: Olvidaste (izq) y Acceder (der) dentro del MISMO ancho
         c1, c2 = st.columns([3, 1], vertical_alignment="center")
         with c1:
             if st.button("Olvidaste tu contraseña", key="btn_admin_forgot"):
                 st.session_state["forgot_mode"] = True
                 st.rerun()
         with c2:
-            if st.button("Acceder", type="primary", key="btn_admin_login", use_container_width=True):
+            # ✅ sin use_container_width -> mismo tamaño "natural" que el otro botón
+            if st.button("Acceder", type="primary", key="btn_admin_login"):
                 e = st.session_state.get("admin_login_email", "").strip()
                 p = st.session_state.get("admin_login_pass", "")
                 if not e or not p:
@@ -267,14 +265,14 @@ def screen_admin(conn):
                 st.session_state["forgot_mode"] = False
                 st.rerun()
         with c2:
-            if st.button("Enviar código", type="primary", key="btn_admin_send_code", use_container_width=True):
+            if st.button("Enviar código", type="primary", key="btn_admin_send_code"):
                 e = st.session_state.get("admin_reset_email", "").strip()
                 if not e:
                     st.warning("Ingresa tu correo.")
                 else:
                     st.success("Código enviado (simulado).")
         with c3:
-            if st.button("Validar código", type="primary", key="btn_admin_validate", use_container_width=True):
+            if st.button("Validar código", type="primary", key="btn_admin_validate"):
                 c = st.session_state.get("admin_reset_code", "").strip()
                 if not c:
                     st.warning("Ingresa el código.")
@@ -295,7 +293,7 @@ def screen_reservas_tabs(conn):
         st.info("Pega aquí tu pantalla completa de 'Mis Reservas y Listados'.")
 
 # ---------------------------------------------------------
-# DESCARGAS (Distribución/Planos)
+# DESCARGAS
 # ---------------------------------------------------------
 def _df_to_xlsx_bytes(df: pd.DataFrame, sheet_name="data") -> bytes:
     output = BytesIO()
