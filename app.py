@@ -1594,9 +1594,8 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     elif opcion_reserva == "🏢 Reservar Sala de Reuniones":
         st.subheader("Agendar Sala de Reuniones")
-        st.info("💡 Selecciona tu equipo/área y luego elige la sala y horario disponible")
+        st.info("Selecciona tu equipo/área y luego elige la sala y horario disponible")
         
-        # Obtener lista de equipos desde la distribución
         df_dist = read_distribution_df(conn)
         equipos_lista = []
         if not df_dist.empty:
@@ -1612,7 +1611,6 @@ elif menu == "Reservas":
             st.markdown("---")
             st.markdown("### Selecciona Sala y Horario")
             
-            # CORREGIDO: Lista completa de salas (4 salas)
             salas_disponibles = [
                 "Sala Reuniones Pequeña Piso 1",
                 "Sala Reuniones Grande Piso 1", 
@@ -1745,7 +1743,6 @@ elif menu == "Reservas":
     # ---------------------------------------------------------
     else:
         render_confirm_delete_dialog(conn)
-
         if not mp.empty:
             st.markdown("#### 🪑 Tus Puestos")
 
@@ -3054,6 +3051,7 @@ elif menu == "Administrador":
                 else:
                     st.success(f"✅ {msg} (Error al eliminar zonas)")
                 st.rerun()
+
 
 
 
