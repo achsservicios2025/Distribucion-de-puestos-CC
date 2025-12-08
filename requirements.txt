@@ -9,5 +9,6 @@ gspread==6.2.1
 google-auth==2.41.1
 google-auth-oauthlib==1.2.3
 requests==2.32.3
-streamlit-drawable-canvas==0.9.3
+streamlit-drawable-canvas==3.2.0
 matplotlib==3.10.7
+
