@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st  
 import pandas as pd
 import re
 import unicodedata
@@ -473,7 +473,6 @@ def admin_panel(conn):
                                     r.get("% uso diario", None)
                                 )
                             st.success("✅ Distribución guardada en Google Sheets (DB).")
-                            # además la dejamos como "última guardada" para otras pestañas futuras
                             st.session_state["last_distribution_rows"] = rows
                             st.session_state["last_distribution_deficit"] = st.session_state.get("pending_distribution_deficit", [])
                             st.session_state["last_distribution_audit"] = st.session_state.get("pending_distribution_audit", {})
@@ -483,8 +482,9 @@ def admin_panel(conn):
                             return
 
                 # -----------------------------
-                # ✅ VISTA PREVIA = SAINT-LAGUË (resultado generado)
-                # (No mostramos tablas de hojas del Excel)
+                # ✅ VISTA PREVIA = resultado del seats actualizado (semanal->diario)
+                # Se muestra como expander + detalle por Piso y días (Lunes..Viernes)
+                # Columnas: Piso, Equipo, Personas, Días, Cupos Diarios, %Uso Diario, %Uso semanal, Deficit (si existe)
                 # -----------------------------
                 rows = st.session_state.get("pending_distribution_rows", [])
                 deficit_report = st.session_state.get("pending_distribution_deficit", [])
@@ -497,49 +497,50 @@ def admin_panel(conn):
                     if "equipo" in df_out.columns:
                         df_out = df_out[df_out["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
 
+                    # normalizaciones
                     df_out["cupos"] = pd.to_numeric(df_out.get("cupos"), errors="coerce").fillna(0).astype(int)
                     df_out["dotacion"] = pd.to_numeric(df_out.get("dotacion"), errors="coerce")
+                    df_out["piso"] = df_out["piso"].astype(str)
+                    df_out["dia"] = df_out["dia"].astype(str)
 
-                    # Resumen por Piso/Equipo (Cupos asignados en la semana)
-                    agg = df_out.groupby(["piso", "equipo"], as_index=False).agg(
-                        Personas=("dotacion", "max"),
-                        Cupos_Asignados=("cupos", "sum"),
-                        UsoDiario=("% uso diario", "mean"),
-                        UsoSemanal=("% uso semanal", "max"),
-                    )
+                    # deficit por piso/equipo/día (si existe)
+                    df_def = pd.DataFrame(deficit_report) if deficit_report else pd.DataFrame()
+                    if not df_def.empty and {"piso", "equipo", "dia", "deficit"}.issubset(df_def.columns):
+                        df_def2 = df_def.groupby(["piso", "equipo", "dia"], as_index=False)["deficit"].sum()
+                        df_def2.rename(columns={"deficit": "Deficit"}, inplace=True)
+                        df_out = df_out.merge(df_def2, on=["piso", "equipo", "dia"], how="left")
 
-                    agg.rename(columns={
+                    # preparar columnas finales
+                    df_out.rename(columns={
                         "piso": "Piso",
                         "equipo": "Equipo",
-                        "Cupos_Asignados": "Cupos Asignados",
+                        "dotacion": "Personas",
+                        "dia": "Días",
+                        "cupos": "Cupos Diarios",
+                        "% uso diario": "%Uso Diario",
+                        "% uso semanal": "%Uso semanal",
                     }, inplace=True)
 
-                    agg["%Uso Diario"] = pd.to_numeric(agg["UsoDiario"], errors="coerce").fillna(0).round(2)
-                    agg["%Uso semanal"] = pd.to_numeric(agg["UsoSemanal"], errors="coerce").fillna(0).round(2)
+                    # ordenar por Piso, Días (ORDER_DIAS), Equipo
+                    order_map = {d: i for i, d in enumerate(ORDER_DIAS)}
+                    df_out["_ord_dia"] = df_out["Días"].map(order_map).fillna(999).astype(int)
+                    df_out["_ord_piso"] = df_out["Piso"].str.extract(r"(\d+)")[0].fillna("9999").astype(int)
 
-                    # Deficit opcional
-                    df_def = pd.DataFrame(deficit_report) if deficit_report else pd.DataFrame()
-                    if not df_def.empty and {"piso", "equipo", "deficit"}.issubset(df_def.columns):
-                        df_def2 = df_def.groupby(["piso", "equipo"], as_index=False)["deficit"].sum()
-                        df_def2.rename(columns={"piso": "Piso", "equipo": "Equipo", "deficit": "Deficit"}, inplace=True)
-                        agg = agg.merge(df_def2, on=["Piso", "Equipo"], how="left")
+                    # columnas requeridas
+                    base_cols = ["Piso", "Equipo", "Personas", "Días", "Cupos Diarios", "%Uso Diario", "%Uso semanal"]
+                    show_def = "Deficit" in df_out.columns and not df_out["Deficit"].isna().all() and (pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0) != 0).any()
+                    if show_def:
+                        df_out["Deficit"] = pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0).astype(int)
+                        base_cols.append("Deficit")
 
-                        if agg["Deficit"].isna().all() or (pd.to_numeric(agg["Deficit"], errors="coerce").fillna(0) == 0).all():
-                            agg.drop(columns=["Deficit"], inplace=True)
-                        else:
-                            agg["Deficit"] = pd.to_numeric(agg["Deficit"], errors="coerce").fillna(0).astype(int)
-
-                    # columnas finales en orden
-                    cols = ["Piso", "Equipo", "Personas", "Cupos Asignados", "%Uso Diario", "%Uso semanal"]
-                    if "Deficit" in agg.columns:
-                        cols.append("Deficit")
-
-                    st.markdown("### Vista previa (Saint-Laguë)")
-                    st.dataframe(
-                        agg[cols].sort_values(["Piso", "Equipo"]),
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                    # render expander (deslizable como antes)
+                    st.markdown("### Vista previa (Saint-Laguë semanal → diario)")
+                    with st.expander("Ver detalle de la distribución (por piso y día)", expanded=False):
+                        st.dataframe(
+                            df_out.sort_values(["_ord_piso", "_ord_dia", "Equipo"])[base_cols],
+                            use_container_width=True,
+                            hide_index=True
+                        )
 
                     if score_obj:
                         st.markdown("### Score (mejor opción encontrada)")
@@ -691,3 +692,16 @@ else:
     screen_admin(conn)
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+if screen == "Administrador":
+    screen_admin(conn)
+elif screen == "Reservas":
+    screen_reservas_tabs(conn)
+elif screen == "Planos":
+    screen_descargas_distribucion_planos(conn)
+else:
+    st.session_state["screen"] = "Administrador"
+    screen_admin(conn)
+
+st.markdown("</div>", unsafe_allow_html=True)
+
