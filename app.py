@@ -791,7 +791,7 @@ def admin_panel(conn):
                 # ubicar colnames
                 pcol = "piso" if "piso" in df_r.columns else ("Piso" if "Piso" in df_r.columns else None)
                 ecol = "equipo" if "equipo" in df_r.columns else ("Equipo" if "Equipo" in df_r.columns else None)
-                dcol = "dia" if "dia" in df_r.columns else ("dia" if "dia" in df_r.columns else ("Día" if "Día" in df_r.columns else None))
+                dcol = "dia" if "dia" in df_r.columns else ("Día" if "Día" in df_r.columns else None)
                 ccol = "cupos" if "cupos" in df_r.columns else ("Cupos" if "Cupos" in df_r.columns else None)
 
                 if pcol and ecol and dcol and ccol:
@@ -938,187 +938,76 @@ def admin_panel(conn):
             if base_img_path is None:
                 st.warning("No hay planos en `modules/planos`. Sube imágenes (png/jpg) para poder editar.")
             else:
-                img = Image.open(base_img_path).convert("RGBA")
-                # canvas size adaptativa
+                # --- cargar imagen base (PIL) ---
+                try:
+                    img = Image.open(base_img_path).convert("RGBA")
+                except Exception as e:
+                    st.error(f"No pude abrir el plano: {e}")
+                    img = None
+
+                if img is None:
+                    st.stop()
+
+                # --- canvas size adaptativa ---
                 max_w = 1000
-                scale = min(1.0, max_w / img.size[0])
-                w = int(img.size[0] * scale)
-                h = int(img.size[1] * scale)
-                img_resized = img.resize((w, h), Image.LANCZOS)
+                orig_w, orig_h = img.size
+                if not orig_w or not orig_h:
+                    st.error("El plano tiene tamaño inválido.")
+                    st.stop()
+
+                scale = min(1.0, float(max_w) / float(orig_w))
+                w = int(round(orig_w * scale))
+                h = int(round(orig_h * scale))
+                w = max(1, int(w))
+                h = max(1, int(h))
+
+                # Pillow new API: Image.Resampling.LANCZOS (con fallback)
+                try:
+                    resample = Image.Resampling.LANCZOS
+                except Exception:
+                    resample = Image.LANCZOS
+
+                img_resized = img.resize((w, h), resample=resample)
 
                 # json de partida: lo ya “guardado” (committed) si existe
                 initial_drawing = ze.get("committed_json")
+                if not isinstance(initial_drawing, dict):
+                    initial_drawing = None
+                else:
+                    initial_drawing.setdefault("objects", [])
+                    initial_drawing.setdefault("version", "4.4.0")
 
                 # modo de dibujo
                 drawing_mode = ze.get("shape", "rect")
 
+                canvas_key = f"zp_canvas_{st.session_state.get('zp_sel_piso', 'Piso 1')}"
+
                 canvas_res = st_canvas(
-                    fill_color=ze.get("fill", "rgba(255, 99, 71, 0.25)"),
-                    stroke_color=ze.get("stroke", "rgba(30,30,30,0.55)"),
+                    fill_color=str(ze.get("fill", "rgba(255, 99, 71, 0.25)")),
+                    stroke_color=str(ze.get("stroke", "rgba(30,30,30,0.55)")),
                     stroke_width=int(ze.get("stroke_width", 2)),
                     background_image=img_resized,
                     update_streamlit=True,
-                    height=h,
-                    width=w,
+                    height=int(h),
+                    width=int(w),
                     drawing_mode=drawing_mode,
                     initial_drawing=initial_drawing,
-                    key=f"zp_canvas_{st.session_state.get('zp_sel_piso', 'Piso 1')}",
+                    key=canvas_key,
                 )
 
                 # Commit: guardamos lo dibujado actualmente como “zona”
                 if save_zone:
                     try:
                         current = canvas_res.json_data if canvas_res is not None else None
-                        if current is None:
+                        if not current or not isinstance(current, dict):
                             st.warning("No hay nada para guardar todavía.")
                         else:
+                            current.setdefault("objects", [])
+                            current.setdefault("version", "4.4.0")
+
                             _push_undo(ze.get("committed_json"))
                             ze["committed_json"] = current
                             st.success("✅ Zona guardada (queda lista para Guardar todo).")
                             st.rerun()
                     except Exception as e:
                         st.error(f"No pude guardar zona: {e}")
-
-# ---------------------------------------------------------
-# SCREENS
-# ---------------------------------------------------------
-def screen_admin(conn):
-    if st.session_state.get("is_admin"):
-        admin_panel(conn)
-        return
-
-    st.subheader("Administrador")
-    st.session_state.setdefault("forgot_mode", False)
-
-    if not st.session_state["forgot_mode"]:
-        st.text_input("Ingresar correo", key="adm_login_email")
-        st.text_input("Contraseña", type="password", key="adm_login_pass")
-
-        c1, c2 = st.columns([1, 1], vertical_alignment="center")
-
-        with c1:
-            if st.button("Olvidaste tu contraseña", key="adm_btn_forgot"):
-                st.session_state["forgot_mode"] = True
-                st.rerun()
-
-        with c2:
-            _, btn_col = st.columns([1, 1], vertical_alignment="center")
-            with btn_col:
-                if st.button("Acceder", type="primary", key="adm_btn_login", use_container_width=True):
-                    e = st.session_state.get("adm_login_email", "").strip()
-                    p = st.session_state.get("adm_login_pass", "")
-                    if not e or not p:
-                        st.warning("Completa correo y contraseña.")
-                    else:
-                        ok = _validate_admin_login(e, p)
-                        if ok:
-                            st.session_state["is_admin"] = True
-                            st.success("✅ Acceso concedido.")
-                            st.rerun()
-                        else:
-                            st.error("❌ Credenciales incorrectas.")
-
-    else:
-        st.text_input("Correo de acceso", key="adm_reset_email")
-        st.caption("Ingresa el código recibido en tu correo.")
-        st.text_input("Código", key="adm_reset_code")
-
-        c1, c2, c3 = st.columns([2, 1, 1], vertical_alignment="center")
-        with c1:
-            if st.button("Volver a Acceso", key="adm_btn_back"):
-                st.session_state["forgot_mode"] = False
-                st.rerun()
-        with c2:
-            if st.button("Enviar código", type="primary", key="adm_btn_send_code"):
-                e = st.session_state.get("adm_reset_email", "").strip()
-                if not e:
-                    st.warning("Ingresa tu correo.")
-                else:
-                    st.success("Código enviado (simulado).")
-        with c3:
-            if st.button("Validar código", type="primary", key="adm_btn_validate"):
-                c = st.session_state.get("adm_reset_code", "").strip()
-                if not c:
-                    st.warning("Ingresa el código.")
-                else:
-                    st.success("Código validado (simulado).")
-
-# ---------------------------------------------------------
-# RESERVAS (placeholder)
-# ---------------------------------------------------------
-def screen_reservas_tabs(conn):
-    st.subheader("Reservas")
-    tabs = st.tabs(["Reservar Puesto Flex", "Reserva Salas de Reuniones", "Mis Reservas y Listados"])
-    with tabs[0]:
-        st.info("Pega aquí tu pantalla completa de 'Reservar Puesto Flex'.")
-    with tabs[1]:
-        st.info("Pega aquí tu pantalla completa de 'Reserva Salas de Reuniones'.")
-    with tabs[2]:
-        st.info("Pega aquí tu pantalla completa de 'Mis Reservas y Listados'.")
-
-# ---------------------------------------------------------
-# DESCARGAS
-# ---------------------------------------------------------
-def _df_to_xlsx_bytes(df: pd.DataFrame, sheet_name="data") -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        (df if df is not None else pd.DataFrame()).to_excel(writer, index=False, sheet_name=sheet_name[:31])
-    return output.getvalue()
-
-def screen_descargas_distribucion_planos(conn):
-    st.subheader("Ver Distribución y Planos (solo descarga)")
-    t1, t2 = st.tabs(["Distribución", "Planos"])
-
-    with t1:
-        st.markdown("### Distribución (Descargar)")
-        df = read_distribution_df(conn)
-        if df is None or df.empty:
-            st.warning("No hay distribución cargada para descargar.")
-        else:
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            xlsx_bytes = _df_to_xlsx_bytes(df, sheet_name="distribucion")
-            st.download_button(
-                "⬇️ Descargar Distribución (XLSX)",
-                data=xlsx_bytes,
-                file_name="distribucion.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-    with t2:
-        st.markdown("### Planos (Descargar)")
-        imgs = _list_plan_images()
-
-        if not imgs:
-            st.warning("No se encontraron imágenes de planos.")
-            st.write(f"Ruta buscada: `{PLANOS_DIR.resolve()}`")
-        else:
-            selected = st.selectbox("Selecciona un plano", [p.name for p in imgs], key="dl_plano_sel")
-            img_path = next(p for p in imgs if p.name == selected)
-            st.image(str(img_path), use_container_width=True)
-            st.download_button(
-                "⬇️ Descargar plano (imagen)",
-                data=img_path.read_bytes(),
-                file_name=img_path.name,
-                mime="image/png" if img_path.suffix.lower() == ".png" else "image/jpeg",
-            )
-
-# ---------------------------------------------------------
-# APP
-# ---------------------------------------------------------
-st.markdown("<div class='mk-content'>", unsafe_allow_html=True)
-render_topbar_and_menu()
-st.divider()
-
-screen = st.session_state.get("screen", "Administrador")
-
-if screen == "Administrador":
-    screen_admin(conn)
-elif screen == "Reservas":
-    screen_reservas_tabs(conn)
-elif screen == "Planos":
-    screen_descargas_distribucion_planos(conn)
-else:
-    st.session_state["screen"] = "Administrador"
-    screen_admin(conn)
-
-st.markdown("</div>", unsafe_allow_html=True)
