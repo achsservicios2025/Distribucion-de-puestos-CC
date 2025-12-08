@@ -2,7 +2,7 @@
 import pandas as pd
 import re
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------
@@ -103,7 +103,7 @@ def parse_full_day_rule(text: Any) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# Saint-Laguë
+# Saint-Laguë (asignación discreta)
 # ---------------------------------------------------------
 def saint_lague_allocate(
     weights: Dict[str, int],
@@ -114,10 +114,10 @@ def saint_lague_allocate(
 ) -> Dict[str, int]:
     """
     Asigna 'seats' unidades con método Sainte-Laguë.
-    - weights: dict equipo->peso
-    - current: dict equipo->asignado actual (para divisor 2a+1)
-    - caps: dict equipo->máximo adicional permitido
-    - rng: desempate controlado por seed
+    - weights: dict equipo->peso (demanda restante)
+    - current: dict equipo->asignado actual (para calcular divisor 2a+1)
+    - caps: dict equipo->máximo adicional permitido (para no pasarse)
+    - rng: si hay empate, desempata con rng (controlado por variant_seed)
     """
     if seats <= 0 or not weights:
         return {k: 0 for k in weights.keys()}
@@ -185,165 +185,7 @@ def choose_flexible_day(
 
 
 # ---------------------------------------------------------
-# Helpers nuevos: desglose semanal -> diario con restricciones
-# ---------------------------------------------------------
-def _even_week_split(total_week: int, days: List[str], rng: random.Random) -> Dict[str, int]:
-    """
-    Reparte un total semanal en días lo más parejo posible:
-      base = total_week // 5, resto = total_week % 5
-    y distribuye el resto en días (mezclados por seed para variantes).
-    """
-    d = {day: 0 for day in days}
-    if total_week <= 0:
-        return d
-    base = total_week // len(days)
-    rem = total_week % len(days)
-    for day in days:
-        d[day] = base
-    order = list(days)
-    rng.shuffle(order)
-    for i in range(rem):
-        d[order[i]] += 1
-    return d
-
-
-def _apply_full_day_fixed(
-    day_alloc: Dict[str, Dict[str, int]],
-    eq: str,
-    per: int,
-    fixed_days: List[str],
-    days: List[str]
-) -> None:
-    """Fija asignación diaria completa (per) en los días indicados."""
-    for day in fixed_days:
-        if day in days:
-            day_alloc[day][eq] = max(day_alloc[day].get(eq, 0), int(per))
-
-
-def _apply_full_day_choice(
-    day_alloc: Dict[str, Dict[str, int]],
-    eq: str,
-    per: int,
-    chosen_day: Optional[str],
-    days: List[str]
-) -> None:
-    """Fija asignación diaria completa (per) en el día elegido (regla 'o')."""
-    if chosen_day and chosen_day in days:
-        day_alloc[chosen_day][eq] = max(day_alloc[chosen_day].get(eq, 0), int(per))
-
-
-def _ensure_minimums_per_day(
-    day_alloc: Dict[str, Dict[str, int]],
-    eq: str,
-    per: int,
-    mini: int,
-    days: List[str]
-) -> None:
-    """
-    Aplica mínimos diarios: asignación diaria >= min(per, mini).
-    (Como en tu lógica original: si per>=2, mini>=2)
-    """
-    target = int(min(per, mini))
-    if target <= 0:
-        return
-    for day in days:
-        cur = int(day_alloc[day].get(eq, 0))
-        if cur < target:
-            day_alloc[day][eq] = target
-
-
-def _cap_day_and_collect_deficit(
-    day_alloc: Dict[str, Dict[str, int]],
-    per_map: Dict[str, int],
-    min_map: Dict[str, int],
-    hard_limit: int,
-    ignore_params: bool,
-    days: List[str],
-    total_recortes_full_day_acc: List[int],
-    deficit_report: List[Dict[str, Any]],
-    piso_str: str,
-    FORMULA_EQUIDAD: str,
-    EXPLICACION_EQUIDAD: str,
-) -> None:
-    """
-    Respeta capacidad diaria (hard_limit) recortando si se excede.
-    Luego reporta déficit (solo si ignore_params=False), 1 vez por día/equipo.
-    """
-    for day in days:
-        alloc_day = day_alloc[day]
-        total = sum(int(v) for v in alloc_day.values())
-        if total > hard_limit:
-            exceso = total - hard_limit
-            # Recorte simple: recortar 1 a 1 desde el que más tiene.
-            # (Equivalente a tu recorte de full_day, pero generalizado al día)
-            while exceso > 0 and alloc_day:
-                # ordena por asignación desc
-                items = sorted(alloc_day.items(), key=lambda kv: kv[1], reverse=True)
-                k, v = items[0]
-                if v <= 0:
-                    break
-                alloc_day[k] = v - 1
-                exceso -= 1
-                total_recortes_full_day_acc[0] += 1
-
-        # Déficit (solo con params)
-        if not ignore_params:
-            for eq, per in per_map.items():
-                if per <= 0:
-                    continue
-                asig = int(alloc_day.get(eq, 0))
-                deficit = int(max(0, per - asig))
-                if deficit > 0:
-                    deficit_report.append({
-                        "piso": piso_str,
-                        "equipo": eq,
-                        "dia": day,
-                        "dotacion": int(per),
-                        "minimo": int(min_map.get(eq, 0)),
-                        "asignado": int(asig),
-                        "deficit": deficit,
-                        "formula": FORMULA_EQUIDAD,
-                        "explicacion": EXPLICACION_EQUIDAD
-                    })
-
-
-def _fill_remaining_by_day_saint_lague(
-    day_alloc: Dict[str, Dict[str, int]],
-    per_map: Dict[str, int],
-    hard_limit: int,
-    days: List[str],
-    rng: random.Random,
-) -> None:
-    """
-    Para cada día: reparte cupos restantes (hard_limit - usados) con Saint-Laguë
-    sobre demanda restante (per - asig).
-    (Esto conserva el “corazón” Saint-Laguë, pero ahora tras un pre-diseño semanal).
-    """
-    for day in days:
-        alloc_day = day_alloc[day]
-        used = sum(int(v) for v in alloc_day.values())
-        rem = max(0, hard_limit - used)
-        if rem <= 0:
-            continue
-
-        weights = {}
-        caps = {}
-        current = {}
-        for eq, per in per_map.items():
-            cur = int(alloc_day.get(eq, 0))
-            remaining = max(0, int(per) - cur)
-            weights[eq] = remaining
-            caps[eq] = remaining
-            current[eq] = cur
-
-        extra = saint_lague_allocate(weights=weights, seats=rem, current=current, caps=caps, rng=rng)
-        for eq, add in extra.items():
-            if add:
-                alloc_day[eq] = int(alloc_day.get(eq, 0)) + int(add)
-
-
-# ---------------------------------------------------------
-# Motor: distribución (semanal -> diario)
+# Motor: distribución
 # ---------------------------------------------------------
 def compute_distribution_from_excel(
     equipos_df,
@@ -355,17 +197,25 @@ def compute_distribution_from_excel(
     variant_mode: str = "holgura",
 ):
     """
-    Nuevo enfoque:
-      1) Se calcula capacidad diaria usable: hard_limit = cap_total_real - reserva
-      2) Se hace un plan semanal por equipo (en grande) y se desglosa a días
-      3) Si ignore_params=False se aplican:
-           - día completo (fixed / choice)
-           - mínimos diarios
-           - recortes para hard_limit diario
-         y se rellena el remanente diario con Sainte-Laguë
-      4) Si ignore_params=True:
-           - no se aplican reglas de parámetros
-           - se reparte con Sainte-Laguë (en la práctica, en el relleno diario puro)
+    Salida rows por (piso, equipo, dia):
+      - dotacion: personas del equipo
+      - cupos: cupos asignados ese día
+      - % uso diario: cupos_equipo_dia / capacidad_usable_dia * 100
+      - % uso semanal: cupos_semana_equipo / (dotación_equipo * 5) * 100
+
+    Capacidad usable por día:
+      hard_limit = cap_total_real - cupos_reserva
+
+    Parámetros:
+      - Si ignore_params=False:
+          * respeta "día completo" (fixed y choice)
+          * respeta mínimos diarios (col_minimos)
+          * el remanente se reparte con Sainte-Laguë sobre demanda restante (per - asignado)
+          * déficit se reporta contra mínimos: max(0, min - asignado)
+      - Si ignore_params=True:
+          * deshabilita full_day y mínimos
+          * reparto proporcional Sainte-Laguë + reserva
+          * no reporta déficit
     """
     rng = random.Random(variant_seed if variant_seed is not None else 0)
 
@@ -437,14 +287,7 @@ def compute_distribution_from_excel(
                     if rule["type"] != "none" and len(rule["days"]) > 0:
                         reglas_full_day[normalize_text(nm)] = rule
 
-    FORMULA_EQUIDAD = "Asignación objetivo ≈ (Dotación_equipo / Dotación_total_piso) × Capacidad_usable_día"
-    EXPLICACION_EQUIDAD = (
-        "Capacidad usable por día: Capacidad_usable = Capacidad_total - Reserva.\n"
-        "Si ignore_params=False: se aplican restricciones hard (día completo y mínimos) y el remanente se reparte "
-        "proporcionalmente con Sainte-Laguë sobre la demanda restante.\n"
-        "Si ignore_params=True: se deshabilitan parámetros y se hace solo reparto proporcional con Sainte-Laguë + reserva."
-    )
-
+    # score (interno para variantes) — no es necesario mostrarlo en UI
     total_sq_error = 0.0
     total_deficit = 0
     total_recortes_full_day = 0
@@ -489,53 +332,26 @@ def compute_distribution_from_excel(
             except Exception:
                 mini_raw = 0
 
-            mini = mini_raw
-            if per >= 2:
-                mini = max(2, mini_raw)
-            mini = min(per, mini)
+            mini = int(max(0, mini_raw))
+            mini = min(per, mini)  # nunca más que la dotación
 
             equipos_info.append({"eq": nm, "per": per, "min": mini})
 
-        if not equipos_info:
-            continue
+        weekly_assigned: Dict[str, int] = {info["eq"]: 0 for info in equipos_info}
+        weekly_dot: Dict[str, int] = {info["eq"]: int(info["per"]) for info in equipos_info}
 
-        per_map = {info["eq"]: int(info["per"]) for info in equipos_info}
-        min_map = {info["eq"]: int(info["min"]) for info in equipos_info}
-        weekly_dot = {info["eq"]: int(info["per"]) for info in equipos_info}
-
-        # ---------------------------------------------
-        # (1) Plan semanal “en grande” (base) -> split diario parejo
-        # ---------------------------------------------
-        # Aquí definimos un total semanal “deseado” por equipo:
-        # En este diseño, apuntamos a que (en promedio) el equipo reciba aprox. per cada día,
-        # pero SIEMPRE limitado por capacidad diaria hard_limit (se arregla después por día).
-        # weekly_target = per * 5
-        weekly_target = {eq: int(per) * 5 for eq, per in per_map.items()}
-
-        # Base daily allocation (sin parámetros): split parejo de weekly_target a 5 días.
-        day_alloc: Dict[str, Dict[str, int]] = {d: {} for d in dias_semana}
-        for eq, wk in weekly_target.items():
-            split = _even_week_split(wk, dias_semana, rng=rng)
-            for d in dias_semana:
-                day_alloc[d][eq] = int(split[d])
-
-        # ---------------------------------------------
-        # (2) Si hay parámetros: aplicar día completo y "o" (choice)
-        # ---------------------------------------------
-        full_day_choice_assignment: Dict[str, str] = {}
+        full_day_choice_assignment = {}
         if not ignore_params and reglas_full_day:
             load_by_day = {d: 0 for d in dias_semana}
 
-            # Carga inicial estimada por fixed (para heurística de "o")
             for info in equipos_info:
                 nm_norm = normalize_text(info["eq"])
                 rule = reglas_full_day.get(nm_norm)
                 if rule and rule["type"] == "fixed":
                     for d in rule["days"]:
                         if d in dias_semana:
-                            load_by_day[d] += int(info["per"])
+                            load_by_day[d] += info["per"]
 
-            # Elegir day para "choice"
             for info in equipos_info:
                 nm = info["eq"]
                 nm_norm = normalize_text(nm)
@@ -543,7 +359,7 @@ def compute_distribution_from_excel(
                 if rule and rule["type"] == "choice":
                     chosen = choose_flexible_day(
                         opts=rule["days"],
-                        per=int(info["per"]),
+                        per=info["per"],
                         hard_limit=hard_limit,
                         load_by_day=load_by_day,
                         mode=variant_mode,
@@ -551,7 +367,7 @@ def compute_distribution_from_excel(
                     )
                     if chosen:
                         full_day_choice_assignment[nm_norm] = chosen
-                        load_by_day[chosen] += int(info["per"])
+                        load_by_day[chosen] += info["per"]
                         audit["full_day_choices"].append({
                             "piso": piso_str,
                             "equipo": nm,
@@ -560,105 +376,147 @@ def compute_distribution_from_excel(
                             "mode": variant_mode
                         })
 
-            # Aplicar fixed/choice como asignación diaria completa (per)
-            for info in equipos_info:
-                eq = info["eq"]
-                per = int(info["per"])
-                nm_norm = normalize_text(eq)
-                rule = reglas_full_day.get(nm_norm)
-
-                if rule and rule["type"] == "fixed":
-                    _apply_full_day_fixed(day_alloc, eq, per, rule["days"], dias_semana)
-                elif rule and rule["type"] == "choice":
-                    chosen = full_day_choice_assignment.get(nm_norm)
-                    _apply_full_day_choice(day_alloc, eq, per, chosen, dias_semana)
-
-            # Aplicar mínimos diarios
-            for info in equipos_info:
-                _ensure_minimums_per_day(day_alloc, info["eq"], int(info["per"]), int(info["min"]), dias_semana)
-
-        # ---------------------------------------------
-        # (3) Respetar hard_limit diario + reportar déficit (con params)
-        # ---------------------------------------------
-        total_recortes_acc = [0]
-        _cap_day_and_collect_deficit(
-            day_alloc=day_alloc,
-            per_map=per_map,
-            min_map=min_map,
-            hard_limit=hard_limit,
-            ignore_params=ignore_params,
-            days=dias_semana,
-            total_recortes_full_day_acc=total_recortes_acc,
-            deficit_report=deficit_report,
-            piso_str=piso_str,
-            FORMULA_EQUIDAD=FORMULA_EQUIDAD,
-            EXPLICACION_EQUIDAD=EXPLICACION_EQUIDAD
-        )
-        total_recortes_full_day += int(total_recortes_acc[0])
-
-        # ---------------------------------------------
-        # (4) Rellenar remanente diario con Sainte-Laguë
-        #     (para acercarse a proporcionalidad en cada día)
-        # ---------------------------------------------
-        # Con ignore_params=True, esto es esencialmente el único "ajuste" (no hay reglas).
-        _fill_remaining_by_day_saint_lague(
-            day_alloc=day_alloc,
-            per_map=per_map,
-            hard_limit=hard_limit,
-            days=dias_semana,
-            rng=rng
-        )
-
-        # ---------------------------------------------
-        # (5) Construir rows, métricas % y sumar semanal
-        # ---------------------------------------------
-        weekly_assigned = {eq: 0 for eq in per_map.keys()}
-
         for dia in dias_semana:
-            alloc_day = day_alloc[dia]
+            state = []
+            for info in equipos_info:
+                nm = info["eq"]
+                nm_norm = normalize_text(nm)
+                per = int(info["per"])
+                mini = int(info["min"])
 
-            # Proporcionalidad (error vs target del día) para score
-            sum_per = sum(max(0, per_map[eq]) for eq in per_map.keys())
-            if sum_per > 0 and hard_limit > 0:
-                for eq, per in per_map.items():
-                    if per <= 0:
+                is_full_day = False
+                if not ignore_params:
+                    rule = reglas_full_day.get(nm_norm)
+                    if rule:
+                        if rule["type"] == "fixed" and dia in rule["days"]:
+                            is_full_day = True
+                        elif rule["type"] == "choice" and full_day_choice_assignment.get(nm_norm) == dia:
+                            is_full_day = True
+
+                state.append({
+                    "eq": nm,
+                    "per": per,
+                    "min": mini,
+                    "full_day": is_full_day,
+                    "asig": 0
+                })
+
+            used = 0
+
+            # full-day (hard)
+            if not ignore_params:
+                for t in state:
+                    if t["full_day"] and t["per"] > 0:
+                        t["asig"] = t["per"]
+                        used += t["asig"]
+
+                # si se pasó del hard_limit, recortamos
+                if used > hard_limit:
+                    exceso = used - hard_limit
+                    total_recortes_full_day += exceso
+                    fulls = [t for t in state if t["full_day"] and t["asig"] > 0]
+                    while exceso > 0 and fulls:
+                        fulls.sort(key=lambda x: x["asig"], reverse=True)
+                        fulls[0]["asig"] -= 1
+                        used -= 1
+                        exceso -= 1
+                        fulls = [t for t in fulls if t["asig"] > 0]
+
+            # mínimos diarios (hard-ish)
+            if not ignore_params:
+                for t in state:
+                    if t["per"] <= 0:
                         continue
-                    target = (per / sum_per) * hard_limit
-                    asig = int(alloc_day.get(eq, 0))
-                    err = (asig - target)
+                    target_min = min(t["per"], t["min"])
+                    if t["asig"] < target_min:
+                        need = target_min - t["asig"]
+                        give = min(need, max(0, hard_limit - used))
+                        if give > 0:
+                            t["asig"] += give
+                            used += give
+
+            # remanente: Sainte-Laguë sobre demanda restante
+            rem = max(0, hard_limit - used)
+
+            weights = {}
+            caps = {}
+            current_for_divisor = {}
+            for t in state:
+                remaining_demand = max(0, t["per"] - t["asig"])
+                weights[t["eq"]] = remaining_demand
+                caps[t["eq"]] = remaining_demand
+                current_for_divisor[t["eq"]] = t["asig"]
+
+            alloc_extra = saint_lague_allocate(
+                weights=weights,
+                seats=rem,
+                current=current_for_divisor,
+                caps=caps,
+                rng=rng
+            )
+
+            for t in state:
+                t["asig"] += int(alloc_extra.get(t["eq"], 0))
+
+            # métricas + rows
+            for t in state:
+                weekly_assigned[t["eq"]] = weekly_assigned.get(t["eq"], 0) + int(t["asig"])
+
+            sum_per = sum(max(0, t["per"]) for t in state)
+            if sum_per > 0 and hard_limit > 0:
+                for t in state:
+                    if t["per"] <= 0:
+                        continue
+                    target = (t["per"] / sum_per) * hard_limit
+                    err = (t["asig"] - target)
                     total_sq_error += err * err
                     n_eval += 1
 
-            # filas por equipo (solo si asig>0)
-            for eq, per in per_map.items():
-                asig = int(alloc_day.get(eq, 0))
-                weekly_assigned[eq] += asig
-                if asig <= 0:
-                    continue
-                uso_diario = round((asig / hard_limit) * 100.0, 2) if hard_limit > 0 else 0.0
+            for t in state:
+                uso_diario = round((t["asig"] / hard_limit) * 100.0, 2) if hard_limit > 0 else 0.0
                 rows.append({
                     "piso": piso_str,
-                    "equipo": eq,
+                    "equipo": t["eq"],
                     "dia": dia,
-                    "dotacion": int(per),
-                    "cupos": int(asig),
+                    "dotacion": int(t["per"]),
+                    "minimo": int(t["min"]),  # <- útil para UI/debug (no te rompe nada si no lo usas)
+                    "cupos": int(t["asig"]),
                     "% uso diario": float(uso_diario),
                     "% uso semanal": None,
                 })
 
-            # Cupos libres (reserva diaria)
+            # ✅ déficit SOLO vs mínimos diarios (si params activos)
+            if not ignore_params:
+                for t in state:
+                    if t["per"] <= 0:
+                        continue
+                    deficit = int(max(0, t["min"] - t["asig"]))
+                    if deficit > 0:
+                        total_deficit += deficit
+                        deficit_report.append({
+                            "piso": piso_str,
+                            "equipo": t["eq"],
+                            "dia": dia,
+                            "dotacion": int(t["per"]),
+                            "minimo": int(t["min"]),
+                            "asignado": int(t["asig"]),
+                            "deficit": deficit,
+                            "formula": "Déficit_día = max(0, Mínimo_día - Cupos_asignados_día)",
+                            "explicacion": "El déficit se calcula contra el cupo mínimo diario (no contra la dotación)."
+                        })
+
             libres = RESERVA_OBLIGATORIA if cap_total_real >= RESERVA_OBLIGATORIA else cap_total_real
             rows.append({
                 "piso": piso_str,
                 "equipo": "Cupos libres",
                 "dia": dia,
                 "dotacion": None,
+                "minimo": None,
                 "cupos": int(libres),
                 "% uso diario": None,
                 "% uso semanal": None,
             })
 
-        # % uso semanal por equipo
         weekly_usage_by_team: Dict[str, float] = {}
         for eq, wk_cupos in weekly_assigned.items():
             dot = int(weekly_dot.get(eq, 0))
@@ -672,7 +530,6 @@ def compute_distribution_from_excel(
                 continue
             r["% uso semanal"] = float(weekly_usage_by_team.get(eq, 0.0))
 
-        # summary para PDF/UI
         for eq in weekly_assigned.keys():
             dot = int(weekly_dot.get(eq, 0))
             wk_cupos = int(weekly_assigned.get(eq, 0))
@@ -685,13 +542,6 @@ def compute_distribution_from_excel(
                 "cupos_promedio_diario": avg_daily,
                 "% uso semanal": float(weekly_usage_by_team.get(eq, 0.0)),
             })
-
-        # total déficit para score
-        if not ignore_params and deficit_report:
-            # acumular deficit de este piso
-            for d in deficit_report:
-                if d.get("piso") == piso_str:
-                    total_deficit += int(d.get("deficit", 0) or 0)
 
     mse = (total_sq_error / max(1, n_eval))
     score = mse + (total_deficit * 50.0) + (total_recortes_full_day * 200.0)
