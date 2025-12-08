@@ -96,41 +96,79 @@ def _ensure_headers(ws, headers):
         return False
 
 
+def _secrets_has(key: str) -> bool:
+    try:
+        return key in st.secrets
+    except Exception:
+        return False
+
+
 def _require_secrets():
     """
     Devuelve (creds_dict, sheet_name)
+
+    FIX IMPORTANTE:
+    - st.secrets["sheets"] NO siempre es dict -> puede ser AttrDict/Secrets
+    - no usar isinstance(..., dict)
     """
-    # Validación fuerte y mensajes claros
     if not hasattr(st, "secrets"):
         raise RuntimeError("Streamlit secrets no disponible (st.secrets).")
 
-    if "gcp_service_account" not in st.secrets:
+    if not _secrets_has("gcp_service_account"):
         raise RuntimeError("Falta el bloque [gcp_service_account] en Secrets.")
 
-    # OJO: esto NO imprime claves, solo nombres de secciones (safe)
-    # Ayuda a diagnosticar cuando Streamlit Cloud no cargó secrets.
-    top_keys = list(st.secrets.keys())
-
+    # leer service account
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
     except Exception as e:
-        raise RuntimeError(f"No pude leer [gcp_service_account] desde secrets. Keys top-level: {top_keys}. Error: {e}")
+        top_keys = []
+        try:
+            top_keys = list(st.secrets.keys())
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"No pude leer [gcp_service_account] desde secrets. "
+            f"Keys top-level detectadas: {top_keys}. Error: {e}"
+        )
 
+    # leer sheet_name (robusto)
     sheet_name = None
-    try:
-        if "sheets" in st.secrets and isinstance(st.secrets["sheets"], dict):
-            sheet_name = st.secrets["sheets"].get("sheet_name")
-    except Exception:
-        sheet_name = None
+
+    # Caso recomendado: [sheets] sheet_name = "..."
+    if _secrets_has("sheets"):
+        try:
+            sheets_block = st.secrets["sheets"]
+            # NO asumimos dict, solo intentamos indexar
+            try:
+                sheet_name = sheets_block["sheet_name"]
+            except Exception:
+                # por si viene como objeto con atributos
+                sheet_name = getattr(sheets_block, "sheet_name", None)
+        except Exception:
+            sheet_name = None
+
+    # Fallbacks por si lo pusieron plano
+    if not sheet_name:
+        try:
+            sheet_name = st.secrets.get("sheet_name")
+        except Exception:
+            sheet_name = None
 
     if not sheet_name:
-        # fallbacks típicos
-        sheet_name = st.secrets.get("sheet_name") or st.secrets.get("SHEET_NAME")
+        try:
+            sheet_name = st.secrets.get("SHEET_NAME")
+        except Exception:
+            sheet_name = None
 
     if not sheet_name:
+        top_keys = []
+        try:
+            top_keys = list(st.secrets.keys())
+        except Exception:
+            pass
         raise RuntimeError(
             "Falta sheets.sheet_name en Secrets. "
-            "Asegúrate de tener:\n[sheets]\nsheet_name = \"Puestos de trabajo\"\n"
+            "Debes tener:\n[sheets]\nsheet_name = \"Puestos de trabajo\"\n"
             f"Keys top-level detectadas: {top_keys}"
         )
 
@@ -145,7 +183,7 @@ def _require_secrets():
 def get_conn():
     """
     Retorna Spreadsheet (gspread.Spreadsheet).
-    Si falla, lanza RuntimeError con mensaje claro (no devuelve None silencioso).
+    Si falla, lanza RuntimeError con mensaje claro.
     """
     creds_dict, sheet_name = _require_secrets()
 
@@ -155,7 +193,7 @@ def get_conn():
     except Exception as e:
         raise RuntimeError(f"No pude autorizar con Google. Revisa gcp_service_account. Error: {e}")
 
-    # Abrimos por nombre. Si falla, lo intentamos como ID por si pegaron ID aquí.
+    # Abrimos por nombre; si falla, probamos por key (por si sheet_name era un ID)
     try:
         return client.open(sheet_name)
     except Exception as e1:
