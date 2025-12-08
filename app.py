@@ -306,10 +306,10 @@ def render_topbar_and_menu():
 def _validate_admin_login(email: str, password: str) -> bool:
     """
     Valida credenciales usando tu módulo modules.auth.
-    Si tu get_admin_credentials devuelve otro formato, ajusta aquí.
+    Soporta que get_admin_credentials(conn) devuelva dict o tupla/lista.
     """
     try:
-        creds = get_admin_credentials(conn)  # ✅ corrección: nombre correcto
+        creds = get_admin_credentials(conn)
     except Exception:
         creds = None
 
@@ -317,9 +317,21 @@ def _validate_admin_login(email: str, password: str) -> bool:
         # fallback: útil mientras montas credenciales reales
         return True
 
-    # soporta varias llaves típicas
-    e0 = (creds.get("email") or creds.get("admin_email") or "").strip().lower()
-    p0 = (creds.get("password") or creds.get("admin_password") or "").strip()
+    e0, p0 = "", ""
+
+    # ✅ Caso 1: dict {"email": "...", "password": "..."} (o llaves alternativas)
+    if isinstance(creds, dict):
+        e0 = (creds.get("email") or creds.get("admin_email") or "").strip().lower()
+        p0 = (creds.get("password") or creds.get("admin_password") or "").strip()
+
+    # ✅ Caso 2: tupla/lista ("email", "password") o [email, password]
+    elif isinstance(creds, (tuple, list)) and len(creds) >= 2:
+        e0 = str(creds[0] or "").strip().lower()
+        p0 = str(creds[1] or "").strip()
+
+    # ✅ Caso 3: cualquier otro formato -> fallback permisivo como antes
+    else:
+        return True
 
     if not e0 or not p0:
         return True
@@ -608,3 +620,4 @@ else:
     screen_admin(conn)
 
 st.markdown("</div>", unsafe_allow_html=True)
+
