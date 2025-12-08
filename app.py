@@ -244,7 +244,6 @@ def _piso_to_label(piso_any) -> str:
         return "Piso 1"
     if s.lower().startswith("piso"):
         return s
-    # si viene "1", "1.0", etc.
     nums = re.findall(r"\d+", s)
     return f"Piso {nums[0]}" if nums else f"Piso {s}"
 
@@ -266,8 +265,6 @@ def render_topbar_and_menu():
     c1, c2, c3 = st.columns([1.2, 3.6, 1.2], vertical_alignment="center")
 
     with c1:
-        # “click” al logo: no hay click real en st.image,
-        # así que usamos un botón invisible como overlay lógico.
         if logo_path.exists():
             st.markdown("<div class='mk-logo-btn'>", unsafe_allow_html=True)
             if st.button(" ", key="logo_home_btn"):
@@ -314,22 +311,16 @@ def _validate_admin_login(email: str, password: str) -> bool:
         creds = None
 
     if not creds:
-        # fallback: útil mientras montas credenciales reales
         return True
 
     e0, p0 = "", ""
 
-    # ✅ Caso 1: dict {"email": "...", "password": "..."} (o llaves alternativas)
     if isinstance(creds, dict):
         e0 = (creds.get("email") or creds.get("admin_email") or "").strip().lower()
         p0 = (creds.get("password") or creds.get("admin_password") or "").strip()
-
-    # ✅ Caso 2: tupla/lista ("email", "password") o [email, password]
     elif isinstance(creds, (tuple, list)) and len(creds) >= 2:
         e0 = str(creds[0] or "").strip().lower()
         p0 = str(creds[1] or "").strip()
-
-    # ✅ Caso 3: cualquier otro formato -> fallback permisivo como antes
     else:
         return True
 
@@ -370,7 +361,6 @@ def admin_panel(conn):
                 value=False
             )
 
-        # Seed interno para permitir "Regenerar" sin exponer selector de modo "o"
         st.session_state.setdefault("variant_seed", 42)
 
         seed_enabled = st.toggle("Usar seed", value=False)
@@ -382,6 +372,12 @@ def admin_panel(conn):
                 step=1
             )
 
+        # Estado interno: vista previa (no guarda en DB hasta apretar "Guardar Distribución")
+        st.session_state.setdefault("pending_distribution_rows", [])
+        st.session_state.setdefault("pending_distribution_deficit", [])
+        st.session_state.setdefault("pending_distribution_audit", {})
+        st.session_state.setdefault("pending_distribution_score", {})
+
         if up is not None:
             try:
                 xls = pd.ExcelFile(up)
@@ -389,42 +385,19 @@ def admin_panel(conn):
 
                 st.success(f"✅ Archivo leído. Hojas: {', '.join(list(sheets.keys()))}")
 
-                # Detectores típicos
                 df_equipos = _safe_sheet_lookup(sheets, ["equipos", "equipo"])
                 df_param = _safe_sheet_lookup(sheets, ["parametros", "parámetros", "parametro", "parámetro"])
                 df_cap = _safe_sheet_lookup(sheets, ["capacidades", "capacidad", "aforo", "cupos"])
 
-                with st.expander("Vista previa (primeras filas)", expanded=False):
-                    if df_equipos is not None:
-                        st.markdown("**Equipos**")
-                        st.dataframe(df_equipos.head(20), use_container_width=True, hide_index=True)
-                    else:
-                        st.warning("No pude detectar hoja de Equipos.")
-
-                    if df_param is not None and not df_param.empty:
-                        st.markdown("**Parámetros**")
-                        st.dataframe(df_param.head(20), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Parámetros no detectados o vacíos (si ignoras params no importa).")
-
-                    if df_cap is not None and not df_cap.empty:
-                        st.markdown("**Capacidades**")
-                        st.dataframe(df_cap.head(20), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Capacidades no detectadas o vacías (seats hará fallback).")
-
-                # --- Botones Generar / Regenerar ---
-                b1, b2 = st.columns([1, 1], vertical_alignment="center")
+                # --- Botones Generar / Regenerar / Guardar ---
+                b1, b2, b3 = st.columns([1, 1, 1], vertical_alignment="center")
                 gen = b1.button("Generar distribución", type="primary", key="btn_gen_dist")
                 regen = b2.button("Regenerar", key="btn_regen_dist")
+                save_btn = b3.button("Guardar Distribución", key="btn_save_dist")
 
                 if regen:
-                    # cambia seed para forzar una nueva variante (solo afecta si hay reglas "o")
                     st.session_state["variant_seed"] = int(st.session_state.get("variant_seed", 42)) + 1
                     st.rerun()
-
-                # Inicializar placeholders para evitar NameError fuera del if gen
-                rows, deficit_report, audit, score_obj = [], [], {}, {}
 
                 if gen:
                     if df_equipos is None or df_equipos.empty:
@@ -436,7 +409,8 @@ def admin_panel(conn):
                     if df_cap is None:
                         df_cap = pd.DataFrame()
 
-                    # ✅ Si parámetros están activos -> generar 10 opciones y elegir la mejor por score
+                    # Saint-Laguë siempre aplica (tu motor ya usa Sainte-Laguë),
+                    # y si ignore_params=False generamos 10 variantes (respeta reglas "o")
                     if not bool(ignore_params):
                         variants = compute_distribution_variants(
                             equipos_df=df_equipos,
@@ -457,7 +431,6 @@ def admin_panel(conn):
                         audit = best.get("audit", {})
                         score_obj = best.get("score", {})
                     else:
-                        # ✅ Sin parámetros: cálculo normal por capacidades - cupos libres
                         rows, deficit_report, audit, score_obj = compute_distribution_from_excel(
                             equipos_df=df_equipos,
                             parametros_df=df_param,
@@ -467,99 +440,101 @@ def admin_panel(conn):
                             variant_seed=int(st.session_state.get("variant_seed", 42)) if seed_enabled else None,
                             variant_mode="holgura",
                         )
-
                         if not rows:
                             st.error("No se generaron filas (rows vacías). Revisa que el Excel tenga columnas clave.")
                             st.write(score_obj)
                             return
 
-                    # Guardar en DB
-                    try:
-                        clear_distribution(conn)
-                        for r in rows:
-                            piso_db = _piso_to_label(r.get("piso"))
-                            dia_db = str(r.get("dia", "")).strip()
-                            equipo_db = str(r.get("equipo", "")).strip()
-                            cupos_db = int(float(r.get("cupos", 0) or 0))
+                    # Guardar solo como "pendiente" (vista previa). No toca DB aún.
+                    st.session_state["pending_distribution_rows"] = rows
+                    st.session_state["pending_distribution_deficit"] = deficit_report
+                    st.session_state["pending_distribution_audit"] = audit
+                    st.session_state["pending_distribution_score"] = score_obj
 
-                            insert_distribution(
-                                conn,
-                                piso_db,
-                                dia_db,
-                                equipo_db,
-                                cupos_db,
-                                r.get("% uso diario", None)
-                            )
-                        st.success("✅ Distribución guardada en Google Sheets (DB).")
-                    except Exception as e:
-                        st.error(f"No pude guardar en DB: {e}")
-                        return
+                if save_btn:
+                    rows = st.session_state.get("pending_distribution_rows", [])
+                    if not rows:
+                        st.warning("Primero genera una distribución para poder guardarla.")
+                    else:
+                        try:
+                            clear_distribution(conn)
+                            for r in rows:
+                                piso_db = _piso_to_label(r.get("piso"))
+                                dia_db = str(r.get("dia", "")).strip()
+                                equipo_db = str(r.get("equipo", "")).strip()
+                                cupos_db = int(float(r.get("cupos", 0) or 0))
 
-                    # cache por si lo necesitas después
-                    st.session_state["last_distribution_rows"] = rows
-                    st.session_state["last_distribution_deficit"] = deficit_report
-                    st.session_state["last_distribution_audit"] = audit
-                    st.session_state["last_distribution_score"] = score_obj
+                                insert_distribution(
+                                    conn,
+                                    piso_db,
+                                    dia_db,
+                                    equipo_db,
+                                    cupos_db,
+                                    r.get("% uso diario", None)
+                                )
+                            st.success("✅ Distribución guardada en Google Sheets (DB).")
+                            # además la dejamos como "última guardada" para otras pestañas futuras
+                            st.session_state["last_distribution_rows"] = rows
+                            st.session_state["last_distribution_deficit"] = st.session_state.get("pending_distribution_deficit", [])
+                            st.session_state["last_distribution_audit"] = st.session_state.get("pending_distribution_audit", {})
+                            st.session_state["last_distribution_score"] = st.session_state.get("pending_distribution_score", {})
+                        except Exception as e:
+                            st.error(f"No pude guardar en DB: {e}")
+                            return
 
-                # ✅ Si ya hay una distribución generada, usarla para la vista previa
-                if not rows and st.session_state.get("last_distribution_rows"):
-                    rows = st.session_state.get("last_distribution_rows", [])
-                    deficit_report = st.session_state.get("last_distribution_deficit", [])
-                    audit = st.session_state.get("last_distribution_audit", {})
-                    score_obj = st.session_state.get("last_distribution_score", {})
+                # -----------------------------
+                # ✅ VISTA PREVIA = SAINT-LAGUË (resultado generado)
+                # (No mostramos tablas de hojas del Excel)
+                # -----------------------------
+                rows = st.session_state.get("pending_distribution_rows", [])
+                deficit_report = st.session_state.get("pending_distribution_deficit", [])
+                score_obj = st.session_state.get("pending_distribution_score", {})
 
                 if rows:
-                    # -----------------------------
-                    # ✅ VISTA PREVIA (RESUMEN)
-                    # -----------------------------
                     df_out = pd.DataFrame(rows)
 
-                    # sacar "Cupos libres"
+                    # quitar cupos libres de la tabla principal
                     if "equipo" in df_out.columns:
                         df_out = df_out[df_out["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
 
-                    # asegurar numéricos
-                    if "cupos" in df_out.columns:
-                        df_out["cupos"] = pd.to_numeric(df_out["cupos"], errors="coerce").fillna(0).astype(int)
-                    if "dotacion" in df_out.columns:
-                        df_out["dotacion"] = pd.to_numeric(df_out["dotacion"], errors="coerce")
+                    df_out["cupos"] = pd.to_numeric(df_out.get("cupos"), errors="coerce").fillna(0).astype(int)
+                    df_out["dotacion"] = pd.to_numeric(df_out.get("dotacion"), errors="coerce")
 
-                    # agregación por piso-equipo (semanal)
+                    # Resumen por Piso/Equipo (Cupos asignados en la semana)
                     agg = df_out.groupby(["piso", "equipo"], as_index=False).agg(
                         Personas=("dotacion", "max"),
-                        Cupos_Asig=("cupos", "sum"),
+                        Cupos_Asignados=("cupos", "sum"),
                         UsoDiario=("% uso diario", "mean"),
                         UsoSemanal=("% uso semanal", "max"),
                     )
 
-                    agg["%Uso Diario"] = agg["UsoDiario"].round(2)
-                    agg["%Uso semanal"] = agg["UsoSemanal"].round(2)
                     agg.rename(columns={
                         "piso": "Piso",
                         "equipo": "Equipo",
-                        "Cupos_Asig": "Cupos Asignados",
+                        "Cupos_Asignados": "Cupos Asignados",
                     }, inplace=True)
 
-                    # déficit opcional
+                    agg["%Uso Diario"] = pd.to_numeric(agg["UsoDiario"], errors="coerce").fillna(0).round(2)
+                    agg["%Uso semanal"] = pd.to_numeric(agg["UsoSemanal"], errors="coerce").fillna(0).round(2)
+
+                    # Deficit opcional
                     df_def = pd.DataFrame(deficit_report) if deficit_report else pd.DataFrame()
                     if not df_def.empty and {"piso", "equipo", "deficit"}.issubset(df_def.columns):
                         df_def2 = df_def.groupby(["piso", "equipo"], as_index=False)["deficit"].sum()
                         df_def2.rename(columns={"piso": "Piso", "equipo": "Equipo", "deficit": "Deficit"}, inplace=True)
                         agg = agg.merge(df_def2, on=["Piso", "Equipo"], how="left")
 
-                        if agg["Deficit"].isna().all():
+                        if agg["Deficit"].isna().all() or (pd.to_numeric(agg["Deficit"], errors="coerce").fillna(0) == 0).all():
                             agg.drop(columns=["Deficit"], inplace=True)
                         else:
                             agg["Deficit"] = pd.to_numeric(agg["Deficit"], errors="coerce").fillna(0).astype(int)
-                            if (agg["Deficit"] == 0).all():
-                                agg.drop(columns=["Deficit"], inplace=True)
 
-                    # columnas finales (en orden)
+                    # columnas finales en orden
                     cols = ["Piso", "Equipo", "Personas", "Cupos Asignados", "%Uso Diario", "%Uso semanal"]
                     if "Deficit" in agg.columns:
                         cols.append("Deficit")
 
-                    st.markdown("### Vista previa (distribución generada - Saint-Laguë)")
+                    st.markdown("### Vista previa (Saint-Laguë)")
                     st.dataframe(
                         agg[cols].sort_values(["Piso", "Equipo"]),
                         use_container_width=True,
@@ -567,7 +542,7 @@ def admin_panel(conn):
                     )
 
                     if score_obj:
-                        st.markdown("### Score")
+                        st.markdown("### Score (mejor opción encontrada)")
                         st.json(score_obj)
 
             except Exception as e:
@@ -593,7 +568,6 @@ def screen_admin(conn):
                 st.rerun()
 
         with c2:
-            # botón Acceder alineado a la derecha dentro de su columna
             _, btn_col = st.columns([1, 1], vertical_alignment="center")
             with btn_col:
                 if st.button("Acceder", type="primary", key="btn_admin_login", use_container_width=True):
