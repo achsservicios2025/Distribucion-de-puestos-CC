@@ -253,6 +253,12 @@ def admin_logout():
     go("Administrador")
     st.rerun()
 
+def _round_half_up(x: float) -> int:
+    """4.5->5, 4.4->4"""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return 0
+    return int(np.floor(float(x) + 0.5))
+
 # ---------------------------------------------------------
 # TOPBAR
 # ---------------------------------------------------------
@@ -363,17 +369,9 @@ def admin_panel(conn):
                 key="ap_ignore_params"
             )
 
+        # ✅ seed UI removido, pero mantenemos un "regen_counter" interno
+        st.session_state.setdefault("regen_counter", 0)
         st.session_state.setdefault("variant_seed", 42)
-
-        seed_enabled = st.toggle("Usar seed", value=False, key="ap_seed_enabled")
-        if seed_enabled:
-            st.session_state["variant_seed"] = st.number_input(
-                "Seed",
-                min_value=0, max_value=10_000_000,
-                value=int(st.session_state.get("variant_seed", 42)),
-                step=1,
-                key="ap_seed_value"
-            )
 
         # Estado interno: vista previa (no guarda en DB hasta apretar "Guardar Distribución")
         st.session_state.setdefault("pending_distribution_rows", [])
@@ -381,7 +379,7 @@ def admin_panel(conn):
         st.session_state.setdefault("pending_distribution_audit", {})
         st.session_state.setdefault("pending_distribution_score", {})
 
-        def _run_generation(df_equipos, df_param, df_cap) -> bool:
+        def _run_generation(df_equipos, df_param, df_cap, seed_val: Optional[int]) -> bool:
             if df_equipos is None or df_equipos.empty:
                 st.error("Falta hoja Equipos (o está vacía).")
                 return False
@@ -397,7 +395,7 @@ def admin_panel(conn):
                     cupos_reserva=int(cupos_reserva),
                     ignore_params=False,
                     n_variants=10,
-                    variant_seed=int(st.session_state.get("variant_seed", 42)),
+                    variant_seed=int(seed_val or 42),
                     variant_mode="holgura",
                 )
                 best = variants[0] if variants else None
@@ -415,7 +413,7 @@ def admin_panel(conn):
                     df_capacidades=_df_cap,
                     cupos_reserva=int(cupos_reserva),
                     ignore_params=True,
-                    variant_seed=int(st.session_state.get("variant_seed", 42)) if seed_enabled else None,
+                    variant_seed=int(seed_val or 42),  # ✅ igual variamos con regenerar
                     variant_mode="holgura",
                 )
                 if not rows:
@@ -446,13 +444,16 @@ def admin_panel(conn):
                 save_btn = b3.button("Guardar Distribución", key="ap_btn_save_dist")
 
                 if gen:
-                    ok = _run_generation(df_equipos, df_param, df_cap)
+                    st.session_state["regen_counter"] = 0
+                    seed_val = int(st.session_state.get("variant_seed", 42)) + int(st.session_state["regen_counter"])
+                    ok = _run_generation(df_equipos, df_param, df_cap, seed_val=seed_val)
                     if ok:
                         st.rerun()
 
                 if regen:
-                    st.session_state["variant_seed"] = int(st.session_state.get("variant_seed", 42)) + 1
-                    ok = _run_generation(df_equipos, df_param, df_cap)
+                    st.session_state["regen_counter"] = int(st.session_state.get("regen_counter", 0)) + 1
+                    seed_val = int(st.session_state.get("variant_seed", 42)) + int(st.session_state["regen_counter"])
+                    ok = _run_generation(df_equipos, df_param, df_cap, seed_val=seed_val)
                     if ok:
                         st.rerun()
 
@@ -486,13 +487,16 @@ def admin_panel(conn):
                             st.error(f"No pude guardar en DB: {e}")
                             return
 
+                # -----------------------------
                 # VISTA PREVIA (sin mostrar score)
+                # -----------------------------
                 rows = st.session_state.get("pending_distribution_rows", [])
                 deficit_report = st.session_state.get("pending_distribution_deficit", [])
 
                 if rows:
                     df_out = pd.DataFrame(rows)
 
+                    # quitar cupos libres
                     if "equipo" in df_out.columns:
                         df_out = df_out[df_out["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
 
@@ -501,12 +505,40 @@ def admin_panel(conn):
                     df_out["piso"] = df_out["piso"].astype(str)
                     df_out["dia"] = df_out["dia"].astype(str)
 
-                    # Deficit diario (viene desde seats ahora vs mínimos)
+                    # Deficit diario (seats lo trae contra mínimos)
                     df_def = pd.DataFrame(deficit_report) if deficit_report else pd.DataFrame()
                     if not df_def.empty and {"piso", "equipo", "dia", "deficit"}.issubset(df_def.columns):
                         df_def2 = df_def.groupby(["piso", "equipo", "dia"], as_index=False)["deficit"].sum()
                         df_def2.rename(columns={"deficit": "Deficit"}, inplace=True)
                         df_out = df_out.merge(df_def2, on=["piso", "equipo", "dia"], how="left")
+
+                    # ✅ Promedio cupos diarios por equipo (round half up)
+                    wk = df_out.groupby(["piso", "equipo"], as_index=False).agg(
+                        _wk_cupos=("cupos", "sum")
+                    )
+                    wk["_prom"] = (wk["_wk_cupos"] / 5.0).apply(_round_half_up)
+                    wk.rename(columns={"_prom": "Promedio de Cupos Diarios"}, inplace=True)
+                    df_out = df_out.merge(wk[["piso", "equipo", "Promedio de Cupos Diarios"]], on=["piso", "equipo"], how="left")
+
+                    # ✅ fallback %Uso semanal si viniera vacío
+                    if "% uso semanal" not in df_out.columns:
+                        df_out["% uso semanal"] = None
+                    # recalculo por equipo si hay NaN/None
+                    needs_weekly = pd.to_numeric(df_out["% uso semanal"], errors="coerce").isna()
+                    if needs_weekly.any():
+                        wk2 = df_out.groupby(["piso", "equipo"], as_index=False).agg(
+                            _wk_cupos=("cupos", "sum"),
+                            _per=("dotacion", "max"),
+                        )
+                        wk2["_uso_sem"] = np.where(
+                            pd.to_numeric(wk2["_per"], errors="coerce").fillna(0) > 0,
+                            (wk2["_wk_cupos"] / (wk2["_per"] * 5.0)) * 100.0,
+                            0.0
+                        )
+                        df_out = df_out.merge(wk2[["piso", "equipo", "_uso_sem"]], on=["piso", "equipo"], how="left")
+                        df_out["% uso semanal"] = pd.to_numeric(df_out["% uso semanal"], errors="coerce")
+                        df_out["% uso semanal"] = df_out["% uso semanal"].fillna(df_out["_uso_sem"])
+                        df_out.drop(columns=["_uso_sem"], inplace=True)
 
                     df_out.rename(columns={
                         "piso": "Piso",
@@ -522,7 +554,11 @@ def admin_panel(conn):
                     df_out["_ord_dia"] = df_out["Días"].map(order_map).fillna(999).astype(int)
                     df_out["_ord_piso"] = df_out["Piso"].str.extract(r"(\d+)")[0].fillna("9999").astype(int)
 
-                    base_cols = ["Piso", "Equipo", "Personas", "Días", "Cupos Diarios", "%Uso Diario", "%Uso semanal"]
+                    base_cols = [
+                        "Piso", "Equipo", "Personas", "Días",
+                        "Cupos Diarios", "Promedio de Cupos Diarios",
+                        "%Uso Diario", "%Uso semanal"
+                    ]
                     show_def = (
                         "Deficit" in df_out.columns
                         and not df_out["Deficit"].isna().all()
@@ -532,7 +568,12 @@ def admin_panel(conn):
                         df_out["Deficit"] = pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0).astype(int)
                         base_cols.append("Deficit")
 
-                    st.markdown("### Vista previa (Saint-Laguë semanal → diario)")
+                    # Limpieza numeritos
+                    df_out["%Uso Diario"] = pd.to_numeric(df_out.get("%Uso Diario"), errors="coerce").fillna(0).round(2)
+                    df_out["%Uso semanal"] = pd.to_numeric(df_out.get("%Uso semanal"), errors="coerce").fillna(0).round(2)
+                    df_out["Promedio de Cupos Diarios"] = pd.to_numeric(df_out.get("Promedio de Cupos Diarios"), errors="coerce").fillna(0).astype(int)
+
+                    st.markdown("### Vista previa (Saint-Laguë)")
                     with st.expander("Ver detalle de la distribución (por piso y día)", expanded=False):
                         st.dataframe(
                             df_out.sort_values(["_ord_piso", "_ord_dia", "Equipo"])[base_cols],
