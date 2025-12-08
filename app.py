@@ -795,11 +795,10 @@ def admin_panel(conn):
                 st.markdown("<h4>Título</h4>", unsafe_allow_html=True)
                 ze["show_title"] = st.toggle("Activar título", value=bool(ze.get("show_title", True)), key="zp_title_toggle")
                 ze["title_text"] = st.text_input("Texto", value=str(ze.get("title_text", "")), key="zp_title_text")
-                cA, cB = st.columns([1, 1])
-                with cA:
-                    ze["title_size"] = st.selectbox("Tamaño", [18, 22, 26, 28, 32, 36, 42], index=3, key="zp_title_size")
-                with cB:
-                    ze["title_font"] = st.selectbox("Fuente", ["DejaVuSans", "Helvetica", "Times"], index=0, key="zp_title_font")
+                
+                ze["title_size"] = st.selectbox("Tamaño", [18, 22, 26, 28, 32, 36, 42], index=3, key="zp_title_size")
+                ze["title_font"] = st.selectbox("Fuente", ["DejaVuSans", "Helvetica", "Times"], index=0, key="zp_title_font")
+                
                 st.markdown("</div>", unsafe_allow_html=True)
 
             a1, a2, a3, a4 = st.columns([1, 1, 1, 1], vertical_alignment="center")
@@ -935,5 +934,6 @@ elif screen == "Planos": # Captura por si el menú envía "Planos"
 
 else:
     st.warning(f"Pantalla no encontrada: {screen}")
+
 
 
