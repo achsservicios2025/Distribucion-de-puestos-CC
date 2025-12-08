@@ -889,5 +889,51 @@ def admin_panel(conn):
                             st.rerun()
                     except Exception as e:
                         st.error(f"No pude guardar zona: {e}")
+# ---------------------------------------------------------
+# 6) MAIN EXECUTION FLOW
+# ---------------------------------------------------------
+
+# 1. Renderizar la barra superior y el menú siempre
+render_topbar_and_menu()
+
+# 2. Decidir qué pantalla mostrar según el estado de la sesión
+screen = st.session_state.get("screen", "Administrador")
+
+if screen == "Administrador":
+    # Lógica de Login: Si no es admin, muestra login. Si es admin, muestra el panel.
+    if st.session_state["is_admin"]:
+        admin_panel(conn)
+    else:
+        # --- PANTALLA DE LOGIN SIMPLE ---
+        st.markdown("### Acceso Administrador")
+        c_login = st.container()
+        with c_login:
+            l_email = st.text_input("Email", key="login_email")
+            l_pass = st.text_input("Contraseña", type="password", key="login_pass")
+            
+            if st.button("Ingresar", type="primary"):
+                if _validate_admin_login(l_email, l_pass):
+                    st.session_state["is_admin"] = True
+                    st.rerun()
+                else:
+                    st.error("Credenciales incorrectas o usuario no autorizado.")
+
+elif screen == "Reservas":
+    st.subheader("Gestión de Reservas")
+    st.info("Aquí deberías llamar a tu función de reservas. Ej: reservas_panel(conn)")
+    # reservas_panel(conn) # Descomentar cuando importes la función
+
+elif screen == "Ver Distribución y Planos": 
+    # (Nota: En tu menú usaste 'Ver Distribución y Planos', asegúrate que coincida con el if)
+    st.subheader("Visualización de Planos")
+    st.info("Aquí deberías llamar a tu función de planos. Ej: planos_viewer(conn)")
+    # planos_viewer(conn) # Descomentar cuando importes la función
+
+elif screen == "Planos": # Captura por si el menú envía "Planos"
+    st.subheader("Planos")
+    st.write("Vista de planos.")
+
+else:
+    st.warning(f"Pantalla no encontrada: {screen}")
 
 
