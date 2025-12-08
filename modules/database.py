@@ -696,18 +696,30 @@ def delete_distribution_row(conn, piso, equipo, dia):
 
 def delete_distribution_rows_by_indices(conn, indices):
     ws = get_worksheet(conn, "distribution")
-    if ws is None:
+    if ws is None or not indices:
         return False
 
     try:
-        if not indices:
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:
             return False
 
-        for idx in sorted(set(indices), reverse=True):
-            ws.delete_rows(int(idx) + 2)
+        header = all_values[0]
+        data = all_values[1:]
+
+        indices_set = set(int(i) for i in indices)
+        
+        new_data = [row for i, row in enumerate(data) if i not in indices_set]
+
+        ws.clear()
+        ws.append_row(header)
+        if new_data:
+            ws.append_rows(new_data, value_input_option="USER_ENTERED")
 
         read_distribution_df.clear()
+        st.cache_data.clear()
         return True
 
-    except Exception:
+    except Exception as e:
+        st.error(f"Error borrando filas: {e}")
         return False
