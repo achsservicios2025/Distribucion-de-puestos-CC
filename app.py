@@ -1,4 +1,4 @@
-import streamlit as st  
+import streamlit as st
 import pandas as pd
 import re
 import unicodedata
@@ -381,6 +381,53 @@ def admin_panel(conn):
         st.session_state.setdefault("pending_distribution_audit", {})
         st.session_state.setdefault("pending_distribution_score", {})
 
+        def _run_generation(df_equipos, df_param, df_cap) -> bool:
+            if df_equipos is None or df_equipos.empty:
+                st.error("Falta hoja Equipos (o está vacía).")
+                return False
+
+            _df_param = df_param if df_param is not None else pd.DataFrame()
+            _df_cap = df_cap if df_cap is not None else pd.DataFrame()
+
+            if not bool(ignore_params):
+                variants = compute_distribution_variants(
+                    equipos_df=df_equipos,
+                    parametros_df=_df_param,
+                    df_capacidades=_df_cap,
+                    cupos_reserva=int(cupos_reserva),
+                    ignore_params=False,
+                    n_variants=10,
+                    variant_seed=int(st.session_state.get("variant_seed", 42)),
+                    variant_mode="holgura",
+                )
+                best = variants[0] if variants else None
+                if not best or not best.get("rows"):
+                    st.error("No se generaron filas. Revisa que el Excel tenga columnas clave.")
+                    return False
+                rows = best["rows"]
+                deficit_report = best.get("deficit_report", [])
+                audit = best.get("audit", {})
+                score_obj = best.get("score", {})
+            else:
+                rows, deficit_report, audit, score_obj = compute_distribution_from_excel(
+                    equipos_df=df_equipos,
+                    parametros_df=_df_param,
+                    df_capacidades=_df_cap,
+                    cupos_reserva=int(cupos_reserva),
+                    ignore_params=True,
+                    variant_seed=int(st.session_state.get("variant_seed", 42)) if seed_enabled else None,
+                    variant_mode="holgura",
+                )
+                if not rows:
+                    st.error("No se generaron filas (rows vacías). Revisa que el Excel tenga columnas clave.")
+                    return False
+
+            st.session_state["pending_distribution_rows"] = rows
+            st.session_state["pending_distribution_deficit"] = deficit_report
+            st.session_state["pending_distribution_audit"] = audit
+            st.session_state["pending_distribution_score"] = score_obj
+            return True
+
         if up is not None:
             try:
                 xls = pd.ExcelFile(up)
@@ -398,58 +445,16 @@ def admin_panel(conn):
                 regen = b2.button("Regenerar", key="ap_btn_regen_dist")
                 save_btn = b3.button("Guardar Distribución", key="ap_btn_save_dist")
 
+                if gen:
+                    ok = _run_generation(df_equipos, df_param, df_cap)
+                    if ok:
+                        st.rerun()
+
                 if regen:
                     st.session_state["variant_seed"] = int(st.session_state.get("variant_seed", 42)) + 1
-                    st.rerun()
-
-                if gen:
-                    if df_equipos is None or df_equipos.empty:
-                        st.error("Falta hoja Equipos (o está vacía).")
-                        return
-
-                    if df_param is None:
-                        df_param = pd.DataFrame()
-                    if df_cap is None:
-                        df_cap = pd.DataFrame()
-
-                    if not bool(ignore_params):
-                        variants = compute_distribution_variants(
-                            equipos_df=df_equipos,
-                            parametros_df=df_param,
-                            df_capacidades=df_cap,
-                            cupos_reserva=int(cupos_reserva),
-                            ignore_params=False,
-                            n_variants=10,
-                            variant_seed=int(st.session_state.get("variant_seed", 42)),
-                            variant_mode="holgura",
-                        )
-                        best = variants[0] if variants else None
-                        if not best or not best.get("rows"):
-                            st.error("No se generaron filas. Revisa que el Excel tenga columnas clave.")
-                            return
-                        rows = best["rows"]
-                        deficit_report = best.get("deficit_report", [])
-                        audit = best.get("audit", {})
-                        score_obj = best.get("score", {})
-                    else:
-                        rows, deficit_report, audit, score_obj = compute_distribution_from_excel(
-                            equipos_df=df_equipos,
-                            parametros_df=df_param,
-                            df_capacidades=df_cap,
-                            cupos_reserva=int(cupos_reserva),
-                            ignore_params=True,
-                            variant_seed=int(st.session_state.get("variant_seed", 42)) if seed_enabled else None,
-                            variant_mode="holgura",
-                        )
-                        if not rows:
-                            st.error("No se generaron filas (rows vacías). Revisa que el Excel tenga columnas clave.")
-                            st.write(score_obj)
-                            return
-
-                    st.session_state["pending_distribution_rows"] = rows
-                    st.session_state["pending_distribution_deficit"] = deficit_report
-                    st.session_state["pending_distribution_audit"] = audit
-                    st.session_state["pending_distribution_score"] = score_obj
+                    ok = _run_generation(df_equipos, df_param, df_cap)
+                    if ok:
+                        st.rerun()
 
                 if save_btn:
                     rows = st.session_state.get("pending_distribution_rows", [])
@@ -481,13 +486,13 @@ def admin_panel(conn):
                             st.error(f"No pude guardar en DB: {e}")
                             return
 
-                # VISTA PREVIA
+                # VISTA PREVIA (sin mostrar score)
                 rows = st.session_state.get("pending_distribution_rows", [])
                 deficit_report = st.session_state.get("pending_distribution_deficit", [])
-                score_obj = st.session_state.get("pending_distribution_score", {})
 
                 if rows:
                     df_out = pd.DataFrame(rows)
+
                     if "equipo" in df_out.columns:
                         df_out = df_out[df_out["equipo"].astype(str).str.strip().str.lower() != "cupos libres"].copy()
 
@@ -496,6 +501,7 @@ def admin_panel(conn):
                     df_out["piso"] = df_out["piso"].astype(str)
                     df_out["dia"] = df_out["dia"].astype(str)
 
+                    # Deficit diario (viene desde seats ahora vs mínimos)
                     df_def = pd.DataFrame(deficit_report) if deficit_report else pd.DataFrame()
                     if not df_def.empty and {"piso", "equipo", "dia", "deficit"}.issubset(df_def.columns):
                         df_def2 = df_def.groupby(["piso", "equipo", "dia"], as_index=False)["deficit"].sum()
@@ -517,7 +523,11 @@ def admin_panel(conn):
                     df_out["_ord_piso"] = df_out["Piso"].str.extract(r"(\d+)")[0].fillna("9999").astype(int)
 
                     base_cols = ["Piso", "Equipo", "Personas", "Días", "Cupos Diarios", "%Uso Diario", "%Uso semanal"]
-                    show_def = "Deficit" in df_out.columns and not df_out["Deficit"].isna().all() and (pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0) != 0).any()
+                    show_def = (
+                        "Deficit" in df_out.columns
+                        and not df_out["Deficit"].isna().all()
+                        and (pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0) != 0).any()
+                    )
                     if show_def:
                         df_out["Deficit"] = pd.to_numeric(df_out["Deficit"], errors="coerce").fillna(0).astype(int)
                         base_cols.append("Deficit")
@@ -676,4 +686,3 @@ else:
     screen_admin(conn)
 
 st.markdown("</div>", unsafe_allow_html=True)
-
